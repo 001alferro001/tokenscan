@@ -145,7 +145,10 @@ class BybitWebSocketClient:
                 await self.volume_analyzer.db_manager.save_kline_data(symbol, formatted_data)
                 
                 # Анализируем объем
-                alert = await self.volume_analyzer.analyze_volume(symbol, formatted_data)
+                volume_alert = await self.volume_analyzer.analyze_volume(symbol, formatted_data)
+                
+                # Анализируем подряд идущие LONG свечи
+                consecutive_alert = await self.volume_analyzer.analyze_consecutive_long_candles(symbol, formatted_data)
                 
                 # Отправляем данные клиентам
                 message = {
@@ -155,8 +158,15 @@ class BybitWebSocketClient:
                     "timestamp": datetime.now().isoformat()
                 }
                 
-                if alert:
-                    message["alert"] = alert
+                # Добавляем алерты, если они есть
+                alerts = []
+                if volume_alert:
+                    alerts.append(volume_alert)
+                if consecutive_alert:
+                    alerts.append(consecutive_alert)
+                
+                if alerts:
+                    message["alerts"] = alerts
                 
                 await self.connection_manager.broadcast(json.dumps(message))
                 

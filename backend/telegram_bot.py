@@ -19,7 +19,7 @@ class TelegramBot:
             logger.info("Telegram бот инициализирован")
 
     async def send_alert(self, alert_data: Dict) -> bool:
-        """Отправка алерта в Telegram канал"""
+        """Отправка алерта по объему в Telegram канал"""
         if not self.enabled:
             return False
 
@@ -28,29 +28,30 @@ class TelegramBot:
             message = self._format_alert_message(alert_data)
             
             # Отправляем сообщение
-            url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
-            data = {
-                'chat_id': self.chat_id,
-                'text': message,
-                'parse_mode': 'HTML',
-                'disable_web_page_preview': True
-            }
-
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, data=data) as response:
-                    if response.status == 200:
-                        logger.info(f"Алерт отправлен в Telegram для {alert_data['symbol']}")
-                        return True
-                    else:
-                        logger.error(f"Ошибка отправки в Telegram: {response.status}")
-                        return False
+            return await self._send_message(message)
 
         except Exception as e:
             logger.error(f"Ошибка отправки алерта в Telegram: {e}")
             return False
 
+    async def send_consecutive_alert(self, alert_data: Dict) -> bool:
+        """Отправка алерта по подряд идущим свечам в Telegram канал"""
+        if not self.enabled:
+            return False
+
+        try:
+            # Формируем сообщение
+            message = self._format_consecutive_alert_message(alert_data)
+            
+            # Отправляем сообщение
+            return await self._send_message(message)
+
+        except Exception as e:
+            logger.error(f"Ошибка отправки алерта подряд идущих свечей в Telegram: {e}")
+            return False
+
     def _format_alert_message(self, alert_data: Dict) -> str:
-        """Форматирование сообщения алерта для Telegram"""
+        """Форматирование сообщения алерта по объему для Telegram"""
         symbol = alert_data['symbol']
         price = alert_data['price']
         volume_ratio = alert_data['volume_ratio']
@@ -78,23 +79,68 @@ class TelegramBot:
         
         return message
 
+    def _format_consecutive_alert_message(self, alert_data: Dict) -> str:
+        """Форматирование сообщения алерта по подряд идущим свечам для Telegram"""
+        symbol = alert_data['symbol']
+        price = alert_data['price']
+        consecutive_count = alert_data['consecutive_count']
+        avg_body_percentage = alert_data['avg_body_percentage']
+        avg_shadow_ratio = alert_data['avg_shadow_ratio']
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        
+        # Эмодзи для визуального выделения
+        emoji = "🕯️" if consecutive_count >= 10 else "📊" if consecutive_count >= 7 else "📈"
+        
+        message = f"""
+{emoji} <b>АЛЕРТ ПО ПОДРЯД ИДУЩИМ СВЕЧАМ</b>
+
+💰 <b>Пара:</b> {symbol}
+💵 <b>Цена:</b> ${price:,.8f}
+🕯️ <b>Подряд LONG свечей:</b> {consecutive_count}
+
+📊 <b>Среднее тело свечи:</b> {avg_body_percentage:.1f}%
+📏 <b>Среднее отношение теней:</b> {avg_shadow_ratio:.2f}
+
+🕐 <b>Время:</b> {timestamp}
+
+#ConsecutiveAlert #{symbol.replace('USDT', '')}
+        """.strip()
+        
+        return message
+
     async def send_system_message(self, message: str) -> bool:
         """Отправка системного сообщения"""
         if not self.enabled:
             return False
 
         try:
+            formatted_message = f"🤖 <b>Система:</b> {message}"
+            return await self._send_message(formatted_message)
+
+        except Exception as e:
+            logger.error(f"Ошибка отправки системного сообщения: {e}")
+            return False
+
+    async def _send_message(self, message: str) -> bool:
+        """Внутренний метод для отправки сообщения"""
+        try:
             url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
             data = {
                 'chat_id': self.chat_id,
-                'text': f"🤖 <b>Система:</b> {message}",
-                'parse_mode': 'HTML'
+                'text': message,
+                'parse_mode': 'HTML',
+                'disable_web_page_preview': True
             }
 
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, data=data) as response:
-                    return response.status == 200
+                    if response.status == 200:
+                        logger.info(f"Сообщение отправлено в Telegram")
+                        return True
+                    else:
+                        logger.error(f"Ошибка отправки в Telegram: {response.status}")
+                        return False
 
         except Exception as e:
-            logger.error(f"Ошибка отправки системного сообщения: {e}")
+            logger.error(f"Ошибка отправки сообщения в Telegram: {e}")
             return False

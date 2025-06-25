@@ -15,14 +15,21 @@ class VolumeAnalyzer:
             'offset_minutes': int(os.getenv('OFFSET_MINUTES', 0)),
             'volume_multiplier': float(os.getenv('VOLUME_MULTIPLIER', 2.0)),
             'min_volume_usdt': int(os.getenv('MIN_VOLUME_USDT', 1000)),
-            'alert_grouping_minutes': int(os.getenv('ALERT_GROUPING_MINUTES', 5))
+            'alert_grouping_minutes': int(os.getenv('ALERT_GROUPING_MINUTES', 5)),
+            # Новые настройки для подряд идущих LONG свечей
+            'consecutive_long_count': int(os.getenv('CONSECUTIVE_LONG_COUNT', 5)),
+            'max_shadow_to_body_ratio': float(os.getenv('MAX_SHADOW_TO_BODY_RATIO', 1.0)),
+            'min_body_percentage': float(os.getenv('MIN_BODY_PERCENTAGE', 0.1))
         }
         self.stats = {
             'total_candles': 0,
             'long_candles': 0,
             'alerts_count': 0,
+            'consecutive_alerts_count': 0,
             'last_update': None
         }
+        # Кэш для хранения последних свечей каждого символа
+        self.candle_cache = {}
 
     async def analyze_volume(self, symbol: str, kline_data: Dict) -> Optional[Dict]:
         """Анализ объема для определения алертов"""
@@ -107,6 +114,130 @@ class VolumeAnalyzer:
 
         except Exception as e:
             logger.error(f"Ошибка анализа объема для {symbol}: {e}")
+            return None
+
+    async def analyze_consecutive_long_candles(self, symbol: str, kline_data: Dict) -> Optional[Dict]:
+        """Анализ подряд идущих LONG свечей с маленьким телом"""
+        try:
+            # Проверяем, является ли свеча LONG
+            open_price = float(kline_data['open'])
+            close_price = float(kline_data['close'])
+            high_price = float(kline_data['high'])
+            low_price = float(kline_data['low'])
+            
+            is_long = close_price > open_price
+            if not is_long:
+                # Если свеча не LONG, сбрасываем счетчик для этого символа
+                if symbol in self.candle_cache:
+                    self.candle_cache[symbol] = []
+                return None
+
+            # Рассчитываем параметры свечи
+            body_size = abs(close_price - open_price)
+            upper_shadow = high_price - max(open_price, close_price)
+            lower_shadow = min(open_price, close_price) - low_price
+            total_shadow = upper_shadow + lower_shadow
+            candle_range = high_price - low_price
+            
+            # Проверяем условия для "маленького тела"
+            body_percentage = (body_size / candle_range) * 100 if candle_range > 0 else 0
+            shadow_to_body_ratio = total_shadow / body_size if body_size > 0 else float('inf')
+            
+            # Условия для подходящей свечи:
+            # 1. Тело составляет минимальный процент от всей свечи
+            # 2. Тени не превышают определенное соотношение к телу
+            is_suitable_candle = (
+                body_percentage >= self.settings['min_body_percentage'] and
+                shadow_to_body_ratio <= self.settings['max_shadow_to_body_ratio']
+            )
+            
+            if not is_suitable_candle:
+                # Если свеча не подходит, сбрасываем счетчик
+                if symbol in self.candle_cache:
+                    self.candle_cache[symbol] = []
+                return None
+
+            # Инициализируем кэш для символа, если его нет
+            if symbol not in self.candle_cache:
+                self.candle_cache[symbol] = []
+
+            # Добавляем текущую свечу в кэш
+            candle_info = {
+                'timestamp': int(kline_data['start']),
+                'open': open_price,
+                'close': close_price,
+                'high': high_price,
+                'low': low_price,
+                'body_percentage': body_percentage,
+                'shadow_to_body_ratio': shadow_to_body_ratio
+            }
+            
+            self.candle_cache[symbol].append(candle_info)
+            
+            # Ограничиваем размер кэша
+            max_cache_size = self.settings['consecutive_long_count'] + 5
+            if len(self.candle_cache[symbol]) > max_cache_size:
+                self.candle_cache[symbol] = self.candle_cache[symbol][-max_cache_size:]
+
+            # Проверяем, достигли ли мы нужного количества подряд идущих свечей
+            consecutive_count = len(self.candle_cache[symbol])
+            
+            if consecutive_count >= self.settings['consecutive_long_count']:
+                # Создаем алерт
+                alert_data = {
+                    'symbol': symbol,
+                    'alert_type': 'consecutive_long',
+                    'price': close_price,
+                    'consecutive_count': consecutive_count,
+                    'avg_body_percentage': sum(c['body_percentage'] for c in self.candle_cache[symbol]) / consecutive_count,
+                    'avg_shadow_ratio': sum(c['shadow_to_body_ratio'] for c in self.candle_cache[symbol]) / consecutive_count,
+                    'timestamp': datetime.now(),
+                    'message': f"{consecutive_count} подряд идущих LONG свечей с маленьким телом"
+                }
+                
+                # Проверяем недавние группы алертов
+                recent_group = await self.db_manager.get_recent_alert_group(
+                    symbol, 
+                    self.settings['alert_grouping_minutes'],
+                    'consecutive_long'
+                )
+                
+                if recent_group:
+                    # Обновляем существующую группу
+                    await self.db_manager.update_alert_group(recent_group['id'], alert_data)
+                    await self.db_manager.save_alert(recent_group['id'], alert_data)
+                    
+                    alert_data['is_grouped'] = True
+                    alert_data['group_id'] = recent_group['id']
+                    alert_data['group_count'] = recent_group['alert_count'] + 1
+                else:
+                    # Создаем новую группу
+                    group_id = await self.db_manager.create_alert_group(alert_data)
+                    await self.db_manager.save_alert(group_id, alert_data)
+                    
+                    alert_data['is_grouped'] = False
+                    alert_data['group_id'] = group_id
+                    alert_data['group_count'] = 1
+                    
+                    # Отправляем в Telegram
+                    if self.telegram_bot:
+                        await self.telegram_bot.send_consecutive_alert(alert_data)
+
+                # Обновляем статистику
+                self.stats['consecutive_alerts_count'] += 1
+                
+                # Сбрасываем кэш после создания алерта
+                self.candle_cache[symbol] = []
+                
+                # Преобразуем timestamp в ISO строку для JSON
+                alert_data['timestamp'] = alert_data['timestamp'].isoformat()
+                
+                return alert_data
+
+            return None
+
+        except Exception as e:
+            logger.error(f"Ошибка анализа подряд идущих свечей для {symbol}: {e}")
             return None
 
     def update_settings(self, new_settings: Dict):

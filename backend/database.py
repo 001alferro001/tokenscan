@@ -85,9 +85,12 @@ class DatabaseManager:
                     first_alert_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     last_alert_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     alert_count INTEGER DEFAULT 1,
-                    max_volume_ratio DECIMAL(10, 2) NOT NULL,
+                    max_volume_ratio DECIMAL(10, 2),
+                    max_consecutive_count INTEGER,
                     max_price DECIMAL(20, 8) NOT NULL,
-                    max_volume_usdt DECIMAL(20, 8) NOT NULL,
+                    max_volume_usdt DECIMAL(20, 8),
+                    avg_body_percentage DECIMAL(5, 2),
+                    avg_shadow_ratio DECIMAL(5, 2),
                     is_active BOOLEAN DEFAULT TRUE,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -102,9 +105,12 @@ class DatabaseManager:
                     symbol VARCHAR(20) NOT NULL,
                     alert_type VARCHAR(50) NOT NULL,
                     price DECIMAL(20, 8) NOT NULL,
-                    volume_ratio DECIMAL(10, 2) NOT NULL,
-                    current_volume_usdt DECIMAL(20, 8) NOT NULL,
-                    average_volume_usdt DECIMAL(20, 8) NOT NULL,
+                    volume_ratio DECIMAL(10, 2),
+                    consecutive_count INTEGER,
+                    current_volume_usdt DECIMAL(20, 8),
+                    average_volume_usdt DECIMAL(20, 8),
+                    avg_body_percentage DECIMAL(5, 2),
+                    avg_shadow_ratio DECIMAL(5, 2),
                     message TEXT,
                     telegram_sent BOOLEAN DEFAULT FALSE,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -125,6 +131,11 @@ class DatabaseManager:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_alert_groups_symbol_time 
                 ON alert_groups(symbol, last_alert_time)
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_alert_groups_symbol_type_time 
+                ON alert_groups(symbol, alert_type, last_alert_time)
             """)
 
             cursor.execute("""
@@ -162,6 +173,21 @@ class DatabaseManager:
                 """)
 
                 logger.info("Новые колонки добавлены в таблицу watchlist")
+
+            # Добавляем новые колонки для алертов подряд идущих свечей
+            cursor.execute("""
+                ALTER TABLE alert_groups 
+                ADD COLUMN IF NOT EXISTS max_consecutive_count INTEGER,
+                ADD COLUMN IF NOT EXISTS avg_body_percentage DECIMAL(5, 2),
+                ADD COLUMN IF NOT EXISTS avg_shadow_ratio DECIMAL(5, 2)
+            """)
+
+            cursor.execute("""
+                ALTER TABLE alerts 
+                ADD COLUMN IF NOT EXISTS consecutive_count INTEGER,
+                ADD COLUMN IF NOT EXISTS avg_body_percentage DECIMAL(5, 2),
+                ADD COLUMN IF NOT EXISTS avg_shadow_ratio DECIMAL(5, 2)
+            """)
 
             cursor.close()
 
@@ -301,21 +327,32 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Ошибка сохранения данных свечи: {e}")
 
-    async def get_recent_alert_group(self, symbol: str, minutes: int) -> Optional[Dict]:
+    async def get_recent_alert_group(self, symbol: str, minutes: int, alert_type: str = None) -> Optional[Dict]:
         """Получить недавнюю группу алертов для символа"""
         try:
             cursor = self.connection.cursor(cursor_factory=RealDictCursor)
             
             time_threshold = datetime.now() - timedelta(minutes=minutes)
             
-            cursor.execute("""
-                SELECT * FROM alert_groups 
-                WHERE symbol = %s 
-                AND is_active = TRUE
-                AND last_alert_time >= %s
-                ORDER BY last_alert_time DESC 
-                LIMIT 1
-            """, (symbol, time_threshold))
+            if alert_type:
+                cursor.execute("""
+                    SELECT * FROM alert_groups 
+                    WHERE symbol = %s 
+                    AND alert_type = %s
+                    AND is_active = TRUE
+                    AND last_alert_time >= %s
+                    ORDER BY last_alert_time DESC 
+                    LIMIT 1
+                """, (symbol, alert_type, time_threshold))
+            else:
+                cursor.execute("""
+                    SELECT * FROM alert_groups 
+                    WHERE symbol = %s 
+                    AND is_active = TRUE
+                    AND last_alert_time >= %s
+                    ORDER BY last_alert_time DESC 
+                    LIMIT 1
+                """, (symbol, time_threshold))
 
             result = cursor.fetchone()
             cursor.close()
@@ -332,23 +369,43 @@ class DatabaseManager:
             cursor = self.connection.cursor()
             
             now = datetime.now()
+            alert_type = alert_data.get('alert_type', 'volume_spike')
             
-            cursor.execute("""
-                INSERT INTO alert_groups 
-                (symbol, alert_type, first_alert_time, last_alert_time, 
-                 alert_count, max_volume_ratio, max_price, max_volume_usdt)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING id
-            """, (
-                alert_data['symbol'],
-                alert_data.get('alert_type', 'volume_spike'),
-                now,
-                now,
-                1,
-                alert_data['volume_ratio'],
-                alert_data['price'],
-                alert_data['current_volume_usdt']
-            ))
+            if alert_type == 'consecutive_long':
+                cursor.execute("""
+                    INSERT INTO alert_groups 
+                    (symbol, alert_type, first_alert_time, last_alert_time, 
+                     alert_count, max_consecutive_count, max_price, avg_body_percentage, avg_shadow_ratio)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                """, (
+                    alert_data['symbol'],
+                    alert_type,
+                    now,
+                    now,
+                    1,
+                    alert_data['consecutive_count'],
+                    alert_data['price'],
+                    alert_data['avg_body_percentage'],
+                    alert_data['avg_shadow_ratio']
+                ))
+            else:
+                cursor.execute("""
+                    INSERT INTO alert_groups 
+                    (symbol, alert_type, first_alert_time, last_alert_time, 
+                     alert_count, max_volume_ratio, max_price, max_volume_usdt)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                """, (
+                    alert_data['symbol'],
+                    alert_type,
+                    now,
+                    now,
+                    1,
+                    alert_data['volume_ratio'],
+                    alert_data['price'],
+                    alert_data['current_volume_usdt']
+                ))
 
             group_id = cursor.fetchone()[0]
             cursor.close()
@@ -365,24 +422,46 @@ class DatabaseManager:
             cursor = self.connection.cursor()
             
             now = datetime.now()
+            alert_type = alert_data.get('alert_type', 'volume_spike')
             
-            cursor.execute("""
-                UPDATE alert_groups 
-                SET alert_count = alert_count + 1,
-                    last_alert_time = %s,
-                    updated_at = %s,
-                    max_volume_ratio = GREATEST(max_volume_ratio, %s),
-                    max_price = %s,
-                    max_volume_usdt = GREATEST(max_volume_usdt, %s)
-                WHERE id = %s
-            """, (
-                now,
-                now,
-                alert_data['volume_ratio'],
-                alert_data['price'],
-                alert_data['current_volume_usdt'],
-                group_id
-            ))
+            if alert_type == 'consecutive_long':
+                cursor.execute("""
+                    UPDATE alert_groups 
+                    SET alert_count = alert_count + 1,
+                        last_alert_time = %s,
+                        updated_at = %s,
+                        max_consecutive_count = GREATEST(max_consecutive_count, %s),
+                        max_price = %s,
+                        avg_body_percentage = %s,
+                        avg_shadow_ratio = %s
+                    WHERE id = %s
+                """, (
+                    now,
+                    now,
+                    alert_data['consecutive_count'],
+                    alert_data['price'],
+                    alert_data['avg_body_percentage'],
+                    alert_data['avg_shadow_ratio'],
+                    group_id
+                ))
+            else:
+                cursor.execute("""
+                    UPDATE alert_groups 
+                    SET alert_count = alert_count + 1,
+                        last_alert_time = %s,
+                        updated_at = %s,
+                        max_volume_ratio = GREATEST(max_volume_ratio, %s),
+                        max_price = %s,
+                        max_volume_usdt = GREATEST(max_volume_usdt, %s)
+                    WHERE id = %s
+                """, (
+                    now,
+                    now,
+                    alert_data['volume_ratio'],
+                    alert_data['price'],
+                    alert_data['current_volume_usdt'],
+                    group_id
+                ))
 
             cursor.close()
 
@@ -394,21 +473,40 @@ class DatabaseManager:
         try:
             cursor = self.connection.cursor()
             
-            cursor.execute("""
-                INSERT INTO alerts 
-                (group_id, symbol, alert_type, price, volume_ratio, 
-                 current_volume_usdt, average_volume_usdt, message)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            """, (
-                group_id,
-                alert_data['symbol'],
-                alert_data.get('alert_type', 'volume_spike'),
-                alert_data['price'],
-                alert_data['volume_ratio'],
-                alert_data['current_volume_usdt'],
-                alert_data['average_volume_usdt'],
-                alert_data.get('message', '')
-            ))
+            alert_type = alert_data.get('alert_type', 'volume_spike')
+            
+            if alert_type == 'consecutive_long':
+                cursor.execute("""
+                    INSERT INTO alerts 
+                    (group_id, symbol, alert_type, price, consecutive_count, 
+                     avg_body_percentage, avg_shadow_ratio, message)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    group_id,
+                    alert_data['symbol'],
+                    alert_type,
+                    alert_data['price'],
+                    alert_data['consecutive_count'],
+                    alert_data['avg_body_percentage'],
+                    alert_data['avg_shadow_ratio'],
+                    alert_data.get('message', '')
+                ))
+            else:
+                cursor.execute("""
+                    INSERT INTO alerts 
+                    (group_id, symbol, alert_type, price, volume_ratio, 
+                     current_volume_usdt, average_volume_usdt, message)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    group_id,
+                    alert_data['symbol'],
+                    alert_type,
+                    alert_data['price'],
+                    alert_data['volume_ratio'],
+                    alert_data['current_volume_usdt'],
+                    alert_data['average_volume_usdt'],
+                    alert_data.get('message', '')
+                ))
 
             cursor.close()
 
@@ -421,7 +519,8 @@ class DatabaseManager:
             cursor = self.connection.cursor(cursor_factory=RealDictCursor)
             cursor.execute("""
                 SELECT id, symbol, alert_type, first_alert_time, last_alert_time,
-                       alert_count, max_volume_ratio, max_price, max_volume_usdt,
+                       alert_count, max_volume_ratio, max_consecutive_count, max_price, 
+                       max_volume_usdt, avg_body_percentage, avg_shadow_ratio,
                        is_active, created_at, updated_at
                 FROM alert_groups 
                 WHERE is_active = TRUE
@@ -443,8 +542,9 @@ class DatabaseManager:
         try:
             cursor = self.connection.cursor(cursor_factory=RealDictCursor)
             cursor.execute("""
-                SELECT id, price, volume_ratio, current_volume_usdt, 
-                       average_volume_usdt, message, telegram_sent, created_at
+                SELECT id, alert_type, price, volume_ratio, consecutive_count,
+                       current_volume_usdt, average_volume_usdt, avg_body_percentage, 
+                       avg_shadow_ratio, message, telegram_sent, created_at
                 FROM alerts 
                 WHERE group_id = %s
                 ORDER BY created_at DESC

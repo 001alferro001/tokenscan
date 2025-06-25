@@ -1,12 +1,16 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Activity, Settings, TrendingUp, AlertTriangle, BarChart3, Wifi, WifiOff, Clock, ChevronDown, ChevronRight, Trash2, Edit, Plus, X, Eye, EyeOff } from 'lucide-react';
+import { Activity, Settings, TrendingUp, AlertTriangle, BarChart3, Wifi, WifiOff, Clock, ChevronDown, ChevronRight, Trash2, Edit, Plus, X, Eye, EyeOff, ExternalLink, TrendingDown } from 'lucide-react';
 
 interface Alert {
   id: number;
+  alert_type: string;
   price: number;
-  volume_ratio: number;
-  current_volume_usdt: number;
-  average_volume_usdt: number;
+  volume_ratio?: number;
+  consecutive_count?: number;
+  current_volume_usdt?: number;
+  average_volume_usdt?: number;
+  avg_body_percentage?: number;
+  avg_shadow_ratio?: number;
   message: string;
   telegram_sent: boolean;
   created_at: string;
@@ -19,9 +23,12 @@ interface AlertGroup {
   first_alert_time: string;
   last_alert_time: string;
   alert_count: number;
-  max_volume_ratio: number;
+  max_volume_ratio?: number;
+  max_consecutive_count?: number;
   max_price: number;
-  max_volume_usdt: number;
+  max_volume_usdt?: number;
+  avg_body_percentage?: number;
+  avg_shadow_ratio?: number;
   is_active: boolean;
   created_at: string;
   updated_at: string;
@@ -48,18 +55,21 @@ interface LiveData {
     volume: string;
   };
   timestamp: string;
-  alert?: {
+  alerts?: Array<{
     symbol: string;
-    volume_ratio: number;
+    alert_type: string;
+    volume_ratio?: number;
+    consecutive_count?: number;
     is_grouped: boolean;
     group_count: number;
-  };
+  }>;
 }
 
 interface Stats {
   total_candles: number;
   long_candles: number;
   alerts_count: number;
+  consecutive_alerts_count: number;
   pairs_count: number;
   last_update: string;
 }
@@ -75,6 +85,7 @@ function App() {
     total_candles: 0,
     long_candles: 0,
     alerts_count: 0,
+    consecutive_alerts_count: 0,
     pairs_count: 0,
     last_update: ''
   });
@@ -89,7 +100,10 @@ function App() {
       offset_minutes: 0,
       volume_multiplier: 2.0,
       min_volume_usdt: 1000,
-      alert_grouping_minutes: 5
+      alert_grouping_minutes: 5,
+      consecutive_long_count: 5,
+      max_shadow_to_body_ratio: 1.0,
+      min_body_percentage: 0.1
     },
     price_filter: {
       price_check_interval_minutes: 5,
@@ -135,6 +149,13 @@ function App() {
         tag: 'volume-alert'
       });
     }
+  };
+
+  const openTradingView = (symbol: string) => {
+    // Убираем USDT из символа для TradingView
+    const tvSymbol = symbol.replace('USDT', 'USD');
+    const url = `https://www.tradingview.com/chart/?symbol=BYBIT:${tvSymbol}.P`;
+    window.open(url, '_blank');
   };
 
   const connectWebSocket = () => {
@@ -185,14 +206,23 @@ function App() {
           return newMap;
         });
 
-        if (data.alert) {
-          // Показываем уведомление для новых алертов
-          if (!data.alert.is_grouped) {
-            showNotification(
-              `Алерт по объему: ${data.alert.symbol}`,
-              `Объем превышен в ${data.alert.volume_ratio}x раз`
-            );
-          }
+        if (data.alerts && data.alerts.length > 0) {
+          // Показываем уведомления для новых алертов
+          data.alerts.forEach((alert: any) => {
+            if (!alert.is_grouped) {
+              if (alert.alert_type === 'volume_spike') {
+                showNotification(
+                  `Алерт по объему: ${alert.symbol}`,
+                  `Объем превышен в ${alert.volume_ratio}x раз`
+                );
+              } else if (alert.alert_type === 'consecutive_long') {
+                showNotification(
+                  `Алерт по подряд идущим свечам: ${alert.symbol}`,
+                  `${alert.consecutive_count} подряд LONG свечей`
+                );
+              }
+            }
+          });
 
           // Обновляем список групп алертов
           loadAlertGroups();
@@ -459,6 +489,28 @@ function App() {
     }
   };
 
+  const getAlertTypeIcon = (alertType: string) => {
+    switch (alertType) {
+      case 'volume_spike':
+        return <TrendingUp className="w-8 h-8 text-yellow-400" />;
+      case 'consecutive_long':
+        return <TrendingDown className="w-8 h-8 text-green-400" />;
+      default:
+        return <AlertTriangle className="w-8 h-8 text-yellow-400" />;
+    }
+  };
+
+  const getAlertTypeText = (alertType: string) => {
+    switch (alertType) {
+      case 'volume_spike':
+        return 'Объем';
+      case 'consecutive_long':
+        return 'Подряд LONG';
+      default:
+        return 'Неизвестно';
+    }
+  };
+
   const liveDataArray = Array.from(liveData.values())
     .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
     .slice(0, 50);
@@ -510,7 +562,7 @@ function App() {
 
       {/* Stats Cards */}
       <div className="container mx-auto px-6 py-8">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-6 mb-8">
           <div className="bg-black bg-opacity-30 backdrop-blur-md rounded-xl p-6 border border-gray-700">
             <div className="flex items-center justify-between">
               <div>
@@ -534,10 +586,20 @@ function App() {
           <div className="bg-black bg-opacity-30 backdrop-blur-md rounded-xl p-6 border border-gray-700">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-gray-400 text-sm">Алертов</p>
+                <p className="text-gray-400 text-sm">Алертов объем</p>
                 <p className="text-2xl font-bold text-yellow-400">{stats.alerts_count}</p>
               </div>
               <AlertTriangle className="w-8 h-8 text-yellow-400" />
+            </div>
+          </div>
+
+          <div className="bg-black bg-opacity-30 backdrop-blur-md rounded-xl p-6 border border-gray-700">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-gray-400 text-sm">Алертов подряд</p>
+                <p className="text-2xl font-bold text-green-400">{stats.consecutive_alerts_count}</p>
+              </div>
+              <TrendingDown className="w-8 h-8 text-green-400" />
             </div>
           </div>
 
@@ -627,13 +689,18 @@ function App() {
                             </td>
                             <td className="py-3 px-4 text-gray-400">{formatTime(item.timestamp)}</td>
                             <td className="py-3 px-4">
-                              {item.alert ? (
-                                <span className="text-yellow-400 flex items-center space-x-1">
-                                  <AlertTriangle className="w-4 h-4" />
-                                  <span>
-                                    Алерт {item.alert.is_grouped && `(${item.alert.group_count})`}
-                                  </span>
-                                </span>
+                              {item.alerts && item.alerts.length > 0 ? (
+                                <div className="flex flex-col space-y-1">
+                                  {item.alerts.map((alert, alertIndex) => (
+                                    <span key={alertIndex} className="text-yellow-400 flex items-center space-x-1">
+                                      <AlertTriangle className="w-4 h-4" />
+                                      <span>
+                                        {alert.alert_type === 'volume_spike' ? 'Объем' : 'Подряд'} 
+                                        {alert.is_grouped && ` (${alert.group_count})`}
+                                      </span>
+                                    </span>
+                                  ))}
+                                </div>
                               ) : (
                                 <span className="text-green-400">✓ OK</span>
                               )}
@@ -771,13 +838,19 @@ function App() {
                   </div>
                 ) : (
                   alertGroups.map((group) => (
-                    <div key={group.id} className="bg-yellow-500 bg-opacity-10 border border-yellow-500 border-opacity-30 rounded-lg">
+                    <div key={group.id} className={`border rounded-lg ${
+                      group.alert_type === 'volume_spike' 
+                        ? 'bg-yellow-500 bg-opacity-10 border-yellow-500 border-opacity-30'
+                        : 'bg-green-500 bg-opacity-10 border-green-500 border-opacity-30'
+                    }`}>
                       <div className="p-4">
                         <div className="flex items-center justify-between mb-3">
                           <div className="flex items-center space-x-3">
                             <button
                               onClick={() => toggleGroupExpansion(group.id)}
-                              className="text-yellow-400 hover:text-yellow-300 transition-colors"
+                              className={`transition-colors ${
+                                group.alert_type === 'volume_spike' ? 'text-yellow-400 hover:text-yellow-300' : 'text-green-400 hover:text-green-300'
+                              }`}
                             >
                               {expandedGroups.has(group.id) ? (
                                 <ChevronDown className="w-6 h-6" />
@@ -785,10 +858,21 @@ function App() {
                                 <ChevronRight className="w-6 h-6" />
                               )}
                             </button>
-                            <AlertTriangle className="w-8 h-8 text-yellow-400" />
+                            {getAlertTypeIcon(group.alert_type)}
                             <div>
                               <div className="flex items-center space-x-2">
-                                <h4 className="font-bold text-yellow-400">{group.symbol}</h4>
+                                <h4 className={`font-bold ${
+                                  group.alert_type === 'volume_spike' ? 'text-yellow-400' : 'text-green-400'
+                                }`}>
+                                  {group.symbol}
+                                </h4>
+                                <span className={`text-xs px-2 py-1 rounded ${
+                                  group.alert_type === 'volume_spike' 
+                                    ? 'bg-yellow-500 bg-opacity-20 text-yellow-300'
+                                    : 'bg-green-500 bg-opacity-20 text-green-300'
+                                }`}>
+                                  {getAlertTypeText(group.alert_type)}
+                                </span>
                                 {group.alert_count > 1 && (
                                   <span className="bg-red-500 text-white text-xs px-2 py-1 rounded-full">
                                     {group.alert_count}
@@ -796,7 +880,11 @@ function App() {
                                 )}
                               </div>
                               <p className="text-sm text-gray-300">
-                                Макс. объем превышен в <strong>{group.max_volume_ratio}x</strong> раз
+                                {group.alert_type === 'volume_spike' ? (
+                                  <>Макс. объем превышен в <strong>{group.max_volume_ratio}x</strong> раз</>
+                                ) : (
+                                  <>Макс. подряд <strong>{group.max_consecutive_count}</strong> LONG свечей</>
+                                )}
                               </p>
                             </div>
                           </div>
@@ -808,6 +896,13 @@ function App() {
                               </p>
                             </div>
                             <button
+                              onClick={() => openTradingView(group.symbol)}
+                              className="p-2 text-blue-400 hover:bg-blue-400 hover:bg-opacity-20 rounded-lg transition-colors"
+                              title="Открыть график в TradingView"
+                            >
+                              <ExternalLink className="w-4 h-4" />
+                            </button>
+                            <button
                               onClick={() => deleteAlertGroup(group.id)}
                               className="p-2 text-red-400 hover:bg-red-400 hover:bg-opacity-20 rounded-lg transition-colors"
                             >
@@ -817,22 +912,43 @@ function App() {
                         </div>
 
                         <div className="grid grid-cols-2 gap-4 text-sm mb-3">
-                          <div>
-                            <span className="text-gray-400">Макс. объем:</span>
-                            <span className="text-white ml-1">${formatVolume(group.max_volume_usdt)}</span>
-                          </div>
-                          <div>
-                            <span className="text-gray-400">Продолжительность:</span>
-                            <span className="text-white ml-1">
-                              {formatDuration(group.first_alert_time, group.last_alert_time)}
-                            </span>
-                          </div>
+                          {group.alert_type === 'volume_spike' ? (
+                            <>
+                              <div>
+                                <span className="text-gray-400">Макс. объем:</span>
+                                <span className="text-white ml-1">${formatVolume(group.max_volume_usdt || 0)}</span>
+                              </div>
+                              <div>
+                                <span className="text-gray-400">Продолжительность:</span>
+                                <span className="text-white ml-1">
+                                  {formatDuration(group.first_alert_time, group.last_alert_time)}
+                                </span>
+                              </div>
+                            </>
+                          ) : (
+                            <>
+                              <div>
+                                <span className="text-gray-400">Среднее тело:</span>
+                                <span className="text-white ml-1">{group.avg_body_percentage?.toFixed(1)}%</span>
+                              </div>
+                              <div>
+                                <span className="text-gray-400">Отношение теней:</span>
+                                <span className="text-white ml-1">{group.avg_shadow_ratio?.toFixed(2)}</span>
+                              </div>
+                            </>
+                          )}
                         </div>
                       </div>
 
                       {expandedGroups.has(group.id) && (
-                        <div className="border-t border-yellow-500 border-opacity-30 p-4">
-                          <h5 className="text-sm font-medium text-yellow-400 mb-3">
+                        <div className={`border-t p-4 ${
+                          group.alert_type === 'volume_spike' 
+                            ? 'border-yellow-500 border-opacity-30'
+                            : 'border-green-500 border-opacity-30'
+                        }`}>
+                          <h5 className={`text-sm font-medium mb-3 ${
+                            group.alert_type === 'volume_spike' ? 'text-yellow-400' : 'text-green-400'
+                          }`}>
                             История алертов ({group.alert_count})
                           </h5>
                           <div className="space-y-2 max-h-60 overflow-y-auto">
@@ -840,13 +956,28 @@ function App() {
                               <div key={alert.id} className="bg-black bg-opacity-20 rounded-lg p-3 text-sm">
                                 <div className="flex justify-between items-start">
                                   <div>
-                                    <p className="text-white">
-                                      Объем: <strong>{alert.volume_ratio}x</strong> 
-                                      (${formatVolume(alert.current_volume_usdt)})
-                                    </p>
-                                    <p className="text-gray-400">
-                                      Цена: ${formatPrice(alert.price)}
-                                    </p>
+                                    {alert.alert_type === 'volume_spike' ? (
+                                      <>
+                                        <p className="text-white">
+                                          Объем: <strong>{alert.volume_ratio}x</strong> 
+                                          (${formatVolume(alert.current_volume_usdt || 0)})
+                                        </p>
+                                        <p className="text-gray-400">
+                                          Цена: ${formatPrice(alert.price)}
+                                        </p>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <p className="text-white">
+                                          Подряд: <strong>{alert.consecutive_count}</strong> LONG свечей
+                                        </p>
+                                        <p className="text-gray-400">
+                                          Цена: ${formatPrice(alert.price)} | 
+                                          Тело: {alert.avg_body_percentage?.toFixed(1)}% | 
+                                          Тени: {alert.avg_shadow_ratio?.toFixed(2)}
+                                        </p>
+                                      </>
+                                    )}
                                   </div>
                                   <div className="text-right">
                                     <p className="text-xs text-gray-400">
@@ -922,7 +1053,7 @@ function App() {
       {/* Settings Modal */}
       {showSettings && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-gray-800 rounded-xl p-8 max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+          <div className="bg-gray-800 rounded-xl p-8 max-w-3xl w-full mx-4 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between mb-6">
               <h3 className="text-xl font-bold">Настройки анализатора</h3>
               <button
@@ -1027,6 +1158,76 @@ function App() {
                     />
                     <p className="text-xs text-gray-400 mt-1">
                       Алерты для одного актива в течение этого времени будут группироваться
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <h4 className="text-lg font-semibold mb-4 text-green-400">Анализ подряд идущих LONG свечей</h4>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Количество подряд свечей</label>
+                    <input
+                      type="number"
+                      min="3"
+                      max="20"
+                      value={settings.volume_analyzer.consecutive_long_count}
+                      onChange={(e) => setSettings(prev => ({
+                        ...prev,
+                        volume_analyzer: {
+                          ...prev.volume_analyzer,
+                          consecutive_long_count: parseInt(e.target.value)
+                        }
+                      }))}
+                      className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white"
+                    />
+                    <p className="text-xs text-gray-400 mt-1">
+                      Минимальное количество подряд идущих LONG свечей для алерта
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Макс. отношение теней к телу</label>
+                    <input
+                      type="number"
+                      min="0.1"
+                      max="5.0"
+                      step="0.1"
+                      value={settings.volume_analyzer.max_shadow_to_body_ratio}
+                      onChange={(e) => setSettings(prev => ({
+                        ...prev,
+                        volume_analyzer: {
+                          ...prev.volume_analyzer,
+                          max_shadow_to_body_ratio: parseFloat(e.target.value)
+                        }
+                      }))}
+                      className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white"
+                    />
+                    <p className="text-xs text-gray-400 mt-1">
+                      Максимальное отношение суммы теней к телу свечи
+                    </p>
+                  </div>
+
+                  <div className="col-span-2">
+                    <label className="block text-sm font-medium mb-2">Мин. размер тела (%)</label>
+                    <input
+                      type="number"
+                      min="0.01"
+                      max="10"
+                      step="0.01"
+                      value={settings.volume_analyzer.min_body_percentage}
+                      onChange={(e) => setSettings(prev => ({
+                        ...prev,
+                        volume_analyzer: {
+                          ...prev.volume_analyzer,
+                          min_body_percentage: parseFloat(e.target.value)
+                        }
+                      }))}
+                      className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white"
+                    />
+                    <p className="text-xs text-gray-400 mt-1">
+                      Минимальный размер тела свечи в процентах от общего диапазона
                     </p>
                   </div>
                 </div>
