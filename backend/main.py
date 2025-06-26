@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 from database import DatabaseManager
 from bybit_client import BybitWebSocketClient
-from volume_analyzer import VolumeAnalyzer
+from alert_manager import AlertManager
 from price_filter import PriceFilter
 from telegram_bot import TelegramBot
 
@@ -25,7 +25,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Trading Volume Analyzer", version="1.0.0")
+app = FastAPI(title="Trading Volume Analyzer", version="2.0.0")
 
 # CORS middleware
 app.add_middleware(
@@ -48,7 +48,7 @@ class WatchlistAdd(BaseModel):
 # Глобальные переменные
 db_manager = None
 bybit_client = None
-volume_analyzer = None
+alert_manager = None
 price_filter = None
 telegram_bot = None
 
@@ -82,11 +82,16 @@ class ConnectionManager:
         for conn in disconnected:
             self.disconnect(conn)
 
+    async def broadcast_json(self, data: dict):
+        """Отправка JSON данных всем подключенным клиентам"""
+        message = json.dumps(data, default=str)
+        await self.broadcast(message)
+
 manager = ConnectionManager()
 
 @app.on_event("startup")
 async def startup_event():
-    global db_manager, bybit_client, volume_analyzer, price_filter, telegram_bot
+    global db_manager, bybit_client, alert_manager, price_filter, telegram_bot
     
     try:
         # Инициализация базы данных
@@ -96,14 +101,17 @@ async def startup_event():
         # Инициализация Telegram бота
         telegram_bot = TelegramBot()
         
-        # Инициализация анализатора объемов
-        volume_analyzer = VolumeAnalyzer(db_manager, telegram_bot)
+        # Инициализация менеджера алертов
+        alert_manager = AlertManager(db_manager, telegram_bot, manager)
         
         # Инициализация фильтра цен
         price_filter = PriceFilter(db_manager)
         
         # Запуск фильтра цен в фоновом режиме
         asyncio.create_task(price_filter.start())
+        
+        # Запуск периодической очистки данных
+        asyncio.create_task(periodic_cleanup())
         
         # Ждем первоначального обновления watchlist
         await asyncio.sleep(5)
@@ -114,7 +122,7 @@ async def startup_event():
         
         if trading_pairs:
             # Инициализация Bybit WebSocket клиента
-            bybit_client = BybitWebSocketClient(trading_pairs, volume_analyzer, manager)
+            bybit_client = BybitWebSocketClient(trading_pairs, alert_manager, manager)
             
             # Запуск WebSocket соединения в фоновом режиме
             asyncio.create_task(bybit_client.start())
@@ -126,7 +134,7 @@ async def startup_event():
         
         # Отправляем уведомление о запуске в Telegram
         if telegram_bot.enabled:
-            await telegram_bot.send_system_message("Система анализа объемов запущена")
+            await telegram_bot.send_system_message("Система анализа объемов v2.0 запущена")
         
         logger.info("Приложение успешно запущено")
         
@@ -153,16 +161,34 @@ async def periodic_watchlist_update():
                     await bybit_client.stop()
                     
                     # Создаем новый клиент с обновленным списком
-                    bybit_client = BybitWebSocketClient(new_pairs, volume_analyzer, manager)
+                    bybit_client = BybitWebSocketClient(new_pairs, alert_manager, manager)
                     asyncio.create_task(bybit_client.start())
             elif new_pairs:
                 # Если клиента не было, но появились пары
                 logger.info(f"Создание WebSocket клиента для {len(new_pairs)} пар")
-                bybit_client = BybitWebSocketClient(new_pairs, volume_analyzer, manager)
+                bybit_client = BybitWebSocketClient(new_pairs, alert_manager, manager)
                 asyncio.create_task(bybit_client.start())
                 
         except Exception as e:
             logger.error(f"Ошибка обновления watchlist: {e}")
+
+async def periodic_cleanup():
+    """Периодическая очистка старых данных"""
+    while True:
+        try:
+            await asyncio.sleep(3600)  # Каждый час
+            
+            # Очищаем старые данные в базе
+            retention_hours = alert_manager.settings.get('data_retention_hours', 2)
+            await db_manager.cleanup_old_data(retention_hours)
+            
+            # Очищаем кэш в менеджере алертов
+            await alert_manager.cleanup_old_data()
+            
+            logger.info("Периодическая очистка данных завершена")
+            
+        except Exception as e:
+            logger.error(f"Ошибка периодической очистки: {e}")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -183,10 +209,10 @@ async def read_root():
         return HTMLResponse(content="""
         <!DOCTYPE html>
         <html>
-        <head><title>Trading Volume Analyzer</title></head>
+        <head><title>Trading Volume Analyzer v2.0</title></head>
         <body>
-            <h1>Trading Volume Analyzer</h1>
-            <p>Система анализа объемов торговых пар запущена</p>
+            <h1>Trading Volume Analyzer v2.0</h1>
+            <p>Обновленная система анализа объемов торговых пар запущена</p>
             <p>WebSocket подключение: ws://localhost:8000/ws</p>
         </body>
         </html>
@@ -206,11 +232,11 @@ async def add_to_watchlist(item: WatchlistAdd):
     """Добавить пару в watchlist"""
     try:
         await db_manager.add_to_watchlist(item.symbol)
-        await manager.broadcast(json.dumps({
+        await manager.broadcast_json({
             "type": "watchlist_updated",
             "action": "added",
             "symbol": item.symbol
-        }))
+        })
         return {"status": "success", "message": f"Пара {item.symbol} добавлена"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -220,11 +246,11 @@ async def update_watchlist_item(item_id: int, item: WatchlistUpdate):
     """Обновить элемент watchlist"""
     try:
         await db_manager.update_watchlist_item(item_id, item.symbol, item.is_active)
-        await manager.broadcast(json.dumps({
+        await manager.broadcast_json({
             "type": "watchlist_updated",
             "action": "updated",
             "item": item.dict()
-        }))
+        })
         return {"status": "success", "message": "Элемент обновлен"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -234,65 +260,79 @@ async def delete_watchlist_item(item_id: int):
     """Удалить элемент из watchlist"""
     try:
         await db_manager.remove_from_watchlist(item_id=item_id)
-        await manager.broadcast(json.dumps({
+        await manager.broadcast_json({
             "type": "watchlist_updated",
             "action": "deleted",
             "item_id": item_id
-        }))
+        })
         return {"status": "success", "message": "Элемент удален"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/alerts")
-async def get_alerts(limit: int = 100):
-    """Получить список групп алертов"""
+@app.get("/api/alerts/all")
+async def get_all_alerts():
+    """Получить все алерты, разделенные по типам"""
     try:
-        alert_groups = await db_manager.get_alert_groups(limit)
-        return {"alert_groups": alert_groups}
+        alerts_data = await db_manager.get_all_alerts()
+        return alerts_data
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/alerts/{group_id}/details")
-async def get_alert_details(group_id: int):
-    """Получить детали группы алертов"""
+@app.get("/api/alerts/{alert_type}")
+async def get_alerts_by_type(alert_type: str, limit: int = 50):
+    """Получить алерты по типу"""
     try:
-        alerts = await db_manager.get_alerts_in_group(group_id)
+        alerts = await db_manager.get_alerts_by_type(alert_type, limit)
         return {"alerts": alerts}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.delete("/api/alerts/{group_id}")
-async def delete_alert_group(group_id: int):
-    """Удалить группу алертов"""
+@app.delete("/api/alerts/clear/{alert_type}")
+async def clear_alerts_by_type(alert_type: str):
+    """Очистить алерты по типу"""
     try:
-        await db_manager.delete_alert_group(group_id)
-        await manager.broadcast(json.dumps({
-            "type": "alert_deleted",
-            "group_id": group_id
-        }))
-        return {"status": "success", "message": "Группа алертов удалена"}
+        await db_manager.clear_alerts(alert_type)
+        await manager.broadcast_json({
+            "type": "alerts_cleared",
+            "alert_type": alert_type
+        })
+        return {"status": "success", "message": f"Алерты типа {alert_type} очищены"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.delete("/api/alerts")
+@app.delete("/api/alerts/clear")
 async def clear_all_alerts():
     """Очистить все алерты"""
     try:
-        await db_manager.clear_all_alerts()
-        await manager.broadcast(json.dumps({
+        await db_manager.clear_alerts()
+        await manager.broadcast_json({
             "type": "alerts_cleared"
-        }))
+        })
         return {"status": "success", "message": "Все алерты очищены"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/chart-data/{symbol}")
+async def get_chart_data(symbol: str, hours: int = 1, alert_time: str = None):
+    """Получить данные для построения графика"""
+    try:
+        chart_data = await db_manager.get_chart_data(symbol, hours, alert_time)
+        return {"chart_data": chart_data}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/settings")
 async def get_settings():
     """Получить текущие настройки анализатора"""
-    if volume_analyzer and price_filter:
+    if alert_manager and price_filter:
         return {
-            "volume_analyzer": volume_analyzer.get_settings(),
+            "volume_analyzer": alert_manager.get_settings(),
             "price_filter": price_filter.settings,
+            "alerts": {
+                "volume_alerts_enabled": alert_manager.settings.get('volume_alerts_enabled', True),
+                "consecutive_alerts_enabled": alert_manager.settings.get('consecutive_alerts_enabled', True),
+                "priority_alerts_enabled": alert_manager.settings.get('priority_alerts_enabled', True)
+            },
             "telegram": {
                 "enabled": telegram_bot.enabled if telegram_bot else False
             }
@@ -303,16 +343,19 @@ async def get_settings():
 async def update_settings(settings: dict):
     """Обновить настройки анализатора"""
     try:
-        if volume_analyzer and 'volume_analyzer' in settings:
-            volume_analyzer.update_settings(settings['volume_analyzer'])
+        if alert_manager and 'volume_analyzer' in settings:
+            alert_manager.update_settings(settings['volume_analyzer'])
+        
+        if alert_manager and 'alerts' in settings:
+            alert_manager.update_settings(settings['alerts'])
         
         if price_filter and 'price_filter' in settings:
             price_filter.update_settings(settings['price_filter'])
             
-        await manager.broadcast(json.dumps({
+        await manager.broadcast_json({
             "type": "settings_updated",
             "data": settings
-        }))
+        })
         return {"status": "success", "settings": settings}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -321,10 +364,25 @@ async def update_settings(settings: dict):
 async def get_stats():
     """Получить статистику работы"""
     try:
-        if volume_analyzer:
-            stats = await volume_analyzer.get_stats()
+        if alert_manager:
+            # Получаем базовую статистику
+            stats = await alert_manager.get_stats() if hasattr(alert_manager, 'get_stats') else {}
+            
+            # Добавляем количество пар
             watchlist_count = len(await db_manager.get_watchlist())
             stats['pairs_count'] = watchlist_count
+            
+            # Получаем статистику алертов из базы данных
+            all_alerts = await db_manager.get_all_alerts(limit=1000)
+            stats['alerts_count'] = len([a for a in all_alerts['alerts'] if a['alert_type'] == 'volume_spike'])
+            stats['consecutive_alerts_count'] = len([a for a in all_alerts['alerts'] if a['alert_type'] == 'consecutive_long'])
+            stats['priority_alerts_count'] = len([a for a in all_alerts['alerts'] if a['alert_type'] == 'priority'])
+            
+            # Статистика свечей (примерная)
+            stats['total_candles'] = stats.get('total_candles', 0)
+            stats['long_candles'] = stats.get('long_candles', 0)
+            stats['last_update'] = datetime.now().isoformat()
+            
             return stats
         return {"error": "Анализатор не инициализирован"}
     except Exception as e:

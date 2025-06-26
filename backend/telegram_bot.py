@@ -18,95 +18,155 @@ class TelegramBot:
         else:
             logger.info("Telegram бот инициализирован")
 
-    async def send_alert(self, alert_data: Dict) -> bool:
-        """Отправка алерта по объему в Telegram канал"""
+    async def send_volume_alert(self, alert_data: Dict) -> bool:
+        """Отправка алерта по объему в Telegram"""
         if not self.enabled:
             return False
 
         try:
-            # Формируем сообщение
-            message = self._format_alert_message(alert_data)
+            symbol = alert_data['symbol']
+            price = alert_data['price']
+            volume_ratio = alert_data.get('volume_ratio', 0)
+            current_volume = alert_data.get('current_volume_usdt', 0)
+            average_volume = alert_data.get('average_volume_usdt', 0)
+            is_closed = alert_data.get('is_closed', False)
+            is_true_signal = alert_data.get('is_true_signal')
+            timestamp = alert_data.get('close_timestamp', alert_data['timestamp'])
             
-            # Отправляем сообщение
+            # Определяем статус и эмодзи
+            if is_closed:
+                if is_true_signal:
+                    emoji = "✅"
+                    status = "Истинный сигнал"
+                else:
+                    emoji = "❌"
+                    status = "Ложный сигнал"
+            else:
+                emoji = "⚡"
+                status = "В процессе"
+            
+            # Форматируем время
+            if isinstance(timestamp, datetime):
+                time_str = timestamp.strftime('%H:%M:%S')
+            else:
+                time_str = datetime.now().strftime('%H:%M:%S')
+            
+            # Формируем сообщение
+            message = f"""
+{emoji} <b>АЛЕРТ ПО ОБЪЕМУ</b>
+
+💰 <b>Пара:</b> {symbol}
+💵 <b>Цена:</b> ${price:,.8f}
+📊 <b>Превышение объема:</b> {volume_ratio}x
+📈 <b>Текущий объем:</b> ${current_volume:,.0f}
+📉 <b>Средний объем:</b> ${average_volume:,.0f}
+🎯 <b>Статус:</b> {status}
+🕐 <b>Время:</b> {time_str}
+
+🔗 <a href="https://www.tradingview.com/chart/?symbol=BYBIT:{symbol.replace('USDT', '')}USDT.P&interval=1">Открыть в TradingView</a>
+
+#VolumeAlert #{symbol.replace('USDT', '')}
+            """.strip()
+            
             return await self._send_message(message)
 
         except Exception as e:
-            logger.error(f"Ошибка отправки алерта в Telegram: {e}")
+            logger.error(f"Ошибка отправки алерта по объему в Telegram: {e}")
             return False
 
     async def send_consecutive_alert(self, alert_data: Dict) -> bool:
-        """Отправка алерта по подряд идущим свечам в Telegram канал"""
+        """Отправка алерта по подряд идущим свечам в Telegram"""
         if not self.enabled:
             return False
 
         try:
-            # Формируем сообщение
-            message = self._format_consecutive_alert_message(alert_data)
+            symbol = alert_data['symbol']
+            price = alert_data['price']
+            consecutive_count = alert_data.get('consecutive_count', 0)
+            timestamp = alert_data.get('close_timestamp', alert_data['timestamp'])
             
-            # Отправляем сообщение
+            # Форматируем время
+            if isinstance(timestamp, datetime):
+                time_str = timestamp.strftime('%H:%M:%S')
+            else:
+                time_str = datetime.now().strftime('%H:%M:%S')
+            
+            # Определяем эмодзи в зависимости от количества
+            if consecutive_count >= 10:
+                emoji = "🚀"
+            elif consecutive_count >= 7:
+                emoji = "🔼"
+            else:
+                emoji = "📈"
+            
+            message = f"""
+{emoji} <b>АЛЕРТ ПО ПОДРЯД ИДУЩИМ СВЕЧАМ</b>
+
+💰 <b>Пара:</b> {symbol}
+💵 <b>Цена:</b> ${price:,.8f}
+🕯️ <b>Подряд LONG свечей:</b> {consecutive_count}
+🕐 <b>Время закрытия:</b> {time_str}
+
+🔗 <a href="https://www.tradingview.com/chart/?symbol=BYBIT:{symbol.replace('USDT', '')}USDT.P&interval=1">Открыть в TradingView</a>
+
+#ConsecutiveAlert #{symbol.replace('USDT', '')}
+            """.strip()
+            
             return await self._send_message(message)
 
         except Exception as e:
             logger.error(f"Ошибка отправки алерта подряд идущих свечей в Telegram: {e}")
             return False
 
-    def _format_alert_message(self, alert_data: Dict) -> str:
-        """Форматирование сообщения алерта по объему для Telegram"""
-        symbol = alert_data['symbol']
-        price = alert_data['price']
-        volume_ratio = alert_data['volume_ratio']
-        current_volume = alert_data['current_volume_usdt']
-        average_volume = alert_data['average_volume_usdt']
-        timestamp = datetime.now().strftime('%H:%M:%S')
-        
-        # Эмодзи для визуального выделения
-        emoji = "🚀" if volume_ratio >= 5 else "📈" if volume_ratio >= 3 else "⚡"
-        
-        message = f"""
-{emoji} <b>АЛЕРТ ПО ОБЪЕМУ</b>
+    async def send_priority_alert(self, alert_data: Dict) -> bool:
+        """Отправка приоритетного алерта в Telegram"""
+        if not self.enabled:
+            return False
+
+        try:
+            symbol = alert_data['symbol']
+            price = alert_data['price']
+            consecutive_count = alert_data.get('consecutive_count', 0)
+            volume_ratio = alert_data.get('volume_ratio')
+            current_volume = alert_data.get('current_volume_usdt')
+            timestamp = alert_data.get('close_timestamp', alert_data['timestamp'])
+            
+            # Форматируем время
+            if isinstance(timestamp, datetime):
+                time_str = timestamp.strftime('%H:%M:%S')
+            else:
+                time_str = datetime.now().strftime('%H:%M:%S')
+            
+            message = f"""
+⭐ <b>ПРИОРИТЕТНЫЙ СИГНАЛ</b>
 
 💰 <b>Пара:</b> {symbol}
 💵 <b>Цена:</b> ${price:,.8f}
+🕯️ <b>LONG свечей подряд:</b> {consecutive_count}
+            """.strip()
+            
+            # Добавляем информацию об объеме, если есть
+            if volume_ratio and current_volume:
+                message += f"""
 📊 <b>Превышение объема:</b> {volume_ratio}x
+📈 <b>Объем:</b> ${current_volume:,.0f}
+                """.strip()
+            
+            message += f"""
 
-📈 <b>Текущий объем:</b> ${current_volume:,.0f}
-📉 <b>Средний объем:</b> ${average_volume:,.0f}
+🎯 <b>Комбинированный сигнал:</b> Подряд идущие LONG свечи + всплеск объема
+🕐 <b>Время:</b> {time_str}
 
-🕐 <b>Время:</b> {timestamp}
+🔗 <a href="https://www.tradingview.com/chart/?symbol=BYBIT:{symbol.replace('USDT', '')}USDT.P&interval=1">Открыть в TradingView</a>
 
-#VolumeAlert #{symbol.replace('USDT', '')}
-        """.strip()
-        
-        return message
+#PriorityAlert #{symbol.replace('USDT', '')}
+            """.strip()
+            
+            return await self._send_message(message)
 
-    def _format_consecutive_alert_message(self, alert_data: Dict) -> str:
-        """Форматирование сообщения алерта по подряд идущим свечам для Telegram"""
-        symbol = alert_data['symbol']
-        price = alert_data['price']
-        consecutive_count = alert_data['consecutive_count']
-        avg_body_percentage = alert_data['avg_body_percentage']
-        avg_shadow_ratio = alert_data['avg_shadow_ratio']
-        timestamp = datetime.now().strftime('%H:%M:%S')
-        
-        # Эмодзи для визуального выделения
-        emoji = "🕯️" if consecutive_count >= 10 else "📊" if consecutive_count >= 7 else "📈"
-        
-        message = f"""
-{emoji} <b>АЛЕРТ ПО ПОДРЯД ИДУЩИМ СВЕЧАМ</b>
-
-💰 <b>Пара:</b> {symbol}
-💵 <b>Цена:</b> ${price:,.8f}
-🕯️ <b>Подряд LONG свечей:</b> {consecutive_count}
-
-📊 <b>Среднее тело свечи:</b> {avg_body_percentage:.1f}%
-📏 <b>Среднее отношение теней:</b> {avg_shadow_ratio:.2f}
-
-🕐 <b>Время:</b> {timestamp}
-
-#ConsecutiveAlert #{symbol.replace('USDT', '')}
-        """.strip()
-        
-        return message
+        except Exception as e:
+            logger.error(f"Ошибка отправки приоритетного алерта в Telegram: {e}")
+            return False
 
     async def send_system_message(self, message: str) -> bool:
         """Отправка системного сообщения"""
@@ -138,9 +198,37 @@ class TelegramBot:
                         logger.info(f"Сообщение отправлено в Telegram")
                         return True
                     else:
-                        logger.error(f"Ошибка отправки в Telegram: {response.status}")
+                        response_text = await response.text()
+                        logger.error(f"Ошибка отправки в Telegram: {response.status} - {response_text}")
                         return False
 
         except Exception as e:
             logger.error(f"Ошибка отправки сообщения в Telegram: {e}")
+            return False
+
+    async def send_chart_screenshot(self, symbol: str, chart_data: bytes) -> bool:
+        """Отправка скриншота графика в Telegram"""
+        if not self.enabled:
+            return False
+
+        try:
+            url = f"https://api.telegram.org/bot{self.bot_token}/sendPhoto"
+            
+            data = aiohttp.FormData()
+            data.add_field('chat_id', self.chat_id)
+            data.add_field('caption', f"📊 График {symbol}")
+            data.add_field('photo', chart_data, filename=f'{symbol}_chart.png', content_type='image/png')
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, data=data) as response:
+                    if response.status == 200:
+                        logger.info(f"Скриншот графика отправлен в Telegram для {symbol}")
+                        return True
+                    else:
+                        response_text = await response.text()
+                        logger.error(f"Ошибка отправки скриншота в Telegram: {response.status} - {response_text}")
+                        return False
+
+        except Exception as e:
+            logger.error(f"Ошибка отправки скриншота графика в Telegram: {e}")
             return False

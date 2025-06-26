@@ -9,9 +9,9 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 class BybitWebSocketClient:
-    def __init__(self, trading_pairs: List[str], volume_analyzer, connection_manager):
+    def __init__(self, trading_pairs: List[str], alert_manager, connection_manager):
         self.trading_pairs = trading_pairs
-        self.volume_analyzer = volume_analyzer
+        self.alert_manager = alert_manager
         self.connection_manager = connection_manager
         self.websocket = None
         self.is_running = False
@@ -44,18 +44,22 @@ class BybitWebSocketClient:
             await self.websocket.close()
 
     async def load_historical_data(self):
-        """Загрузка исторических данных за последние 24 часа"""
+        """Загрузка исторических данных за настраиваемый период"""
         logger.info("Загрузка исторических данных...")
+        
+        # Получаем период хранения из настроек
+        retention_hours = self.alert_manager.settings.get('data_retention_hours', 2)
+        limit = retention_hours * 60  # Количество минут
         
         for symbol in self.trading_pairs:
             try:
-                # Получаем данные за последние 24 часа (1440 минут)
+                # Получаем данные за указанный период
                 url = f"{self.rest_url}/v5/market/kline"
                 params = {
                     'category': 'linear',
                     'symbol': symbol,
                     'interval': '1',
-                    'limit': 1440  # 24 часа по 1 минуте
+                    'limit': min(limit, 1000)  # Bybit ограничивает до 1000
                 }
                 
                 response = requests.get(url, params=params)
@@ -76,7 +80,7 @@ class BybitWebSocketClient:
                         }
                         
                         # Сохраняем в базу данных
-                        await self.volume_analyzer.db_manager.save_kline_data(symbol, kline_data)
+                        await self.alert_manager.db_manager.save_kline_data(symbol, kline_data)
                 
                 # Небольшая задержка между запросами
                 await asyncio.sleep(0.1)
@@ -98,15 +102,15 @@ class BybitWebSocketClient:
                     "args": [f"kline.1.{pair}" for pair in self.trading_pairs]
                 }
                 
-                await websocket.send(json.dumps(subscribe_message))
+                await websocket.sen(json.dumps(subscribe_message))
                 logger.info(f"Подписка на {len(self.trading_pairs)} торговых пар")
                 
                 # Отправляем статус подключения
-                await self.connection_manager.broadcast(json.dumps({
+                await self.connection_manager.broadcast_json({
                     "type": "connection_status",
                     "status": "connected",
                     "pairs_count": len(self.trading_pairs)
-                }))
+                })
                 
                 # Обработка входящих сообщений
                 async for message in websocket:
@@ -142,15 +146,12 @@ class BybitWebSocketClient:
                 }
                 
                 # Сохраняем в базу данных
-                await self.volume_analyzer.db_manager.save_kline_data(symbol, formatted_data)
+                await self.alert_manager.db_manager.save_kline_data(symbol, formatted_data)
                 
-                # Анализируем объем
-                volume_alert = await self.volume_analyzer.analyze_volume(symbol, formatted_data)
+                # Обрабатываем через менеджер алертов
+                alerts = await self.alert_manager.process_kline_data(symbol, formatted_data)
                 
-                # Анализируем подряд идущие LONG свечи
-                consecutive_alert = await self.volume_analyzer.analyze_consecutive_long_candles(symbol, formatted_data)
-                
-                # Отправляем данные клиентам
+                # Отправляем обновление данных клиентам
                 message = {
                     "type": "kline_update",
                     "symbol": symbol,
@@ -159,16 +160,10 @@ class BybitWebSocketClient:
                 }
                 
                 # Добавляем алерты, если они есть
-                alerts = []
-                if volume_alert:
-                    alerts.append(volume_alert)
-                if consecutive_alert:
-                    alerts.append(consecutive_alert)
-                
                 if alerts:
                     message["alerts"] = alerts
                 
-                await self.connection_manager.broadcast(json.dumps(message))
+                await self.connection_manager.broadcast_json(message)
                 
         except Exception as e:
             logger.error(f"Ошибка обработки kline данных: {e}")
