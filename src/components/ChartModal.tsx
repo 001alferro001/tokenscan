@@ -138,7 +138,10 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
   const getChartConfig = () => {
     if (chartData.length === 0) return null;
 
+    // Определяем время алерта - используем время закрытой свечи (предыдущая минута)
     const alertTime = new Date(alert.close_timestamp || alert.timestamp).getTime();
+    const candleAlertTime = alertTime - 60000; // Предыдущая минута (где был объем)
+    
     const preliminaryTime = alert.preliminary_alert ? new Date(alert.preliminary_alert.timestamp).getTime() : null;
 
     // Создаем свечные данные
@@ -156,18 +159,18 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
       y: d.volume_usdt
     }));
 
-    // Отметки алертов
+    // Отметки алертов - размещаем на свече, где был объем
     const alertPoints = [];
     
     if (preliminaryTime) {
       alertPoints.push({
-        x: preliminaryTime,
+        x: candleAlertTime, // На свече с объемом
         y: alert.preliminary_alert?.price || alert.price
       });
     }
     
     alertPoints.push({
-      x: alertTime,
+      x: candleAlertTime, // На свече с объемом
       y: alert.price
     });
 
@@ -175,7 +178,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
     let alertLevelData = [];
     if (alert.candle_data?.alert_level) {
       alertLevelData = [{
-        x: alertTime,
+        x: candleAlertTime, // На свече с объемом
         y: alert.candle_data.alert_level
       }];
     }
@@ -184,7 +187,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
     const annotations: any = {};
     
     if (alert.has_imbalance && alert.imbalance_data) {
-      const imbalanceTime = alert.imbalance_data.timestamp || alertTime;
+      const imbalanceTime = alert.imbalance_data.timestamp || candleAlertTime;
       
       // Линии границ имбаланса
       annotations.imbalanceTop = {
