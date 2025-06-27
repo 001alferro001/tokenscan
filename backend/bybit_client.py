@@ -19,6 +19,9 @@ class BybitWebSocketClient:
         # Bybit WebSocket URLs
         self.ws_url = "wss://stream.bybit.com/v5/public/linear"
         self.rest_url = "https://api.bybit.com"
+        
+        # Настраиваемый интервал обновления
+        self.update_interval = alert_manager.settings.get('update_interval_seconds', 1)
 
     async def start(self):
         """Запуск WebSocket соединения"""
@@ -104,13 +107,14 @@ class BybitWebSocketClient:
                 }
                 
                 await websocket.send(json.dumps(subscribe_message))
-                logger.info(f"Подписка на {len(self.trading_pairs)} торговых пар")
+                logger.info(f"Подписка на {len(self.trading_pairs)} торговых пар с интервалом {self.update_interval}с")
                 
                 # Отправляем статус подключения
                 await self.connection_manager.broadcast_json({
                     "type": "connection_status",
                     "status": "connected",
-                    "pairs_count": len(self.trading_pairs)
+                    "pairs_count": len(self.trading_pairs),
+                    "update_interval": self.update_interval
                 })
                 
                 # Обработка входящих сообщений
@@ -121,6 +125,11 @@ class BybitWebSocketClient:
                     try:
                         data = json.loads(message)
                         await self.handle_message(data)
+                        
+                        # Добавляем задержку согласно настройкам
+                        if self.update_interval > 1:
+                            await asyncio.sleep(self.update_interval - 1)
+                            
                     except Exception as e:
                         logger.error(f"Ошибка обработки сообщения: {e}")
                         

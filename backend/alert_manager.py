@@ -174,9 +174,10 @@ class AlertManager:
             'consecutive_long_count': int(os.getenv('CONSECUTIVE_LONG_COUNT', 5)),
             'alert_grouping_minutes': int(os.getenv('ALERT_GROUPING_MINUTES', 5)),
             'data_retention_hours': int(os.getenv('DATA_RETENTION_HOURS', 2)),
+            'update_interval_seconds': int(os.getenv('UPDATE_INTERVAL_SECONDS', 1)),
             'orderbook_enabled': False,
             'orderbook_snapshot_on_alert': False,
-            'imbalance_enabled': False,
+            'imbalance_enabled': True,
             'fair_value_gap_enabled': True,
             'order_block_enabled': True,
             'breaker_block_enabled': True
@@ -264,7 +265,7 @@ class AlertManager:
         return current_time >= candle_end_time
 
     async def _check_volume_alert(self, symbol: str, kline_data: Dict, is_closed: bool = False) -> Optional[Dict]:
-        """Проверка алерта по превышению объема с улучшенной логикой"""
+        """Проверка алерта по превышению объема с правильной логикой"""
         try:
             # Проверяем, является ли свеча LONG
             is_long = float(kline_data['close']) > float(kline_data['open'])
@@ -296,7 +297,7 @@ class AlertManager:
                 timestamp = int(kline_data['start'])
                 current_price = float(kline_data['close'])
                 
-                # Создаем данные свечи для алерта
+                # Создаем данные свечи для алерта (ВСЕГДА для закрытой свечи)
                 candle_data = {
                     'open': float(kline_data['open']),
                     'high': float(kline_data['high']),
@@ -483,7 +484,7 @@ class AlertManager:
             return None
 
     async def _process_candle_close(self, symbol: str, kline_data: Dict) -> List[Dict]:
-        """Обработка закрытия свечи"""
+        """Обработка закрытия свечи - ВСЕ АЛЕРТЫ ТОЛЬКО ПО ЗАКРЫТЫМ СВЕЧАМ"""
         alerts = []
         
         try:
@@ -493,7 +494,7 @@ class AlertManager:
                 if volume_alert:
                     alerts.append(volume_alert)
             
-            # Проверяем последовательные LONG свечи
+            # Проверяем последовательные LONG свечи - ТОЛЬКО ПО ЗАКРЫТЫМ СВЕЧАМ
             if self.settings['consecutive_alerts_enabled']:
                 consecutive_alert = await self._check_consecutive_long_alert(symbol, kline_data)
                 if consecutive_alert:
@@ -511,8 +512,9 @@ class AlertManager:
         return alerts
 
     async def _check_consecutive_long_alert(self, symbol: str, kline_data: Dict) -> Optional[Dict]:
-        """Проверка алерта по подряд идущим LONG свечам"""
+        """Проверка алерта по подряд идущим LONG свечам - ТОЛЬКО ПО ЗАКРЫТЫМ СВЕЧАМ"""
         try:
+            # Проверяем только закрытые свечи
             is_long = float(kline_data['close']) > float(kline_data['open'])
             
             if symbol not in self.consecutive_counters:
@@ -523,6 +525,7 @@ class AlertManager:
                 
                 # Проверяем, достигли ли нужного количества
                 if self.consecutive_counters[symbol] == self.settings['consecutive_long_count']:
+                    # Получаем данные последней закрытой свечи
                     candle_data = {
                         'open': float(kline_data['open']),
                         'high': float(kline_data['high']),
@@ -549,7 +552,7 @@ class AlertManager:
                         'has_imbalance': has_imbalance,
                         'imbalance_data': imbalance_data,
                         'candle_data': candle_data,
-                        'message': f"{self.consecutive_counters[symbol]} подряд идущих LONG свечей"
+                        'message': f"{self.consecutive_counters[symbol]} подряд идущих LONG свечей (закрытых)"
                     }
                     
                     return alert_data
