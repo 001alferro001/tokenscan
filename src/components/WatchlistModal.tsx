@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Plus, Trash2, Edit, Save, Cancel } from 'lucide-react';
+import { X, Plus, Trash2, Edit, Save, Ambulance as Cancel } from 'lucide-react';
 
 interface WatchlistItem {
   id: number;
