@@ -139,7 +139,7 @@ const App: React.FC = () => {
     
     // Обновляем время каждую секунду
     const timeInterval = setInterval(() => {
-      setCurrentTime(new Date());
+      updateCurrentTime();
     }, 1000);
     
     // Загружаем информацию о синхронизации времени каждые 30 секунд
@@ -152,12 +152,26 @@ const App: React.FC = () => {
     };
   }, []);
 
+  const updateCurrentTime = () => {
+    if (timeSync && timeSync.is_synced) {
+      // Рассчитываем биржевое время на основе смещения
+      const localTime = new Date().getTime();
+      const exchangeTime = new Date(localTime + timeSync.time_offset_ms);
+      setCurrentTime(exchangeTime);
+    } else {
+      // Используем локальное время, если синхронизация недоступна
+      setCurrentTime(new Date());
+    }
+  };
+
   const loadTimeSync = async () => {
     try {
       const response = await fetch('/api/time');
       if (response.ok) {
         const timeSyncData = await response.json();
         setTimeSync(timeSyncData);
+        // Сразу обновляем время после получения данных синхронизации
+        updateCurrentTime();
       }
     } catch (error) {
       console.error('Ошибка загрузки информации о времени:', error);
@@ -447,17 +461,25 @@ const App: React.FC = () => {
   };
 
   const getTimeSyncStatus = () => {
-    if (!timeSync) return { color: 'text-gray-500', text: 'Нет данных' };
+    if (!timeSync) return { color: 'text-gray-500', text: 'Нет данных', icon: '⚪' };
     
     if (!timeSync.is_synced) {
-      return { color: 'text-red-500', text: 'Не синхронизировано' };
+      return { color: 'text-red-500', text: 'Не синхронизировано', icon: '🔴' };
     }
     
     if (timeSync.sync_age_seconds && timeSync.sync_age_seconds > 600) { // 10 минут
-      return { color: 'text-yellow-500', text: 'Устаревшая синхронизация' };
+      return { color: 'text-yellow-500', text: 'Устаревшая синхронизация', icon: '🟡' };
     }
     
-    return { color: 'text-green-500', text: 'Синхронизировано' };
+    return { color: 'text-green-500', text: 'Синхронизировано', icon: '🟢' };
+  };
+
+  const formatUTCTime = (date: Date) => {
+    return date.toISOString().substr(11, 8); // Формат HH:MM:SS
+  };
+
+  const formatUTCDate = (date: Date) => {
+    return date.toISOString().substr(0, 10); // Формат YYYY-MM-DD
   };
 
   const renderAlertCard = (alert: Alert) => (
@@ -666,27 +688,29 @@ const App: React.FC = () => {
             </div>
             
             <div className="flex items-center space-x-6">
-              {/* Часы с биржевым временем */}
+              {/* Динамические часы с биржевым временем UTC */}
               <div className="flex items-center space-x-3 bg-gray-100 rounded-lg px-4 py-2">
                 <Clock className="w-5 h-5 text-gray-600" />
                 <div className="text-center">
                   <div className="text-lg font-mono font-bold text-gray-900">
-                    {timeSync && timeSync.is_synced 
-                      ? new Date(timeSync.exchange_time).toLocaleTimeString('ru-RU')
-                      : currentTime.toLocaleTimeString('ru-RU')
-                    }
+                    {formatUTCTime(currentTime)}
                   </div>
-                  <div className={`text-xs ${timeSyncStatus.color}`}>
-                    {timeSync && timeSync.is_synced ? 'Биржевое время' : 'Локальное время'}
+                  <div className="text-xs text-gray-500">
+                    {formatUTCDate(currentTime)}
                   </div>
                 </div>
-                <div className="text-xs text-gray-500">
+                <div className="text-xs text-gray-500 text-center">
                   <div className={timeSyncStatus.color}>
-                    {timeSyncStatus.text}
+                    {timeSyncStatus.icon} {timeSync && timeSync.is_synced ? 'UTC (Биржа)' : 'UTC (Локальное)'}
                   </div>
                   {timeSync && timeSync.time_offset_ms !== 0 && (
-                    <div>
+                    <div className="text-xs">
                       {timeSync.time_offset_ms > 0 ? '+' : ''}{Math.round(timeSync.time_offset_ms)}мс
+                    </div>
+                  )}
+                  {timeSync && timeSync.sync_age_seconds && (
+                    <div className="text-xs">
+                      Синх: {Math.round(timeSync.sync_age_seconds)}с назад
                     </div>
                   )}
                 </div>

@@ -44,7 +44,7 @@ class ExchangeTimeSync:
             url = "https://api.bybit.com/v5/market/time"
             
             # Засекаем время до запроса
-            local_time_before = datetime.now().timestamp() * 1000
+            local_time_before = datetime.utcnow().timestamp() * 1000
             
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, timeout=5) as response:
@@ -52,7 +52,7 @@ class ExchangeTimeSync:
                         data = await response.json()
                         
                         # Засекаем время после получения ответа
-                        local_time_after = datetime.now().timestamp() * 1000
+                        local_time_after = datetime.utcnow().timestamp() * 1000
                         
                         if data.get('retCode') == 0:
                             # Время биржи в миллисекундах
@@ -64,7 +64,7 @@ class ExchangeTimeSync:
                             
                             # Рассчитываем смещение
                             self.time_offset = exchange_time - adjusted_local_time
-                            self.last_sync = datetime.now()
+                            self.last_sync = datetime.utcnow()
                             
                             logger.info(f"Время синхронизировано с биржей. Смещение: {self.time_offset:.0f}мс")
                             return True
@@ -79,25 +79,28 @@ class ExchangeTimeSync:
         return False
         
     def get_exchange_time(self) -> datetime:
-        """Получить текущее время биржи"""
-        local_time_ms = datetime.now().timestamp() * 1000
+        """Получить текущее время биржи в UTC"""
+        local_time_ms = datetime.utcnow().timestamp() * 1000
         exchange_time_ms = local_time_ms + self.time_offset
-        return datetime.fromtimestamp(exchange_time_ms / 1000)
+        return datetime.utcfromtimestamp(exchange_time_ms / 1000)
         
     def get_exchange_timestamp(self) -> int:
         """Получить текущий timestamp биржи в миллисекундах"""
-        local_time_ms = datetime.now().timestamp() * 1000
+        local_time_ms = datetime.utcnow().timestamp() * 1000
         return int(local_time_ms + self.time_offset)
         
     def get_sync_status(self) -> dict:
         """Получить статус синхронизации"""
+        exchange_time = self.get_exchange_time()
+        local_time = datetime.utcnow()
+        
         return {
             'is_synced': self.last_sync is not None,
             'last_sync': self.last_sync.isoformat() if self.last_sync else None,
             'time_offset_ms': self.time_offset,
-            'exchange_time': self.get_exchange_time().isoformat(),
-            'local_time': datetime.now().isoformat(),
-            'sync_age_seconds': (datetime.now() - self.last_sync).total_seconds() if self.last_sync else None
+            'exchange_time': exchange_time.isoformat(),
+            'local_time': local_time.isoformat(),
+            'sync_age_seconds': (local_time - self.last_sync).total_seconds() if self.last_sync else None
         }
         
     def is_candle_closed(self, kline_data: dict) -> bool:
@@ -109,5 +112,5 @@ class ExchangeTimeSync:
         return exchange_time >= candle_end_time
         
     def get_candle_close_time(self, kline_start_time: int) -> datetime:
-        """Получить время закрытия свечи"""
-        return datetime.fromtimestamp((kline_start_time + 60000) / 1000)
+        """Получить время закрытия свечи в UTC"""
+        return datetime.utcfromtimestamp((kline_start_time + 60000) / 1000)
