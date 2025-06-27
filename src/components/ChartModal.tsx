@@ -147,12 +147,6 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
       c: d.close
     }));
 
-    // Данные объема
-    const volumeData = chartData.map(d => ({
-      x: d.timestamp,
-      y: d.volume_usdt
-    }));
-
     // Отметки алертов
     const alertPoints = [];
     
@@ -183,8 +177,8 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
     if (alert.has_imbalance && alert.imbalance_data) {
       annotations.imbalanceBox = {
         type: 'box',
-        xMin: alertTime - 60000, // 1 минута до
-        xMax: alertTime + 60000, // 1 минута после
+        xMin: alertTime - 60000,
+        xMax: alertTime + 60000,
         yMin: alert.imbalance_data.bottom,
         yMax: alert.imbalance_data.top,
         backgroundColor: alert.imbalance_data.direction === 'bullish' ? 'rgba(34, 197, 94, 0.2)' : 'rgba(239, 68, 68, 0.2)',
@@ -215,6 +209,32 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
       };
     }
 
+    // Данные стакана заявок для отображения справа
+    let orderbookData = [];
+    if (alert.order_book_snapshot) {
+      const bids = alert.order_book_snapshot.bids.slice(0, 10);
+      const asks = alert.order_book_snapshot.asks.slice(0, 10);
+      
+      // Добавляем точки для визуализации стакана
+      bids.forEach(([price, volume]) => {
+        orderbookData.push({
+          x: alertTime + 120000, // Справа от графика
+          y: price,
+          volume: volume,
+          type: 'bid'
+        });
+      });
+      
+      asks.forEach(([price, volume]) => {
+        orderbookData.push({
+          x: alertTime + 120000,
+          y: price,
+          volume: volume,
+          type: 'ask'
+        });
+      });
+    }
+
     const data = {
       datasets: [
         {
@@ -227,15 +247,6 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
             down: 'rgb(239, 68, 68)',
             unchanged: 'rgb(156, 163, 175)'
           }
-        },
-        {
-          label: 'Объем (USDT)',
-          data: volumeData,
-          type: 'bar' as const,
-          backgroundColor: chartData.map(d => d.is_long ? 'rgba(34, 197, 94, 0.6)' : 'rgba(239, 68, 68, 0.6)'),
-          borderColor: chartData.map(d => d.is_long ? 'rgb(34, 197, 94)' : 'rgb(239, 68, 68)'),
-          borderWidth: 1,
-          yAxisID: 'y1'
         },
         {
           label: 'Алерты',
@@ -256,7 +267,27 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
           pointRadius: 6,
           pointHoverRadius: 8,
           yAxisID: 'y'
-        }] : [])
+        }] : []),
+        ...(orderbookData.length > 0 ? [
+          {
+            label: 'Покупки (Bids)',
+            data: orderbookData.filter(d => d.type === 'bid'),
+            type: 'scatter' as const,
+            backgroundColor: 'rgba(34, 197, 94, 0.6)',
+            borderColor: 'rgb(34, 197, 94)',
+            pointRadius: (context: any) => Math.min(context.raw.volume / 100, 15),
+            yAxisID: 'y'
+          },
+          {
+            label: 'Продажи (Asks)',
+            data: orderbookData.filter(d => d.type === 'ask'),
+            type: 'scatter' as const,
+            backgroundColor: 'rgba(239, 68, 68, 0.6)',
+            borderColor: 'rgb(239, 68, 68)',
+            pointRadius: (context: any) => Math.min(context.raw.volume / 100, 15),
+            yAxisID: 'y'
+          }
+        ] : [])
       ]
     };
 
@@ -270,7 +301,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
       plugins: {
         title: {
           display: true,
-          text: `${alert.symbol} - Свечной график с OHLCV данными`,
+          text: `${alert.symbol} - Свечной график с данными`,
           color: '#374151'
         },
         legend: {
@@ -297,11 +328,10 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
                   ];
                 }
               } else if (context.datasetIndex === 1) {
-                return `Объем: $${context.parsed.y.toLocaleString()}`;
-              } else if (context.datasetIndex === 2) {
                 return `Алерт: $${context.parsed.y.toFixed(8)}`;
-              } else {
-                return `Уровень алерта: $${context.parsed.y.toFixed(8)}`;
+              } else if (context.raw && typeof context.raw === 'object' && 'volume' in context.raw) {
+                const data = context.raw as any;
+                return `${data.type === 'bid' ? 'Покупка' : 'Продажа'}: $${context.parsed.y.toFixed(8)} (${data.volume.toFixed(2)} USDT)`;
               }
               return '';
             }
@@ -340,11 +370,81 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
           grid: {
             color: 'rgba(107, 114, 128, 0.1)'
           }
-        },
-        y1: {
-          type: 'linear',
+        }
+      }
+    };
+
+    return { data, options };
+  };
+
+  const getVolumeChartConfig = () => {
+    if (chartData.length === 0) return null;
+
+    const volumeData = chartData.map(d => ({
+      x: d.timestamp,
+      y: d.volume_usdt
+    }));
+
+    const data = {
+      datasets: [
+        {
+          label: 'Объем (USDT)',
+          data: volumeData,
+          type: 'bar' as const,
+          backgroundColor: chartData.map(d => d.is_long ? 'rgba(34, 197, 94, 0.6)' : 'rgba(239, 68, 68, 0.6)'),
+          borderColor: chartData.map(d => d.is_long ? 'rgb(34, 197, 94)' : 'rgb(239, 68, 68)'),
+          borderWidth: 1
+        }
+      ]
+    };
+
+    const options: ChartOptions = {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        title: {
           display: true,
-          position: 'right',
+          text: 'Объем торгов',
+          color: '#374151'
+        },
+        legend: {
+          display: false
+        },
+        tooltip: {
+          callbacks: {
+            title: (context) => {
+              return new Date(context[0].parsed.x).toLocaleString('ru-RU');
+            },
+            label: (context) => {
+              const num = Number(context.parsed.y);
+              if (num >= 1000000) {
+                return `Объем: $${(num / 1000000).toFixed(1)}M`;
+              } else if (num >= 1000) {
+                return `Объем: $${(num / 1000).toFixed(1)}K`;
+              }
+              return `Объем: $${num.toFixed(0)}`;
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          type: 'time',
+          time: {
+            unit: 'minute',
+            displayFormats: {
+              minute: 'HH:mm'
+            }
+          },
+          ticks: {
+            color: '#6B7280'
+          },
+          grid: {
+            color: 'rgba(107, 114, 128, 0.1)'
+          }
+        },
+        y: {
+          type: 'linear',
           ticks: {
             color: '#6B7280',
             callback: function(value) {
@@ -358,8 +458,8 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
             }
           },
           grid: {
-            drawOnChartArea: false,
-          },
+            color: 'rgba(107, 114, 128, 0.1)'
+          }
         }
       }
     };
@@ -368,16 +468,17 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
   };
 
   const chartConfig = getChartConfig();
+  const volumeChartConfig = getVolumeChartConfig();
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-      <div className="bg-white rounded-lg w-full max-w-6xl h-[80vh] flex flex-col">
+      <div className="bg-white rounded-lg w-full max-w-7xl h-[90vh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between p-6 border-b border-gray-200">
           <div>
             <h2 className="text-2xl font-bold text-gray-900">{alert.symbol}</h2>
             <p className="text-gray-600">
-              График с OHLCV данными • Алерт: {new Date(alert.close_timestamp || alert.timestamp).toLocaleString('ru-RU')}
+              График с данными • Алерт: {new Date(alert.close_timestamp || alert.timestamp).toLocaleString('ru-RU')}
             </p>
             {alert.has_imbalance && (
               <div className="flex items-center space-x-2 mt-2">
@@ -418,7 +519,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
         </div>
 
         {/* Chart Content */}
-        <div className="flex-1 p-6">
+        <div className="flex-1 p-6 overflow-hidden">
           {loading ? (
             <div className="flex items-center justify-center h-full">
               <div className="text-center">
@@ -438,9 +539,52 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
                 </button>
               </div>
             </div>
-          ) : chartConfig ? (
-            <div className="h-full">
-              <Chart type="candlestick" data={chartConfig.data} options={chartConfig.options} />
+          ) : chartConfig && volumeChartConfig ? (
+            <div className="h-full flex flex-col space-y-4">
+              {/* Основной график с ценами */}
+              <div className="flex-1 min-h-0">
+                <div className="h-full flex">
+                  {/* График свечей */}
+                  <div className="flex-1 h-full">
+                    <Chart type="candlestick" data={chartConfig.data} options={chartConfig.options} />
+                  </div>
+                  
+                  {/* Стакан заявок справа */}
+                  {alert.order_book_snapshot && (
+                    <div className="w-64 ml-4 bg-gray-50 rounded-lg p-4">
+                      <h4 className="text-sm font-medium text-gray-700 mb-3">Стакан заявок</h4>
+                      <div className="space-y-2">
+                        <div>
+                          <div className="text-xs text-red-600 mb-1">Продажи (Asks)</div>
+                          {alert.order_book_snapshot.asks.slice(0, 8).reverse().map(([price, volume], i) => (
+                            <div key={i} className="flex justify-between text-xs py-0.5">
+                              <span className="text-gray-900 font-mono">${price.toFixed(6)}</span>
+                              <span className="text-red-600">${(price * volume).toFixed(0)}</span>
+                            </div>
+                          ))}
+                        </div>
+                        
+                        <div className="border-t border-gray-300 my-2"></div>
+                        
+                        <div>
+                          <div className="text-xs text-green-600 mb-1">Покупки (Bids)</div>
+                          {alert.order_book_snapshot.bids.slice(0, 8).map(([price, volume], i) => (
+                            <div key={i} className="flex justify-between text-xs py-0.5">
+                              <span className="text-gray-900 font-mono">${price.toFixed(6)}</span>
+                              <span className="text-green-600">${(price * volume).toFixed(0)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+              
+              {/* График объемов внизу */}
+              <div className="h-48">
+                <Chart type="bar" data={volumeChartConfig.data} options={volumeChartConfig.options} />
+              </div>
             </div>
           ) : (
             <div className="flex items-center justify-center h-full">
@@ -508,35 +652,6 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
                   <span className="ml-2 text-purple-600 font-mono">${alert.candle_data.alert_level.toFixed(8)}</span>
                 </div>
               )}
-            </div>
-          )}
-
-          {/* Снимок стакана */}
-          {alert.order_book_snapshot && (
-            <div className="mt-4 p-4 bg-white rounded-lg border border-gray-200">
-              <div className="text-sm font-medium text-gray-700 mb-2">
-                Снимок стакана на момент алерта ({new Date(alert.order_book_snapshot.timestamp).toLocaleString('ru-RU')}):
-              </div>
-              <div className="grid grid-cols-2 gap-4 text-xs">
-                <div>
-                  <div className="text-green-600 mb-2 font-medium">Покупки (Bids):</div>
-                  {alert.order_book_snapshot.bids.slice(0, 5).map(([price, size], i) => (
-                    <div key={i} className="flex justify-between py-1">
-                      <span className="text-gray-900 font-mono">${price.toFixed(8)}</span>
-                      <span className="text-gray-600">{size.toFixed(2)}</span>
-                    </div>
-                  ))}
-                </div>
-                <div>
-                  <div className="text-red-600 mb-2 font-medium">Продажи (Asks):</div>
-                  {alert.order_book_snapshot.asks.slice(0, 5).map(([price, size], i) => (
-                    <div key={i} className="flex justify-between py-1">
-                      <span className="text-gray-900 font-mono">${price.toFixed(8)}</span>
-                      <span className="text-gray-600">{size.toFixed(2)}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
             </div>
           )}
         </div>

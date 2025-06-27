@@ -188,7 +188,7 @@ class AlertManager:
         
         # Кэш для отслеживания состояния свечей и алертов
         self.candle_cache = {}  # symbol -> list of recent candles
-        self.volume_alerts_cache = {}  # symbol -> {timestamp, preliminary_alert, alert_level}
+        self.volume_alerts_cache = {}  # symbol -> {timestamp, alert_id, alert_level}
         self.consecutive_counters = {}  # symbol -> consecutive long count
         self.priority_signals = {}  # symbol -> priority signal data
         self.alert_cooldowns = {}  # symbol -> last alert timestamp
@@ -338,7 +338,6 @@ class AlertManager:
                 
                 if not is_closed:
                     # Первый алерт (предварительный - в процессе формирования)
-                    # ВРЕМЯ УКАЗЫВАЕМ АКТУАЛЬНОЕ - когда получен сигнал
                     actual_time = datetime.now()
                     
                     # Проверяем, нет ли уже предварительного алерта для этой минуты
@@ -347,8 +346,42 @@ class AlertManager:
                         cached_volume = self.volume_alerts_cache[symbol].get('volume_usdt', 0)
                         if current_volume_usdt <= cached_volume:
                             return None
+                        
+                        # Обновляем существующий алерт в базе данных
+                        alert_id = self.volume_alerts_cache[symbol]['alert_id']
+                        alert_level = self.volume_alerts_cache[symbol]['alert_level']
+                        candle_data['alert_level'] = alert_level
+                        
+                        alert_data = {
+                            'id': alert_id,
+                            'symbol': symbol,
+                            'alert_type': AlertType.VOLUME_SPIKE.value,
+                            'price': current_price,
+                            'volume_ratio': round(volume_ratio, 2),
+                            'current_volume_usdt': int(current_volume_usdt),
+                            'average_volume_usdt': int(average_volume),
+                            'timestamp': actual_time,
+                            'is_closed': False,
+                            'is_true_signal': None,
+                            'has_imbalance': has_imbalance,
+                            'imbalance_data': imbalance_data,
+                            'candle_data': candle_data,
+                            'order_book_snapshot': order_book_snapshot,
+                            'message': f"Предварительный алерт: объем превышен в {volume_ratio:.2f}x раз"
+                        }
+                        
+                        # Обновляем в базе данных
+                        await self.db_manager.update_alert(alert_id, alert_data)
+                        
+                        # Обновляем кэш
+                        self.volume_alerts_cache[symbol].update({
+                            'volume_usdt': current_volume_usdt,
+                            'alert_level': alert_level
+                        })
+                        
+                        return alert_data
                     
-                    # Сохраняем уровень цены, на котором сработал алерт
+                    # Создаем новый предварительный алерт
                     alert_level = current_price
                     candle_data['alert_level'] = alert_level
                     
@@ -359,7 +392,7 @@ class AlertManager:
                         'volume_ratio': round(volume_ratio, 2),
                         'current_volume_usdt': int(current_volume_usdt),
                         'average_volume_usdt': int(average_volume),
-                        'timestamp': actual_time,  # АКТУАЛЬНОЕ ВРЕМЯ
+                        'timestamp': actual_time,
                         'is_closed': False,
                         'is_true_signal': None,
                         'has_imbalance': has_imbalance,
@@ -369,10 +402,14 @@ class AlertManager:
                         'message': f"Предварительный алерт: объем превышен в {volume_ratio:.2f}x раз"
                     }
                     
+                    # Сохраняем в базу данных и получаем ID
+                    alert_id = await self.db_manager.save_alert(alert_data)
+                    alert_data['id'] = alert_id
+                    
                     # Сохраняем в кэш
                     self.volume_alerts_cache[symbol] = {
                         'timestamp': timestamp,
-                        'preliminary_alert': alert_data,
+                        'alert_id': alert_id,
                         'alert_level': alert_level,
                         'volume_usdt': current_volume_usdt
                     }
@@ -380,7 +417,6 @@ class AlertManager:
                     return alert_data
                 else:
                     # Второй алерт (финальный - после закрытия свечи)
-                    # ВРЕМЯ ЗАКРЫТИЯ СВЕЧИ - начало следующей минуты
                     close_time = datetime.fromtimestamp((timestamp + 60000) / 1000)
                     
                     # Определяем, истинный ли это сигнал (свеча закрылась в LONG)
@@ -389,30 +425,33 @@ class AlertManager:
                     if symbol in self.volume_alerts_cache and self.volume_alerts_cache[symbol]['timestamp'] == timestamp:
                         # Обновляем существующий алерт
                         cached_data = self.volume_alerts_cache[symbol]
-                        preliminary_alert = cached_data['preliminary_alert']
+                        alert_id = cached_data['alert_id']
                         alert_level = cached_data.get('alert_level', current_price)
                         
                         # Обновляем данные свечи с уровнем алерта
                         candle_data['alert_level'] = alert_level
                         
                         alert_data = {
+                            'id': alert_id,
                             'symbol': symbol,
                             'alert_type': AlertType.VOLUME_SPIKE.value,
                             'price': current_price,
                             'volume_ratio': round(volume_ratio, 2),
                             'current_volume_usdt': int(current_volume_usdt),
                             'average_volume_usdt': int(average_volume),
-                            'timestamp': preliminary_alert['timestamp'],  # Время предварительного
-                            'close_timestamp': close_time,  # Время закрытия свечи
+                            'timestamp': cached_data.get('original_timestamp', close_time),
+                            'close_timestamp': close_time,
                             'is_closed': True,
                             'is_true_signal': final_is_long,
                             'has_imbalance': has_imbalance,
                             'imbalance_data': imbalance_data,
                             'candle_data': candle_data,
                             'order_book_snapshot': order_book_snapshot,
-                            'preliminary_alert': preliminary_alert,
                             'message': f"Финальный алерт: объем превышен в {volume_ratio:.2f}x раз ({'истинный' if final_is_long else 'ложный'} сигнал)"
                         }
+                        
+                        # Обновляем в базе данных
+                        await self.db_manager.update_alert(alert_id, alert_data)
                         
                         # Удаляем из кэша и обновляем кулдаун только для истинных сигналов
                         del self.volume_alerts_cache[symbol]
@@ -431,7 +470,7 @@ class AlertManager:
                             'volume_ratio': round(volume_ratio, 2),
                             'current_volume_usdt': int(current_volume_usdt),
                             'average_volume_usdt': int(average_volume),
-                            'timestamp': close_time,  # Время закрытия свечи
+                            'timestamp': close_time,
                             'close_timestamp': close_time,
                             'is_closed': True,
                             'is_true_signal': final_is_long,
@@ -441,6 +480,10 @@ class AlertManager:
                             'order_book_snapshot': order_book_snapshot,
                             'message': f"Объем превышен в {volume_ratio:.2f}x раз ({'истинный' if final_is_long else 'ложный'} сигнал)"
                         }
+                        
+                        # Сохраняем в базу данных
+                        alert_id = await self.db_manager.save_alert(alert_data)
+                        alert_data['id'] = alert_id
                         
                         # Обновляем кулдаун только для истинных сигналов
                         if final_is_long:
@@ -584,7 +627,7 @@ class AlertManager:
                         'alert_type': AlertType.CONSECUTIVE_LONG.value,
                         'price': float(kline_data['close']),
                         'consecutive_count': self.consecutive_counters[symbol],
-                        'timestamp': close_time,  # Время закрытия свечи
+                        'timestamp': close_time,
                         'close_timestamp': close_time,
                         'is_closed': True,
                         'has_imbalance': has_imbalance,
@@ -693,9 +736,10 @@ class AlertManager:
     async def _send_alert(self, alert_data: Dict):
         """Отправка алерта"""
         try:
-            # Сохраняем в базу данных
-            alert_id = await self.db_manager.save_alert(alert_data)
-            alert_data['id'] = alert_id
+            # Если у алерта уже есть ID, значит он уже сохранен (обновление)
+            if 'id' not in alert_data:
+                alert_id = await self.db_manager.save_alert(alert_data)
+                alert_data['id'] = alert_id
             
             # Отправляем в WebSocket немедленно
             if self.connection_manager:
