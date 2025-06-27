@@ -43,7 +43,7 @@ class ExchangeTimeSync:
         try:
             url = "https://api.bybit.com/v5/market/time"
             
-            # Засекаем время до запроса
+            # Засекаем время до запроса (в UTC)
             local_time_before = datetime.utcnow().timestamp() * 1000
             
             async with aiohttp.ClientSession() as session:
@@ -51,7 +51,7 @@ class ExchangeTimeSync:
                     if response.status == 200:
                         data = await response.json()
                         
-                        # Засекаем время после получения ответа
+                        # Засекаем время после получения ответа (в UTC)
                         local_time_after = datetime.utcnow().timestamp() * 1000
                         
                         if data.get('retCode') == 0:

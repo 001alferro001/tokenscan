@@ -154,7 +154,7 @@ const App: React.FC = () => {
 
   const updateCurrentTime = () => {
     if (timeSync && timeSync.is_synced) {
-      // Рассчитываем биржевое время на основе смещения
+      // Рассчитываем синхронизированное время с биржей
       const localTime = new Date().getTime();
       const exchangeTime = new Date(localTime + timeSync.time_offset_ms);
       setCurrentTime(exchangeTime);
@@ -474,12 +474,34 @@ const App: React.FC = () => {
     return { color: 'text-green-500', text: 'Синхронизировано', icon: '🟢' };
   };
 
-  const formatUTCTime = (date: Date) => {
-    return date.toISOString().substr(11, 8); // Формат HH:MM:SS
+  const formatLocalTime = (date: Date) => {
+    return date.toLocaleTimeString('ru-RU', { 
+      hour: '2-digit', 
+      minute: '2-digit', 
+      second: '2-digit',
+      hour12: false 
+    });
   };
 
-  const formatUTCDate = (date: Date) => {
-    return date.toISOString().substr(0, 10); // Формат YYYY-MM-DD
+  const formatLocalDate = (date: Date) => {
+    return date.toLocaleDateString('ru-RU', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    });
+  };
+
+  const getTimezoneInfo = () => {
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const offset = new Date().getTimezoneOffset();
+    const offsetHours = Math.abs(Math.floor(offset / 60));
+    const offsetMinutes = Math.abs(offset % 60);
+    const offsetSign = offset <= 0 ? '+' : '-';
+    
+    return {
+      timezone,
+      offsetString: `UTC${offsetSign}${offsetHours.toString().padStart(2, '0')}:${offsetMinutes.toString().padStart(2, '0')}`
+    };
   };
 
   const renderAlertCard = (alert: Alert) => (
@@ -666,6 +688,7 @@ const App: React.FC = () => {
   }
 
   const timeSyncStatus = getTimeSyncStatus();
+  const timezoneInfo = getTimezoneInfo();
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -688,29 +711,32 @@ const App: React.FC = () => {
             </div>
             
             <div className="flex items-center space-x-6">
-              {/* Динамические часы с биржевым временем UTC */}
+              {/* Динамические часы в локальном часовом поясе */}
               <div className="flex items-center space-x-3 bg-gray-100 rounded-lg px-4 py-2">
                 <Clock className="w-5 h-5 text-gray-600" />
                 <div className="text-center">
                   <div className="text-lg font-mono font-bold text-gray-900">
-                    {formatUTCTime(currentTime)}
+                    {formatLocalTime(currentTime)}
                   </div>
                   <div className="text-xs text-gray-500">
-                    {formatUTCDate(currentTime)}
+                    {formatLocalDate(currentTime)}
                   </div>
                 </div>
                 <div className="text-xs text-gray-500 text-center">
                   <div className={timeSyncStatus.color}>
-                    {timeSyncStatus.icon} {timeSync && timeSync.is_synced ? 'UTC (Биржа)' : 'UTC (Локальное)'}
+                    {timeSyncStatus.icon} {timezoneInfo.offsetString}
                   </div>
-                  {timeSync && timeSync.time_offset_ms !== 0 && (
+                  <div className="text-xs">
+                    {timezoneInfo.timezone.split('/').pop()}
+                  </div>
+                  {timeSync && timeSync.is_synced && (
                     <div className="text-xs">
                       {timeSync.time_offset_ms > 0 ? '+' : ''}{Math.round(timeSync.time_offset_ms)}мс
                     </div>
                   )}
                   {timeSync && timeSync.sync_age_seconds && (
                     <div className="text-xs">
-                      Синх: {Math.round(timeSync.sync_age_seconds)}с назад
+                      Синх: {Math.round(timeSync.sync_age_seconds)}с
                     </div>
                   )}
                 </div>
