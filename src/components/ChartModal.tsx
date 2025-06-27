@@ -135,7 +135,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
     window.URL.revokeObjectURL(url);
   };
 
-  const getMainChartConfig = () => {
+  const getChartConfig = () => {
     if (chartData.length === 0) return null;
 
     const alertTime = new Date(alert.close_timestamp || alert.timestamp).getTime();
@@ -148,6 +148,12 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
       h: d.high,
       l: d.low,
       c: d.close
+    }));
+
+    // Данные объема
+    const volumeData = chartData.map(d => ({
+      x: d.timestamp,
+      y: d.volume_usdt
     }));
 
     // Отметки алертов
@@ -183,6 +189,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
       // Линии границ имбаланса
       annotations.imbalanceTop = {
         type: 'line',
+        yAxisID: 'y',
         xMin: imbalanceTime,
         xMax: imbalanceTime + 300000, // 5 минут вправо
         yMin: alert.imbalance_data.top,
@@ -202,6 +209,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
 
       annotations.imbalanceBottom = {
         type: 'line',
+        yAxisID: 'y',
         xMin: imbalanceTime,
         xMax: imbalanceTime + 300000, // 5 минут вправо
         yMin: alert.imbalance_data.bottom,
@@ -222,6 +230,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
       // Зона имбаланса
       annotations.imbalanceZone = {
         type: 'box',
+        yAxisID: 'y',
         xMin: imbalanceTime,
         xMax: imbalanceTime + 300000,
         yMin: alert.imbalance_data.bottom,
@@ -235,6 +244,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
     if (alert.candle_data?.alert_level) {
       annotations.alertLevel = {
         type: 'line',
+        yAxisID: 'y',
         yMin: alert.candle_data.alert_level,
         yMax: alert.candle_data.alert_level,
         borderColor: 'rgb(168, 85, 247)',
@@ -254,11 +264,21 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
           label: 'Свечи',
           data: candleData,
           type: 'candlestick' as const,
+          yAxisID: 'y',
           color: {
             up: 'rgb(34, 197, 94)',
             down: 'rgb(239, 68, 68)',
             unchanged: 'rgb(156, 163, 175)'
           }
+        },
+        {
+          label: 'Объем (USDT)',
+          data: volumeData,
+          type: 'bar' as const,
+          backgroundColor: chartData.map(d => d.is_long ? 'rgba(34, 197, 94, 0.6)' : 'rgba(239, 68, 68, 0.6)'),
+          borderColor: chartData.map(d => d.is_long ? 'rgb(34, 197, 94)' : 'rgb(239, 68, 68)'),
+          borderWidth: 1,
+          yAxisID: 'y1'
         },
         {
           label: 'Алерты',
@@ -267,7 +287,8 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
           backgroundColor: 'rgb(255, 215, 0)',
           borderColor: 'rgb(255, 193, 7)',
           pointRadius: 8,
-          pointHoverRadius: 10
+          pointHoverRadius: 10,
+          yAxisID: 'y'
         },
         ...(alertLevelData.length > 0 ? [{
           label: 'Уровень алерта',
@@ -276,7 +297,8 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
           backgroundColor: 'rgb(168, 85, 247)',
           borderColor: 'rgb(168, 85, 247)',
           pointRadius: 6,
-          pointHoverRadius: 8
+          pointHoverRadius: 8,
+          yAxisID: 'y'
         }] : [])
       ]
     };
@@ -291,7 +313,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
       plugins: {
         title: {
           display: true,
-          text: `${alert.symbol} - Свечной график`,
+          text: `${alert.symbol} - Свечной график с объемами`,
           color: '#374151'
         },
         legend: {
@@ -313,10 +335,13 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
                     `High: $${candle.high.toFixed(8)}`,
                     `Low: $${candle.low.toFixed(8)}`,
                     `Close: $${candle.close.toFixed(8)}`,
+                    `Volume: ${candle.volume.toFixed(2)}`,
                     `Type: ${candle.is_long ? 'LONG' : 'SHORT'}`
                   ];
                 }
               } else if (context.datasetIndex === 1) {
+                return `Объем: $${context.parsed.y.toLocaleString()}`;
+              } else if (context.datasetIndex === 2) {
                 return `Алерт: $${context.parsed.y.toFixed(8)}`;
               } else {
                 return `Уровень алерта: $${context.parsed.y.toFixed(8)}`;
@@ -347,6 +372,8 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
         },
         y: {
           type: 'linear',
+          display: true,
+          position: 'left',
           ticks: {
             color: '#6B7280',
             callback: function(value) {
@@ -356,84 +383,31 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
           grid: {
             color: 'rgba(107, 114, 128, 0.1)'
           }
-        }
-      }
-    };
-
-    return { data, options };
-  };
-
-  const getVolumeChartConfig = () => {
-    if (chartData.length === 0) return null;
-
-    const volumeData = chartData.map(d => ({
-      x: d.timestamp,
-      y: d.volume_usdt
-    }));
-
-    const data = {
-      datasets: [
-        {
-          label: 'Объем (USDT)',
-          data: volumeData,
-          type: 'bar' as const,
-          backgroundColor: chartData.map(d => d.is_long ? 'rgba(34, 197, 94, 0.6)' : 'rgba(239, 68, 68, 0.6)'),
-          borderColor: chartData.map(d => d.is_long ? 'rgb(34, 197, 94)' : 'rgb(239, 68, 68)'),
-          borderWidth: 1
-        }
-      ]
-    };
-
-    const options: ChartOptions = {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        title: {
-          display: true,
-          text: 'Объем торгов',
-          color: '#374151'
         },
-        legend: {
-          display: false
-        },
-        tooltip: {
-          callbacks: {
-            title: (context) => {
-              return new Date(context[0].parsed.x).toLocaleString('ru-RU');
-            },
-            label: (context) => {
-              const num = Number(context.parsed.y);
-              if (num >= 1000000) {
-                return `Объем: $${(num / 1000000).toFixed(1)}M`;
-              } else if (num >= 1000) {
-                return `Объем: $${(num / 1000).toFixed(1)}K`;
-              }
-              return `Объем: $${num.toFixed(0)}`;
-            }
-          }
-        }
-      },
-      scales: {
-        x: {
-          type: 'time',
-          time: {
-            unit: 'minute',
-            displayFormats: {
-              minute: 'HH:mm'
-            }
-          },
-          ticks: {
-            color: '#6B7280'
-          },
-          grid: {
-            color: 'rgba(107, 114, 128, 0.1)'
-          }
-        },
-        y: {
+        y1: {
           type: 'linear',
+          display: true,
+          position: 'right',
+          // Смещаем объем вниз, чтобы он не перекрывал свечи
+          min: function(context) {
+            const maxPrice = Math.max(...chartData.map(d => d.high));
+            const minPrice = Math.min(...chartData.map(d => d.low));
+            const priceRange = maxPrice - minPrice;
+            // Начинаем объем с уровня ниже минимальной цены
+            return -(priceRange * 0.3); // Смещение вниз на 30% от диапазона цен
+          },
+          max: function(context) {
+            const maxVolume = Math.max(...chartData.map(d => d.volume_usdt));
+            const maxPrice = Math.max(...chartData.map(d => d.high));
+            const minPrice = Math.min(...chartData.map(d => d.low));
+            const priceRange = maxPrice - minPrice;
+            // Максимум объема не должен превышать минимальную цену
+            return Math.min(maxVolume, minPrice - (priceRange * 0.1));
+          },
           ticks: {
             color: '#6B7280',
             callback: function(value) {
+              if (Number(value) < 0) return ''; // Скрываем отрицательные значения
               const num = Number(value);
               if (num >= 1000000) {
                 return '$' + (num / 1000000).toFixed(1) + 'M';
@@ -444,8 +418,8 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
             }
           },
           grid: {
-            color: 'rgba(107, 114, 128, 0.1)'
-          }
+            drawOnChartArea: false,
+          },
         }
       }
     };
@@ -453,8 +427,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
     return { data, options };
   };
 
-  const mainChartConfig = getMainChartConfig();
-  const volumeChartConfig = getVolumeChartConfig();
+  const chartConfig = getChartConfig();
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
@@ -535,17 +508,9 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
                 </button>
               </div>
             </div>
-          ) : mainChartConfig && volumeChartConfig ? (
-            <div className="h-full flex flex-col">
-              {/* Основной график свечей */}
-              <div className="flex-1 min-h-0 mb-4">
-                <Chart type="candlestick" data={mainChartConfig.data} options={mainChartConfig.options} />
-              </div>
-              
-              {/* График объемов */}
-              <div className="h-48 border-t border-gray-200 pt-4">
-                <Chart type="bar" data={volumeChartConfig.data} options={volumeChartConfig.options} />
-              </div>
+          ) : chartConfig ? (
+            <div className="h-full">
+              <Chart type="candlestick" data={chartConfig.data} options={chartConfig.options} />
             </div>
           ) : (
             <div className="flex items-center justify-center h-full">

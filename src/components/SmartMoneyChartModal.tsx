@@ -114,7 +114,7 @@ const SmartMoneyChartModal: React.FC<SmartMoneyChartModalProps> = ({ alert, onCl
     window.URL.revokeObjectURL(url);
   };
 
-  const getMainChartConfig = () => {
+  const getChartConfig = () => {
     if (chartData.length === 0) return null;
 
     const alertTime = new Date(alert.timestamp).getTime();
@@ -126,6 +126,12 @@ const SmartMoneyChartModal: React.FC<SmartMoneyChartModalProps> = ({ alert, onCl
       h: d.high,
       l: d.low,
       c: d.close
+    }));
+
+    // Данные объема
+    const volumeData = chartData.map(d => ({
+      x: d.timestamp,
+      y: d.volume_usdt
     }));
 
     // Отметка Smart Money сигнала
@@ -141,6 +147,7 @@ const SmartMoneyChartModal: React.FC<SmartMoneyChartModalProps> = ({ alert, onCl
       // Линии границ паттерна
       annotations.patternTop = {
         type: 'line',
+        yAxisID: 'y',
         xMin: alertTime,
         xMax: alertTime + 300000, // 5 минут вправо
         yMin: alert.top,
@@ -160,6 +167,7 @@ const SmartMoneyChartModal: React.FC<SmartMoneyChartModalProps> = ({ alert, onCl
 
       annotations.patternBottom = {
         type: 'line',
+        yAxisID: 'y',
         xMin: alertTime,
         xMax: alertTime + 300000, // 5 минут вправо
         yMin: alert.bottom,
@@ -180,6 +188,7 @@ const SmartMoneyChartModal: React.FC<SmartMoneyChartModalProps> = ({ alert, onCl
       // Зона паттерна
       annotations.patternZone = {
         type: 'box',
+        yAxisID: 'y',
         xMin: alertTime,
         xMax: alertTime + 300000,
         yMin: alert.bottom,
@@ -195,11 +204,21 @@ const SmartMoneyChartModal: React.FC<SmartMoneyChartModalProps> = ({ alert, onCl
           label: 'Свечи',
           data: candleData,
           type: 'candlestick' as const,
+          yAxisID: 'y',
           color: {
             up: 'rgb(34, 197, 94)',
             down: 'rgb(239, 68, 68)',
             unchanged: 'rgb(156, 163, 175)'
           }
+        },
+        {
+          label: 'Объем (USDT)',
+          data: volumeData,
+          type: 'bar' as const,
+          backgroundColor: chartData.map(d => d.is_long ? 'rgba(34, 197, 94, 0.6)' : 'rgba(239, 68, 68, 0.6)'),
+          borderColor: chartData.map(d => d.is_long ? 'rgb(34, 197, 94)' : 'rgb(239, 68, 68)'),
+          borderWidth: 1,
+          yAxisID: 'y1'
         },
         {
           label: 'Smart Money Signal',
@@ -208,7 +227,8 @@ const SmartMoneyChartModal: React.FC<SmartMoneyChartModalProps> = ({ alert, onCl
           backgroundColor: alert.direction === 'bullish' ? 'rgb(34, 197, 94)' : 'rgb(239, 68, 68)',
           borderColor: alert.direction === 'bullish' ? 'rgb(21, 128, 61)' : 'rgb(185, 28, 28)',
           pointRadius: 10,
-          pointHoverRadius: 12
+          pointHoverRadius: 12,
+          yAxisID: 'y'
         }
       ]
     };
@@ -249,6 +269,8 @@ const SmartMoneyChartModal: React.FC<SmartMoneyChartModalProps> = ({ alert, onCl
                   ];
                 }
               } else if (context.datasetIndex === 1) {
+                return `Объем: $${context.parsed.y.toLocaleString()}`;
+              } else if (context.datasetIndex === 2) {
                 return [
                   `Smart Money: ${alert.type.replace('_', ' ').toUpperCase()}`,
                   `Direction: ${alert.direction.toUpperCase()}`,
@@ -282,6 +304,8 @@ const SmartMoneyChartModal: React.FC<SmartMoneyChartModalProps> = ({ alert, onCl
         },
         y: {
           type: 'linear',
+          display: true,
+          position: 'left',
           ticks: {
             color: '#6B7280',
             callback: function(value) {
@@ -291,84 +315,31 @@ const SmartMoneyChartModal: React.FC<SmartMoneyChartModalProps> = ({ alert, onCl
           grid: {
             color: 'rgba(107, 114, 128, 0.1)'
           }
-        }
-      }
-    };
-
-    return { data, options };
-  };
-
-  const getVolumeChartConfig = () => {
-    if (chartData.length === 0) return null;
-
-    const volumeData = chartData.map(d => ({
-      x: d.timestamp,
-      y: d.volume_usdt
-    }));
-
-    const data = {
-      datasets: [
-        {
-          label: 'Объем (USDT)',
-          data: volumeData,
-          type: 'bar' as const,
-          backgroundColor: chartData.map(d => d.is_long ? 'rgba(34, 197, 94, 0.6)' : 'rgba(239, 68, 68, 0.6)'),
-          borderColor: chartData.map(d => d.is_long ? 'rgb(34, 197, 94)' : 'rgb(239, 68, 68)'),
-          borderWidth: 1
-        }
-      ]
-    };
-
-    const options: ChartOptions = {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        title: {
-          display: true,
-          text: 'Объем торгов',
-          color: '#374151'
         },
-        legend: {
-          display: false
-        },
-        tooltip: {
-          callbacks: {
-            title: (context) => {
-              return new Date(context[0].parsed.x).toLocaleString('ru-RU');
-            },
-            label: (context) => {
-              const num = Number(context.parsed.y);
-              if (num >= 1000000) {
-                return `Объем: $${(num / 1000000).toFixed(1)}M`;
-              } else if (num >= 1000) {
-                return `Объем: $${(num / 1000).toFixed(1)}K`;
-              }
-              return `Объем: $${num.toFixed(0)}`;
-            }
-          }
-        }
-      },
-      scales: {
-        x: {
-          type: 'time',
-          time: {
-            unit: 'minute',
-            displayFormats: {
-              minute: 'HH:mm'
-            }
-          },
-          ticks: {
-            color: '#6B7280'
-          },
-          grid: {
-            color: 'rgba(107, 114, 128, 0.1)'
-          }
-        },
-        y: {
+        y1: {
           type: 'linear',
+          display: true,
+          position: 'right',
+          // Смещаем объем вниз, чтобы он не перекрывал свечи
+          min: function(context) {
+            const maxPrice = Math.max(...chartData.map(d => d.high));
+            const minPrice = Math.min(...chartData.map(d => d.low));
+            const priceRange = maxPrice - minPrice;
+            // Начинаем объем с уровня ниже минимальной цены
+            return -(priceRange * 0.3); // Смещение вниз на 30% от диапазона цен
+          },
+          max: function(context) {
+            const maxVolume = Math.max(...chartData.map(d => d.volume_usdt));
+            const maxPrice = Math.max(...chartData.map(d => d.high));
+            const minPrice = Math.min(...chartData.map(d => d.low));
+            const priceRange = maxPrice - minPrice;
+            // Максимум объема не должен превышать минимальную цену
+            return Math.min(maxVolume, minPrice - (priceRange * 0.1));
+          },
           ticks: {
             color: '#6B7280',
             callback: function(value) {
+              if (Number(value) < 0) return ''; // Скрываем отрицательные значения
               const num = Number(value);
               if (num >= 1000000) {
                 return '$' + (num / 1000000).toFixed(1) + 'M';
@@ -379,8 +350,8 @@ const SmartMoneyChartModal: React.FC<SmartMoneyChartModalProps> = ({ alert, onCl
             }
           },
           grid: {
-            color: 'rgba(107, 114, 128, 0.1)'
-          }
+            drawOnChartArea: false,
+          },
         }
       }
     };
@@ -388,8 +359,7 @@ const SmartMoneyChartModal: React.FC<SmartMoneyChartModalProps> = ({ alert, onCl
     return { data, options };
   };
 
-  const mainChartConfig = getMainChartConfig();
-  const volumeChartConfig = getVolumeChartConfig();
+  const chartConfig = getChartConfig();
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
@@ -460,17 +430,9 @@ const SmartMoneyChartModal: React.FC<SmartMoneyChartModalProps> = ({ alert, onCl
                 </button>
               </div>
             </div>
-          ) : mainChartConfig && volumeChartConfig ? (
-            <div className="h-full flex flex-col">
-              {/* Основной график свечей */}
-              <div className="flex-1 min-h-0 mb-4">
-                <Chart type="candlestick" data={mainChartConfig.data} options={mainChartConfig.options} />
-              </div>
-              
-              {/* График объемов */}
-              <div className="h-48 border-t border-gray-200 pt-4">
-                <Chart type="bar" data={volumeChartConfig.data} options={volumeChartConfig.options} />
-              </div>
+          ) : chartConfig ? (
+            <div className="h-full">
+              <Chart type="candlestick" data={chartConfig.data} options={chartConfig.options} />
             </div>
           ) : (
             <div className="flex items-center justify-center h-full">
