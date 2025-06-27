@@ -132,7 +132,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
     window.URL.revokeObjectURL(url);
   };
 
-  const getChartConfig = () => {
+  const getMainChartConfig = () => {
     if (chartData.length === 0) return null;
 
     const alertTime = new Date(alert.close_timestamp || alert.timestamp).getTime();
@@ -209,39 +209,12 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
       };
     }
 
-    // Данные стакана заявок для отображения справа
-    let orderbookData = [];
-    if (alert.order_book_snapshot) {
-      const bids = alert.order_book_snapshot.bids.slice(0, 10);
-      const asks = alert.order_book_snapshot.asks.slice(0, 10);
-      
-      // Добавляем точки для визуализации стакана
-      bids.forEach(([price, volume]) => {
-        orderbookData.push({
-          x: alertTime + 120000, // Справа от графика
-          y: price,
-          volume: volume,
-          type: 'bid'
-        });
-      });
-      
-      asks.forEach(([price, volume]) => {
-        orderbookData.push({
-          x: alertTime + 120000,
-          y: price,
-          volume: volume,
-          type: 'ask'
-        });
-      });
-    }
-
     const data = {
       datasets: [
         {
           label: 'Свечи',
           data: candleData,
           type: 'candlestick' as const,
-          yAxisID: 'y',
           color: {
             up: 'rgb(34, 197, 94)',
             down: 'rgb(239, 68, 68)',
@@ -255,8 +228,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
           backgroundColor: 'rgb(255, 215, 0)',
           borderColor: 'rgb(255, 193, 7)',
           pointRadius: 8,
-          pointHoverRadius: 10,
-          yAxisID: 'y'
+          pointHoverRadius: 10
         },
         ...(alertLevelData.length > 0 ? [{
           label: 'Уровень алерта',
@@ -265,29 +237,8 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
           backgroundColor: 'rgb(168, 85, 247)',
           borderColor: 'rgb(168, 85, 247)',
           pointRadius: 6,
-          pointHoverRadius: 8,
-          yAxisID: 'y'
-        }] : []),
-        ...(orderbookData.length > 0 ? [
-          {
-            label: 'Покупки (Bids)',
-            data: orderbookData.filter(d => d.type === 'bid'),
-            type: 'scatter' as const,
-            backgroundColor: 'rgba(34, 197, 94, 0.6)',
-            borderColor: 'rgb(34, 197, 94)',
-            pointRadius: (context: any) => Math.min(context.raw.volume / 100, 15),
-            yAxisID: 'y'
-          },
-          {
-            label: 'Продажи (Asks)',
-            data: orderbookData.filter(d => d.type === 'ask'),
-            type: 'scatter' as const,
-            backgroundColor: 'rgba(239, 68, 68, 0.6)',
-            borderColor: 'rgb(239, 68, 68)',
-            pointRadius: (context: any) => Math.min(context.raw.volume / 100, 15),
-            yAxisID: 'y'
-          }
-        ] : [])
+          pointHoverRadius: 8
+        }] : [])
       ]
     };
 
@@ -301,7 +252,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
       plugins: {
         title: {
           display: true,
-          text: `${alert.symbol} - Свечной график с данными`,
+          text: `${alert.symbol} - Свечной график`,
           color: '#374151'
         },
         legend: {
@@ -323,15 +274,13 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
                     `High: $${candle.high.toFixed(8)}`,
                     `Low: $${candle.low.toFixed(8)}`,
                     `Close: $${candle.close.toFixed(8)}`,
-                    `Volume: ${candle.volume.toFixed(2)}`,
                     `Type: ${candle.is_long ? 'LONG' : 'SHORT'}`
                   ];
                 }
               } else if (context.datasetIndex === 1) {
                 return `Алерт: $${context.parsed.y.toFixed(8)}`;
-              } else if (context.raw && typeof context.raw === 'object' && 'volume' in context.raw) {
-                const data = context.raw as any;
-                return `${data.type === 'bid' ? 'Покупка' : 'Продажа'}: $${context.parsed.y.toFixed(8)} (${data.volume.toFixed(2)} USDT)`;
+              } else {
+                return `Уровень алерта: $${context.parsed.y.toFixed(8)}`;
               }
               return '';
             }
@@ -359,8 +308,6 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
         },
         y: {
           type: 'linear',
-          display: true,
-          position: 'left',
           ticks: {
             color: '#6B7280',
             callback: function(value) {
@@ -467,12 +414,99 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
     return { data, options };
   };
 
-  const chartConfig = getChartConfig();
+  const getOrderBookVisualization = () => {
+    if (!alert.order_book_snapshot) return null;
+
+    const alertPrice = alert.price;
+    const bids = alert.order_book_snapshot.bids.slice(0, 15);
+    const asks = alert.order_book_snapshot.asks.slice(0, 15);
+
+    // Находим максимальный объем для нормализации
+    const maxVolume = Math.max(
+      ...bids.map(([, volume]) => volume),
+      ...asks.map(([, volume]) => volume)
+    );
+
+    return (
+      <div className="w-80 bg-gray-50 rounded-lg p-4 border-l border-gray-200">
+        <h4 className="text-sm font-medium text-gray-700 mb-3 text-center">
+          Стакан заявок (USDT)
+        </h4>
+        
+        {/* Продажи (Asks) - сверху */}
+        <div className="mb-4">
+          <div className="text-xs text-red-600 mb-2 font-medium">Продажи (Asks)</div>
+          <div className="space-y-1">
+            {asks.reverse().map(([price, volume], i) => {
+              const volumeUSDT = price * volume;
+              const widthPercent = (volume / maxVolume) * 100;
+              const isNearAlert = Math.abs(price - alertPrice) / alertPrice < 0.001; // 0.1% от цены алерта
+              
+              return (
+                <div key={i} className={`relative flex justify-between text-xs py-1 px-2 rounded ${
+                  isNearAlert ? 'bg-yellow-100 border border-yellow-300' : 'hover:bg-red-50'
+                }`}>
+                  <div 
+                    className="absolute left-0 top-0 h-full bg-red-100 opacity-60 rounded"
+                    style={{ width: `${widthPercent}%` }}
+                  />
+                  <span className="relative z-10 text-gray-900 font-mono">${price.toFixed(6)}</span>
+                  <span className="relative z-10 text-red-600 font-medium">
+                    ${volumeUSDT >= 1000 ? (volumeUSDT / 1000).toFixed(1) + 'K' : volumeUSDT.toFixed(0)}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Линия алерта */}
+        <div className="border-t-2 border-yellow-400 my-3 relative">
+          <div className="absolute -top-3 left-1/2 transform -translate-x-1/2 bg-yellow-400 text-white text-xs px-2 py-1 rounded">
+            Алерт: ${alertPrice.toFixed(6)}
+          </div>
+        </div>
+        
+        {/* Покупки (Bids) - снизу */}
+        <div>
+          <div className="text-xs text-green-600 mb-2 font-medium">Покупки (Bids)</div>
+          <div className="space-y-1">
+            {bids.map(([price, volume], i) => {
+              const volumeUSDT = price * volume;
+              const widthPercent = (volume / maxVolume) * 100;
+              const isNearAlert = Math.abs(price - alertPrice) / alertPrice < 0.001; // 0.1% от цены алерта
+              
+              return (
+                <div key={i} className={`relative flex justify-between text-xs py-1 px-2 rounded ${
+                  isNearAlert ? 'bg-yellow-100 border border-yellow-300' : 'hover:bg-green-50'
+                }`}>
+                  <div 
+                    className="absolute left-0 top-0 h-full bg-green-100 opacity-60 rounded"
+                    style={{ width: `${widthPercent}%` }}
+                  />
+                  <span className="relative z-10 text-gray-900 font-mono">${price.toFixed(6)}</span>
+                  <span className="relative z-10 text-green-600 font-medium">
+                    ${volumeUSDT >= 1000 ? (volumeUSDT / 1000).toFixed(1) + 'K' : volumeUSDT.toFixed(0)}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="mt-3 pt-3 border-t border-gray-200 text-xs text-gray-500 text-center">
+          Снимок: {new Date(alert.order_book_snapshot.timestamp).toLocaleTimeString('ru-RU')}
+        </div>
+      </div>
+    );
+  };
+
+  const mainChartConfig = getMainChartConfig();
   const volumeChartConfig = getVolumeChartConfig();
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-      <div className="bg-white rounded-lg w-full max-w-7xl h-[90vh] flex flex-col">
+      <div className="bg-white rounded-lg w-full max-w-[95vw] h-[90vh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between p-6 border-b border-gray-200">
           <div>
@@ -539,50 +573,21 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
                 </button>
               </div>
             </div>
-          ) : chartConfig && volumeChartConfig ? (
-            <div className="h-full flex flex-col space-y-4">
-              {/* Основной график с ценами */}
-              <div className="flex-1 min-h-0">
-                <div className="h-full flex">
-                  {/* График свечей */}
-                  <div className="flex-1 h-full">
-                    <Chart type="candlestick" data={chartConfig.data} options={chartConfig.options} />
-                  </div>
-                  
-                  {/* Стакан заявок справа */}
-                  {alert.order_book_snapshot && (
-                    <div className="w-64 ml-4 bg-gray-50 rounded-lg p-4">
-                      <h4 className="text-sm font-medium text-gray-700 mb-3">Стакан заявок</h4>
-                      <div className="space-y-2">
-                        <div>
-                          <div className="text-xs text-red-600 mb-1">Продажи (Asks)</div>
-                          {alert.order_book_snapshot.asks.slice(0, 8).reverse().map(([price, volume], i) => (
-                            <div key={i} className="flex justify-between text-xs py-0.5">
-                              <span className="text-gray-900 font-mono">${price.toFixed(6)}</span>
-                              <span className="text-red-600">${(price * volume).toFixed(0)}</span>
-                            </div>
-                          ))}
-                        </div>
-                        
-                        <div className="border-t border-gray-300 my-2"></div>
-                        
-                        <div>
-                          <div className="text-xs text-green-600 mb-1">Покупки (Bids)</div>
-                          {alert.order_book_snapshot.bids.slice(0, 8).map(([price, volume], i) => (
-                            <div key={i} className="flex justify-between text-xs py-0.5">
-                              <span className="text-gray-900 font-mono">${price.toFixed(6)}</span>
-                              <span className="text-green-600">${(price * volume).toFixed(0)}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  )}
+          ) : mainChartConfig && volumeChartConfig ? (
+            <div className="h-full flex flex-col">
+              {/* Верхняя часть: основной график + стакан заявок */}
+              <div className="flex-1 flex min-h-0 mb-4">
+                {/* Основной график свечей */}
+                <div className="flex-1 min-w-0">
+                  <Chart type="candlestick" data={mainChartConfig.data} options={mainChartConfig.options} />
                 </div>
+                
+                {/* Стакан заявок справа */}
+                {getOrderBookVisualization()}
               </div>
               
-              {/* График объемов внизу */}
-              <div className="h-48">
+              {/* Нижняя часть: график объемов */}
+              <div className="h-48 border-t border-gray-200 pt-4">
                 <Chart type="bar" data={volumeChartConfig.data} options={volumeChartConfig.options} />
               </div>
             </div>

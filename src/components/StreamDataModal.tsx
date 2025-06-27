@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, Wifi, WifiOff } from 'lucide-react';
+import { X, Wifi, WifiOff, ExternalLink } from 'lucide-react';
 
 interface StreamData {
   symbol: string;
@@ -37,6 +37,12 @@ const StreamDataModal: React.FC<StreamDataModalProps> = ({
       return `${(volume / 1000).toFixed(1)}K`;
     }
     return volume.toFixed(0);
+  };
+
+  const openTradingView = (symbol: string) => {
+    const cleanSymbol = symbol.replace('USDT', '');
+    const url = `https://www.tradingview.com/chart/?symbol=BYBIT:${cleanSymbol}USDT.P&interval=1`;
+    window.open(url, '_blank');
   };
 
   return (
@@ -117,11 +123,21 @@ const StreamDataModal: React.FC<StreamDataModalProps> = ({
                       </div>
                     </div>
                     
-                    <div className="text-right text-sm text-gray-500">
-                      <div>{formatTime(item.timestamp)}</div>
-                      <div className="text-xs">
-                        {formatVolume(item.volume)} {item.symbol.replace('USDT', '')}
+                    <div className="flex items-center space-x-2">
+                      <div className="text-right text-sm text-gray-500">
+                        <div>{formatTime(item.timestamp)}</div>
+                        <div className="text-xs">
+                          {formatVolume(item.volume)} {item.symbol.replace('USDT', '')}
+                        </div>
                       </div>
+                      
+                      <button
+                        onClick={() => openTradingView(item.symbol)}
+                        className="text-blue-600 hover:text-blue-800 p-1"
+                        title="Открыть в TradingView"
+                      >
+                        <ExternalLink className="w-4 h-4" />
+                      </button>
                     </div>
                   </div>
                 </div>
