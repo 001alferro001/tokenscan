@@ -37,6 +37,12 @@ interface Alert {
   close_timestamp?: string;
   preliminary_alert?: Alert;
   final_alert?: Alert;
+  has_imbalance?: boolean;
+  imbalance_data?: {
+    type: 'fair_value_gap' | 'order_block' | 'breaker_block';
+    strength: number;
+    direction: 'bullish' | 'bearish';
+  };
   candle_data?: {
     open: number;
     high: number;
@@ -44,6 +50,11 @@ interface Alert {
     close: number;
     volume: number;
     alert_level?: number;
+  };
+  order_book_snapshot?: {
+    bids: Array<[number, number]>;
+    asks: Array<[number, number]>;
+    timestamp: string;
   };
 }
 
@@ -58,6 +69,16 @@ interface ChartData {
   is_long: boolean;
 }
 
+interface ImbalanceZone {
+  start: number;
+  end: number;
+  top: number;
+  bottom: number;
+  type: 'fair_value_gap' | 'order_block' | 'breaker_block';
+  direction: 'bullish' | 'bearish';
+  strength: number;
+}
+
 interface ChartModalProps {
   alert: Alert;
   onClose: () => void;
@@ -65,6 +86,7 @@ interface ChartModalProps {
 
 const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
   const [chartData, setChartData] = useState<ChartData[]>([]);
+  const [imbalanceZones, setImbalanceZones] = useState<ImbalanceZone[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -85,11 +107,90 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
 
       const data = await response.json();
       setChartData(data.chart_data || []);
+      
+      // Анализируем имбалансы
+      if (data.chart_data && data.chart_data.length > 0) {
+        const zones = analyzeImbalances(data.chart_data);
+        setImbalanceZones(zones);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Неизвестная ошибка');
     } finally {
       setLoading(false);
     }
+  };
+
+  const analyzeImbalances = (candles: ChartData[]): ImbalanceZone[] => {
+    const zones: ImbalanceZone[] = [];
+    
+    // Анализ Fair Value Gaps
+    for (let i = 2; i < candles.length; i++) {
+      const prev = candles[i - 2];
+      const current = candles[i - 1];
+      const next = candles[i];
+      
+      // Bullish FVG: предыдущая свеча low > следующая свеча high
+      if (prev.low > next.high && current.is_long) {
+        zones.push({
+          start: current.timestamp,
+          end: next.timestamp,
+          top: prev.low,
+          bottom: next.high,
+          type: 'fair_value_gap',
+          direction: 'bullish',
+          strength: (prev.low - next.high) / next.high * 100
+        });
+      }
+      
+      // Bearish FVG: предыдущая свеча high < следующая свеча low
+      if (prev.high < next.low && !current.is_long) {
+        zones.push({
+          start: current.timestamp,
+          end: next.timestamp,
+          top: next.low,
+          bottom: prev.high,
+          type: 'fair_value_gap',
+          direction: 'bearish',
+          strength: (next.low - prev.high) / prev.high * 100
+        });
+      }
+    }
+    
+    // Анализ Order Blocks
+    for (let i = 5; i < candles.length; i++) {
+      const window = candles.slice(i - 5, i);
+      const current = candles[i];
+      
+      // Bullish Order Block: последняя медвежья свеча перед сильным восходящим движением
+      const lastBearish = window.reverse().find(c => !c.is_long);
+      if (lastBearish && current.is_long && current.close > lastBearish.high * 1.02) {
+        zones.push({
+          start: lastBearish.timestamp,
+          end: current.timestamp,
+          top: lastBearish.high,
+          bottom: lastBearish.low,
+          type: 'order_block',
+          direction: 'bullish',
+          strength: (current.close - lastBearish.high) / lastBearish.high * 100
+        });
+      }
+      
+      // Bearish Order Block: последняя бычья свеча перед сильным нисходящим движением
+      const lastBullish = window.reverse().find(c => c.is_long);
+      if (lastBullish && !current.is_long && current.close < lastBullish.low * 0.98) {
+        zones.push({
+          start: lastBullish.timestamp,
+          end: current.timestamp,
+          top: lastBullish.high,
+          bottom: lastBullish.low,
+          type: 'order_block',
+          direction: 'bearish',
+          strength: (lastBullish.low - current.close) / lastBullish.low * 100
+        });
+      }
+    }
+    
+    return zones.filter(zone => zone.strength > 0.5); // Фильтруем слабые зоны
   };
 
   const openTradingView = () => {
@@ -121,26 +222,21 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
     const alertTime = new Date(alert.close_timestamp || alert.timestamp).getTime();
     const preliminaryTime = alert.preliminary_alert ? new Date(alert.preliminary_alert.timestamp).getTime() : null;
 
-    // Подготавливаем данные для свечного графика (как линейный для упрощения)
-    const priceData = chartData.map(d => ({
+    // Создаем свечные данные
+    const candleData = chartData.map(d => ({
       x: d.timestamp,
-      y: d.close
+      o: d.open,
+      h: d.high,
+      l: d.low,
+      c: d.close,
+      color: d.is_long ? 'rgba(34, 197, 94, 0.8)' : 'rgba(239, 68, 68, 0.8)',
+      borderColor: d.is_long ? 'rgb(34, 197, 94)' : 'rgb(239, 68, 68)'
     }));
 
     // Данные объема
     const volumeData = chartData.map(d => ({
       x: d.timestamp,
       y: d.volume_usdt
-    }));
-
-    // OHLC данные для отображения свечей
-    const candleData = chartData.map(d => ({
-      x: d.timestamp,
-      open: d.open,
-      high: d.high,
-      low: d.low,
-      close: d.close,
-      color: d.is_long ? 'rgba(34, 197, 94, 0.8)' : 'rgba(239, 68, 68, 0.8)'
     }));
 
     // Отметки алертов
@@ -160,7 +256,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
       label: 'Финальный'
     });
 
-    // Уровень алерта из данных свечи
+    // Уровень алерта
     let alertLevelData = [];
     if (alert.candle_data?.alert_level) {
       alertLevelData = [{
@@ -169,18 +265,30 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
       }];
     }
 
+    // Зоны имбаланса
+    const imbalanceAnnotations = imbalanceZones.map((zone, index) => ({
+      type: 'box',
+      xMin: zone.start,
+      xMax: zone.end,
+      yMin: zone.bottom,
+      yMax: zone.top,
+      backgroundColor: zone.direction === 'bullish' ? 'rgba(34, 197, 94, 0.2)' : 'rgba(239, 68, 68, 0.2)',
+      borderColor: zone.direction === 'bullish' ? 'rgb(34, 197, 94)' : 'rgb(239, 68, 68)',
+      borderWidth: 1,
+      label: {
+        content: `${zone.type} (${zone.strength.toFixed(1)}%)`,
+        enabled: true,
+        position: 'topLeft'
+      }
+    }));
+
     const data = {
       datasets: [
         {
-          label: 'Цена',
-          data: priceData,
-          type: 'line' as const,
-          borderColor: 'rgb(59, 130, 246)',
-          backgroundColor: 'rgba(59, 130, 246, 0.1)',
-          borderWidth: 2,
-          pointRadius: 0,
-          yAxisID: 'y',
-          fill: false
+          label: 'Свечи',
+          data: candleData,
+          type: 'candlestick' as const,
+          yAxisID: 'y'
         },
         {
           label: 'Объем (USDT)',
@@ -224,7 +332,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
       plugins: {
         title: {
           display: true,
-          text: `${alert.symbol} - График с OHLCV данными`,
+          text: `${alert.symbol} - Свечной график с анализом имбаланса`,
           color: 'white'
         },
         legend: {
@@ -239,19 +347,6 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
             },
             label: (context) => {
               if (context.datasetIndex === 0) {
-                return `Цена: $${context.parsed.y.toFixed(8)}`;
-              } else if (context.datasetIndex === 1) {
-                return `Объем: $${context.parsed.y.toLocaleString()}`;
-              } else if (context.datasetIndex === 2) {
-                const point = alertPoints[context.dataIndex];
-                return `${point.label} алерт: $${context.parsed.y.toFixed(8)}`;
-              } else {
-                return `Уровень алерта: $${context.parsed.y.toFixed(8)}`;
-              }
-            },
-            afterLabel: (context) => {
-              // Показываем OHLC данные для свечи
-              if (context.datasetIndex === 0) {
                 const candle = chartData.find(d => d.timestamp === context.parsed.x);
                 if (candle) {
                   return [
@@ -263,10 +358,20 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
                     `Type: ${candle.is_long ? 'LONG' : 'SHORT'}`
                   ];
                 }
+              } else if (context.datasetIndex === 1) {
+                return `Объем: $${context.parsed.y.toLocaleString()}`;
+              } else if (context.datasetIndex === 2) {
+                const point = alertPoints[context.dataIndex];
+                return `${point.label} алерт: $${context.parsed.y.toFixed(8)}`;
+              } else {
+                return `Уровень алерта: $${context.parsed.y.toFixed(8)}`;
               }
-              return [];
+              return '';
             }
           }
+        },
+        annotation: {
+          annotations: imbalanceAnnotations
         }
       },
       scales: {
@@ -335,8 +440,18 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
           <div>
             <h2 className="text-2xl font-bold text-white">{alert.symbol}</h2>
             <p className="text-gray-400">
-              График с OHLCV данными • Алерт: {new Date(alert.close_timestamp || alert.timestamp).toLocaleString('ru-RU')}
+              Свечной график с анализом имбаланса • Алерт: {new Date(alert.close_timestamp || alert.timestamp).toLocaleString('ru-RU')}
             </p>
+            {alert.has_imbalance && (
+              <div className="flex items-center space-x-2 mt-2">
+                <span className="text-yellow-400 text-sm">⚠️ Обнаружен имбаланс</span>
+                {alert.imbalance_data && (
+                  <span className="text-xs text-gray-400">
+                    ({alert.imbalance_data.type}, {alert.imbalance_data.direction}, сила: {alert.imbalance_data.strength})
+                  </span>
+                )}
+              </div>
+            )}
           </div>
           
           <div className="flex items-center space-x-3">
@@ -424,6 +539,27 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
             </div>
           </div>
           
+          {/* Зоны имбаланса */}
+          {imbalanceZones.length > 0 && (
+            <div className="mt-4 p-4 bg-gray-800 rounded-lg">
+              <div className="text-sm font-medium text-gray-300 mb-2">Обнаруженные зоны имбаланса:</div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+                {imbalanceZones.slice(0, 4).map((zone, index) => (
+                  <div key={index} className="flex justify-between items-center p-2 bg-gray-700 rounded">
+                    <span className="text-white">
+                      {zone.type === 'fair_value_gap' && 'Fair Value Gap'}
+                      {zone.type === 'order_block' && 'Order Block'}
+                      {zone.type === 'breaker_block' && 'Breaker Block'}
+                    </span>
+                    <span className={`text-xs ${zone.direction === 'bullish' ? 'text-green-400' : 'text-red-400'}`}>
+                      {zone.direction} ({zone.strength.toFixed(1)}%)
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          
           {/* OHLCV данные свечи алерта */}
           {alert.candle_data && (
             <div className="mt-4 p-4 bg-gray-800 rounded-lg">
@@ -456,6 +592,35 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
                   <span className="ml-2 text-yellow-400 font-mono">${alert.candle_data.alert_level.toFixed(8)}</span>
                 </div>
               )}
+            </div>
+          )}
+
+          {/* Снимок стакана */}
+          {alert.order_book_snapshot && (
+            <div className="mt-4 p-4 bg-gray-800 rounded-lg">
+              <div className="text-sm font-medium text-gray-300 mb-2">
+                Снимок стакана на момент алерта ({new Date(alert.order_book_snapshot.timestamp).toLocaleString('ru-RU')}):
+              </div>
+              <div className="grid grid-cols-2 gap-4 text-xs">
+                <div>
+                  <div className="text-green-400 mb-2 font-medium">Покупки (Bids):</div>
+                  {alert.order_book_snapshot.bids.slice(0, 5).map(([price, size], i) => (
+                    <div key={i} className="flex justify-between py-1">
+                      <span className="text-white font-mono">${price.toFixed(8)}</span>
+                      <span className="text-gray-400">{size.toFixed(2)}</span>
+                    </div>
+                  ))}
+                </div>
+                <div>
+                  <div className="text-red-400 mb-2 font-medium">Продажи (Asks):</div>
+                  {alert.order_book_snapshot.asks.slice(0, 5).map(([price, size], i) => (
+                    <div key={i} className="flex justify-between py-1">
+                      <span className="text-white font-mono">${price.toFixed(8)}</span>
+                      <span className="text-gray-400">{size.toFixed(2)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
           )}
         </div>

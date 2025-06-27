@@ -16,7 +16,8 @@ import {
   Plus,
   List,
   Wifi,
-  WifiOff
+  WifiOff,
+  AlertTriangle
 } from 'lucide-react';
 import ChartModal from './components/ChartModal';
 import WatchlistModal from './components/WatchlistModal';
@@ -39,6 +40,12 @@ interface Alert {
   message?: string;
   preliminary_alert?: Alert;
   final_alert?: Alert;
+  has_imbalance?: boolean;
+  imbalance_data?: {
+    type: 'fair_value_gap' | 'order_block' | 'breaker_block';
+    strength: number;
+    direction: 'bullish' | 'bearish';
+  };
   candle_data?: {
     open: number;
     high: number;
@@ -46,6 +53,11 @@ interface Alert {
     close: number;
     volume: number;
     alert_level?: number;
+  };
+  order_book_snapshot?: {
+    bids: Array<[number, number]>;
+    asks: Array<[number, number]>;
+    timestamp: string;
   };
 }
 
@@ -94,6 +106,16 @@ interface Settings {
   };
   telegram: {
     enabled: boolean;
+  };
+  orderbook: {
+    enabled: boolean;
+    snapshot_on_alert: boolean;
+  };
+  imbalance: {
+    enabled: boolean;
+    fair_value_gap_enabled: boolean;
+    order_block_enabled: boolean;
+    breaker_block_enabled: boolean;
   };
 }
 
@@ -155,24 +177,33 @@ function App() {
     },
     telegram: {
       enabled: false
+    },
+    orderbook: {
+      enabled: false,
+      snapshot_on_alert: false
+    },
+    imbalance: {
+      enabled: false,
+      fair_value_gap_enabled: true,
+      order_block_enabled: true,
+      breaker_block_enabled: true
     }
   });
 
   const wsRef = useRef<WebSocket | null>(null);
+  const alertsLoadedRef = useRef(false);
 
   useEffect(() => {
     loadSettings();
     loadStats();
-    loadAlerts();
+    loadInitialAlerts();
     loadWatchlist();
     connectWebSocket();
 
     const statsInterval = setInterval(loadStats, 30000);
-    const alertsInterval = setInterval(loadAlerts, 10000);
 
     return () => {
       clearInterval(statsInterval);
-      clearInterval(alertsInterval);
       if (wsRef.current) {
         wsRef.current.close();
       }
@@ -228,6 +259,9 @@ function App() {
       case 'watchlist_updated':
         loadWatchlist();
         break;
+      case 'alerts_cleared':
+        handleAlertsClear(data.alert_type);
+        break;
       default:
         break;
     }
@@ -251,58 +285,43 @@ function App() {
   };
 
   const handleNewAlert = (alert: Alert) => {
-    // Группируем алерты по символу и времени
-    const groupAlerts = (alerts: Alert[], newAlert: Alert) => {
-      const existingIndex = alerts.findIndex(a => 
-        a.symbol === newAlert.symbol && 
-        a.alert_type === newAlert.alert_type &&
-        Math.abs(new Date(a.timestamp).getTime() - new Date(newAlert.timestamp).getTime()) < 60000
-      );
-
+    console.log('Получен новый алерт:', alert);
+    
+    // Добавляем алерт в соответствующие списки без перезагрузки
+    const addAlertToList = (alerts: Alert[], newAlert: Alert) => {
+      // Проверяем, есть ли уже алерт с таким ID
+      const existingIndex = alerts.findIndex(a => a.id === newAlert.id);
+      
       if (existingIndex >= 0) {
+        // Обновляем существующий алерт
         const updated = [...alerts];
-        const existing = updated[existingIndex];
-        
-        if (!newAlert.is_closed && !existing.preliminary_alert) {
-          // Это предварительный алерт
-          updated[existingIndex] = {
-            ...existing,
-            preliminary_alert: newAlert
-          };
-        } else if (newAlert.is_closed) {
-          // Это финальный алерт
-          updated[existingIndex] = {
-            ...existing,
-            final_alert: newAlert,
-            is_true_signal: newAlert.is_true_signal,
-            close_timestamp: newAlert.close_timestamp || newAlert.timestamp,
-            candle_data: newAlert.candle_data
-          };
-        }
-        
+        updated[existingIndex] = newAlert;
         return updated;
       } else {
-        return [newAlert, ...alerts.slice(0, 99)];
+        // Добавляем новый алерт в начало списка
+        return [newAlert, ...alerts];
       }
     };
 
-    setAlerts(prev => groupAlerts(prev, alert));
+    setAlerts(prev => addAlertToList(prev, alert));
     
     // Распределяем по типам
     switch (alert.alert_type) {
       case 'volume_spike':
-        setVolumeAlerts(prev => groupAlerts(prev, alert));
+        setVolumeAlerts(prev => addAlertToList(prev, alert));
         break;
       case 'consecutive_long':
-        setConsecutiveAlerts(prev => groupAlerts(prev, alert));
+        setConsecutiveAlerts(prev => addAlertToList(prev, alert));
         break;
       case 'priority':
-        setPriorityAlerts(prev => groupAlerts(prev, alert));
+        setPriorityAlerts(prev => addAlertToList(prev, alert));
         break;
     }
   };
 
   const handleAlertUpdate = (updatedAlert: Alert) => {
+    console.log('Обновление алерта:', updatedAlert);
+    
     const updateAlertInList = (alerts: Alert[]) => 
       alerts.map(alert => alert.id === updatedAlert.id ? updatedAlert : alert);
 
@@ -318,6 +337,27 @@ function App() {
       case 'priority':
         setPriorityAlerts(updateAlertInList);
         break;
+    }
+  };
+
+  const handleAlertsClear = (alertType?: string) => {
+    if (alertType) {
+      switch (alertType) {
+        case 'volume_spike':
+          setVolumeAlerts([]);
+          break;
+        case 'consecutive_long':
+          setConsecutiveAlerts([]);
+          break;
+        case 'priority':
+          setPriorityAlerts([]);
+          break;
+      }
+    } else {
+      setAlerts([]);
+      setVolumeAlerts([]);
+      setConsecutiveAlerts([]);
+      setPriorityAlerts([]);
     }
   };
 
@@ -345,7 +385,9 @@ function App() {
     }
   };
 
-  const loadAlerts = async () => {
+  const loadInitialAlerts = async () => {
+    if (alertsLoadedRef.current) return;
+    
     try {
       const response = await fetch('/api/alerts/all');
       if (response.ok) {
@@ -363,6 +405,8 @@ function App() {
         setVolumeAlerts(sortAlerts(data.volume_alerts || []));
         setConsecutiveAlerts(sortAlerts(data.consecutive_alerts || []));
         setPriorityAlerts(sortAlerts(data.priority_alerts || []));
+        
+        alertsLoadedRef.current = true;
       }
     } catch (error) {
       console.error('Ошибка загрузки алертов:', error);
@@ -409,24 +453,8 @@ function App() {
       const response = await fetch(url, { method: 'DELETE' });
       
       if (response.ok) {
-        if (type) {
-          switch (type) {
-            case 'volume_spike':
-              setVolumeAlerts([]);
-              break;
-            case 'consecutive_long':
-              setConsecutiveAlerts([]);
-              break;
-            case 'priority':
-              setPriorityAlerts([]);
-              break;
-          }
-        } else {
-          setAlerts([]);
-          setVolumeAlerts([]);
-          setConsecutiveAlerts([]);
-          setPriorityAlerts([]);
-        }
+        // Очищаем локально без ожидания WebSocket сообщения
+        handleAlertsClear(type);
       }
     } catch (error) {
       console.error('Ошибка очистки алертов:', error);
@@ -445,46 +473,80 @@ function App() {
   };
 
   const getAlertIcon = (alert: Alert) => {
+    const hasImbalance = alert.has_imbalance;
+    
     switch (alert.alert_type) {
       case 'volume_spike':
         if (alert.final_alert) {
-          return alert.final_alert.is_true_signal ? 
+          const icon = alert.final_alert.is_true_signal ? 
             <Check className="w-5 h-5 text-green-400" /> : 
             <X className="w-5 h-5 text-red-400" />;
+          return hasImbalance ? (
+            <div className="relative">
+              {icon}
+              <AlertTriangle className="w-3 h-3 text-yellow-400 absolute -top-1 -right-1" />
+            </div>
+          ) : icon;
         } else if (alert.preliminary_alert) {
-          return <Clock className="w-5 h-5 text-yellow-400" />;
+          const icon = <Clock className="w-5 h-5 text-yellow-400" />;
+          return hasImbalance ? (
+            <div className="relative">
+              {icon}
+              <AlertTriangle className="w-3 h-3 text-yellow-400 absolute -top-1 -right-1" />
+            </div>
+          ) : icon;
         }
-        return alert.is_closed ? 
+        const icon = alert.is_closed ? 
           (alert.is_true_signal ? 
             <Check className="w-5 h-5 text-green-400" /> : 
             <X className="w-5 h-5 text-red-400" />) :
           <Activity className="w-5 h-5 text-yellow-400" />;
+        return hasImbalance ? (
+          <div className="relative">
+            {icon}
+            <AlertTriangle className="w-3 h-3 text-yellow-400 absolute -top-1 -right-1" />
+          </div>
+        ) : icon;
       case 'consecutive_long':
-        return <ArrowUp className="w-5 h-5 text-blue-400" />;
+        const consecutiveIcon = <ArrowUp className="w-5 h-5 text-blue-400" />;
+        return hasImbalance ? (
+          <div className="relative">
+            {consecutiveIcon}
+            <AlertTriangle className="w-3 h-3 text-yellow-400 absolute -top-1 -right-1" />
+          </div>
+        ) : consecutiveIcon;
       case 'priority':
-        return <Star className="w-5 h-5 text-purple-400" />;
+        const priorityIcon = <Star className="w-5 h-5 text-purple-400" />;
+        return hasImbalance ? (
+          <div className="relative">
+            {priorityIcon}
+            <AlertTriangle className="w-3 h-3 text-yellow-400 absolute -top-1 -right-1" />
+          </div>
+        ) : priorityIcon;
       default:
         return <Activity className="w-5 h-5 text-gray-400" />;
     }
   };
 
   const getAlertTitle = (alert: Alert) => {
+    const imbalanceText = alert.has_imbalance ? ' + Имбаланс' : '';
+    
     switch (alert.alert_type) {
       case 'volume_spike':
         if (alert.final_alert) {
           const status = alert.final_alert.is_true_signal ? ' (Истинный)' : ' (Ложный)';
-          return `Превышение объема${status}`;
+          return `Превышение объема${status}${imbalanceText}`;
         } else if (alert.preliminary_alert) {
-          return 'Превышение объема (Предварительный)';
+          return `Превышение объема (Предварительный)${imbalanceText}`;
         }
         const status = alert.is_closed ? 
           (alert.is_true_signal ? ' (Истинный)' : ' (Ложный)') : 
           ' (В процессе)';
-        return `Превышение объема${status}`;
+        return `Превышение объема${status}${imbalanceText}`;
       case 'consecutive_long':
-        return `${alert.consecutive_count} LONG свечей подряд`;
+        return `${alert.consecutive_count} LONG свечей подряд${imbalanceText}`;
       case 'priority':
-        return 'Приоритетный сигнал';
+        return `Приоритетный сигнал${imbalanceText}`;
       default:
         return 'Неизвестный тип алерта';
     }
@@ -512,7 +574,9 @@ function App() {
   const renderAlert = (alert: Alert) => (
     <div
       key={alert.id}
-      className="bg-gray-800 rounded-lg p-4 border border-gray-700 hover:border-gray-600 transition-colors cursor-pointer"
+      className={`bg-gray-800 rounded-lg p-4 border transition-colors cursor-pointer ${
+        alert.has_imbalance ? 'border-yellow-500 bg-yellow-900 bg-opacity-20' : 'border-gray-700 hover:border-gray-600'
+      }`}
       onClick={() => openChart(alert)}
     >
       <div className="flex items-start justify-between mb-3">
@@ -521,6 +585,14 @@ function App() {
           <div>
             <h3 className="font-semibold text-white">{alert.symbol}</h3>
             <p className="text-sm text-gray-400">{getAlertTitle(alert)}</p>
+            {alert.has_imbalance && alert.imbalance_data && (
+              <div className="text-xs text-yellow-400 mt-1">
+                {alert.imbalance_data.type === 'fair_value_gap' && 'Fair Value Gap'}
+                {alert.imbalance_data.type === 'order_block' && 'Order Block'}
+                {alert.imbalance_data.type === 'breaker_block' && 'Breaker Block'}
+                {' '}({alert.imbalance_data.direction}, сила: {alert.imbalance_data.strength})
+              </div>
+            )}
           </div>
         </div>
         <button
@@ -659,6 +731,33 @@ function App() {
         </div>
       )}
 
+      {/* Снимок стакана */}
+      {alert.order_book_snapshot && (
+        <div className="mt-3 p-3 bg-gray-700 rounded">
+          <div className="text-sm font-medium text-gray-300 mb-2">Снимок стакана:</div>
+          <div className="grid grid-cols-2 gap-4 text-xs">
+            <div>
+              <div className="text-green-400 mb-1">Покупки (Bids):</div>
+              {alert.order_book_snapshot.bids.slice(0, 3).map(([price, size], i) => (
+                <div key={i} className="flex justify-between">
+                  <span className="text-white">${price.toFixed(8)}</span>
+                  <span className="text-gray-400">{size.toFixed(2)}</span>
+                </div>
+              ))}
+            </div>
+            <div>
+              <div className="text-red-400 mb-1">Продажи (Asks):</div>
+              {alert.order_book_snapshot.asks.slice(0, 3).map(([price, size], i) => (
+                <div key={i} className="flex justify-between">
+                  <span className="text-white">${price.toFixed(8)}</span>
+                  <span className="text-gray-400">{size.toFixed(2)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       {alert.message && (
         <div className="mt-3 p-2 bg-gray-700 rounded text-sm text-gray-300">
           {alert.message}
@@ -742,6 +841,14 @@ function App() {
                     </div>
                   )}
                 </div>
+                
+                <button
+                  onClick={() => openTradingView(item.symbol)}
+                  className="flex items-center space-x-1 bg-blue-600 hover:bg-blue-700 px-3 py-1 rounded text-sm transition-colors"
+                >
+                  <ExternalLink className="w-4 h-4" />
+                  <span>TradingView</span>
+                </button>
               </div>
             </div>
           ))}
@@ -796,6 +903,14 @@ function App() {
                 <div className="text-xs text-gray-500">
                   {formatTime(item.timestamp)}
                 </div>
+                
+                <button
+                  onClick={() => openTradingView(item.symbol)}
+                  className="flex items-center space-x-1 bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded text-xs transition-colors"
+                >
+                  <ExternalLink className="w-3 h-3" />
+                  <span>TV</span>
+                </button>
               </div>
             </div>
           ))}
@@ -829,7 +944,7 @@ function App() {
           
           <div className="flex items-center space-x-3">
             <button
-              onClick={() => loadAlerts()}
+              onClick={() => loadInitialAlerts()}
               className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg transition-colors"
             >
               <RefreshCw className="w-4 h-4" />
@@ -1004,6 +1119,114 @@ function App() {
                       className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded"
                     />
                     <span>Приоритетные сигналы</span>
+                  </label>
+                </div>
+              </div>
+
+              {/* Order Book Settings */}
+              <div>
+                <h3 className="text-xl font-semibold mb-4 text-orange-400">Настройки стакана</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <label className="flex items-center space-x-3">
+                    <input
+                      type="checkbox"
+                      checked={settings.orderbook.enabled}
+                      onChange={(e) => setSettings(prev => ({
+                        ...prev,
+                        orderbook: {
+                          ...prev.orderbook,
+                          enabled: e.target.checked
+                        }
+                      }))}
+                      className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded"
+                    />
+                    <span>Получение данных стакана</span>
+                  </label>
+                  
+                  <label className="flex items-center space-x-3">
+                    <input
+                      type="checkbox"
+                      checked={settings.orderbook.snapshot_on_alert}
+                      onChange={(e) => setSettings(prev => ({
+                        ...prev,
+                        orderbook: {
+                          ...prev.orderbook,
+                          snapshot_on_alert: e.target.checked
+                        }
+                      }))}
+                      className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded"
+                    />
+                    <span>Снимок стакана при алерте</span>
+                  </label>
+                </div>
+              </div>
+
+              {/* Imbalance Settings */}
+              <div>
+                <h3 className="text-xl font-semibold mb-4 text-yellow-400">Анализ имбаланса</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <label className="flex items-center space-x-3">
+                    <input
+                      type="checkbox"
+                      checked={settings.imbalance.enabled}
+                      onChange={(e) => setSettings(prev => ({
+                        ...prev,
+                        imbalance: {
+                          ...prev.imbalance,
+                          enabled: e.target.checked
+                        }
+                      }))}
+                      className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded"
+                    />
+                    <span>Включить анализ имбаланса</span>
+                  </label>
+                  
+                  <label className="flex items-center space-x-3">
+                    <input
+                      type="checkbox"
+                      checked={settings.imbalance.fair_value_gap_enabled}
+                      onChange={(e) => setSettings(prev => ({
+                        ...prev,
+                        imbalance: {
+                          ...prev.imbalance,
+                          fair_value_gap_enabled: e.target.checked
+                        }
+                      }))}
+                      className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded"
+                    />
+                    <span>Fair Value Gap</span>
+                  </label>
+                  
+                  <label className="flex items-center space-x-3">
+                    <input
+                      type="checkbox"
+                      checked={settings.imbalance.order_block_enabled}
+                      onChange={(e) => setSettings(prev => ({
+                        ...prev,
+                        imbalance: {
+                          ...prev.imbalance,
+                          order_block_enabled: e.target.checked
+                        }
+                      }))}
+                      className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded"
+                    />
+                    <span>Order Block</span>
+                  </label>
+                  
+                  <label className="flex items-center space-x-3">
+                    <input
+                      type="checkbox"
+                      checked={settings.imbalance.breaker_block_enabled}
+                      onChange={(e) => setSettings(prev => ({
+                        ...prev,
+                        imbalance: {
+                          ...prev.imbalance,
+                          breaker_block_enabled: e.target.checked
+                        }
+                      }))}
+                      className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded"
+                    />
+                    <span>Breaker Block</span>
                   </label>
                 </div>
               </div>

@@ -3,6 +3,8 @@ import os
 from typing import Dict, Optional, List
 from datetime import datetime, timedelta
 from enum import Enum
+import asyncio
+import aiohttp
 
 logger = logging.getLogger(__name__)
 
@@ -17,11 +19,149 @@ class AlertStatus(Enum):
     FALSE_SIGNAL = "false_signal"
     CLOSED = "closed"
 
+class ImbalanceAnalyzer:
+    """Анализатор имбалансов на основе концепций Smart Money"""
+    
+    def __init__(self):
+        self.min_gap_percentage = 0.1  # Минимальный размер гэпа в %
+        self.min_strength = 0.5  # Минимальная сила сигнала
+    
+    def analyze_fair_value_gap(self, candles: List[Dict]) -> Optional[Dict]:
+        """Анализ Fair Value Gap"""
+        if len(candles) < 3:
+            return None
+        
+        # Берем последние 3 свечи
+        prev_candle = candles[-3]
+        current_candle = candles[-2]
+        next_candle = candles[-1]
+        
+        # Bullish FVG: предыдущая свеча low > следующая свеча high
+        if prev_candle['low'] > next_candle['high'] and current_candle['is_long']:
+            gap_size = (prev_candle['low'] - next_candle['high']) / next_candle['high'] * 100
+            if gap_size >= self.min_gap_percentage:
+                return {
+                    'type': 'fair_value_gap',
+                    'direction': 'bullish',
+                    'strength': gap_size,
+                    'top': prev_candle['low'],
+                    'bottom': next_candle['high'],
+                    'timestamp': current_candle['timestamp']
+                }
+        
+        # Bearish FVG: предыдущая свеча high < следующая свеча low
+        if prev_candle['high'] < next_candle['low'] and not current_candle['is_long']:
+            gap_size = (next_candle['low'] - prev_candle['high']) / prev_candle['high'] * 100
+            if gap_size >= self.min_gap_percentage:
+                return {
+                    'type': 'fair_value_gap',
+                    'direction': 'bearish',
+                    'strength': gap_size,
+                    'top': next_candle['low'],
+                    'bottom': prev_candle['high'],
+                    'timestamp': current_candle['timestamp']
+                }
+        
+        return None
+    
+    def analyze_order_block(self, candles: List[Dict]) -> Optional[Dict]:
+        """Анализ Order Block"""
+        if len(candles) < 10:
+            return None
+        
+        current_candle = candles[-1]
+        window = candles[-10:-1]  # Последние 9 свечей перед текущей
+        
+        # Bullish Order Block: последняя медвежья свеча перед сильным восходящим движением
+        last_bearish = None
+        for candle in reversed(window):
+            if not candle['is_long']:
+                last_bearish = candle
+                break
+        
+        if last_bearish and current_candle['is_long']:
+            price_move = (current_candle['close'] - last_bearish['high']) / last_bearish['high'] * 100
+            if price_move >= 2.0:  # Движение минимум на 2%
+                return {
+                    'type': 'order_block',
+                    'direction': 'bullish',
+                    'strength': price_move,
+                    'top': last_bearish['high'],
+                    'bottom': last_bearish['low'],
+                    'timestamp': last_bearish['timestamp']
+                }
+        
+        # Bearish Order Block: последняя бычья свеча перед сильным нисходящим движением
+        last_bullish = None
+        for candle in reversed(window):
+            if candle['is_long']:
+                last_bullish = candle
+                break
+        
+        if last_bullish and not current_candle['is_long']:
+            price_move = (last_bullish['low'] - current_candle['close']) / last_bullish['low'] * 100
+            if price_move >= 2.0:  # Движение минимум на 2%
+                return {
+                    'type': 'order_block',
+                    'direction': 'bearish',
+                    'strength': price_move,
+                    'top': last_bullish['high'],
+                    'bottom': last_bullish['low'],
+                    'timestamp': last_bullish['timestamp']
+                }
+        
+        return None
+    
+    def analyze_breaker_block(self, candles: List[Dict]) -> Optional[Dict]:
+        """Анализ Breaker Block (пробитый Order Block)"""
+        if len(candles) < 15:
+            return None
+        
+        # Ищем пробитые уровни поддержки/сопротивления
+        current_candle = candles[-1]
+        window = candles[-15:-1]
+        
+        # Находим значимые уровни
+        highs = [c['high'] for c in window]
+        lows = [c['low'] for c in window]
+        
+        max_high = max(highs)
+        min_low = min(lows)
+        
+        # Bullish Breaker: пробитие вниз с последующим возвратом вверх
+        if current_candle['close'] > max_high and current_candle['is_long']:
+            strength = (current_candle['close'] - max_high) / max_high * 100
+            if strength >= 1.0:
+                return {
+                    'type': 'breaker_block',
+                    'direction': 'bullish',
+                    'strength': strength,
+                    'top': max_high,
+                    'bottom': min_low,
+                    'timestamp': current_candle['timestamp']
+                }
+        
+        # Bearish Breaker: пробитие вверх с последующим возвратом вниз
+        if current_candle['close'] < min_low and not current_candle['is_long']:
+            strength = (min_low - current_candle['close']) / min_low * 100
+            if strength >= 1.0:
+                return {
+                    'type': 'breaker_block',
+                    'direction': 'bearish',
+                    'strength': strength,
+                    'top': max_high,
+                    'bottom': min_low,
+                    'timestamp': current_candle['timestamp']
+                }
+        
+        return None
+
 class AlertManager:
     def __init__(self, db_manager, telegram_bot=None, connection_manager=None):
         self.db_manager = db_manager
         self.telegram_bot = telegram_bot
         self.connection_manager = connection_manager
+        self.imbalance_analyzer = ImbalanceAnalyzer()
         
         # Настройки из переменных окружения
         self.settings = {
@@ -33,7 +173,13 @@ class AlertManager:
             'min_volume_usdt': int(os.getenv('MIN_VOLUME_USDT', 1000)),
             'consecutive_long_count': int(os.getenv('CONSECUTIVE_LONG_COUNT', 5)),
             'alert_grouping_minutes': int(os.getenv('ALERT_GROUPING_MINUTES', 5)),
-            'data_retention_hours': int(os.getenv('DATA_RETENTION_HOURS', 2))
+            'data_retention_hours': int(os.getenv('DATA_RETENTION_HOURS', 2)),
+            'orderbook_enabled': False,
+            'orderbook_snapshot_on_alert': False,
+            'imbalance_enabled': False,
+            'fair_value_gap_enabled': True,
+            'order_block_enabled': True,
+            'breaker_block_enabled': True
         }
         
         # Кэш для отслеживания состояния свечей и алертов
@@ -42,7 +188,7 @@ class AlertManager:
         self.consecutive_counters = {}  # symbol -> consecutive long count
         self.priority_signals = {}  # symbol -> priority signal data
         
-        logger.info("AlertManager инициализирован")
+        logger.info("AlertManager инициализирован с анализом имбаланса")
 
     async def process_kline_data(self, symbol: str, kline_data: Dict) -> List[Dict]:
         """Обработка данных свечи и генерация алертов"""
@@ -159,6 +305,18 @@ class AlertManager:
                     'volume': float(kline_data['volume'])
                 }
                 
+                # Анализируем имбаланс
+                imbalance_data = None
+                has_imbalance = False
+                if self.settings.get('imbalance_enabled', False) and symbol in self.candle_cache:
+                    imbalance_data = await self._analyze_imbalance(symbol)
+                    has_imbalance = imbalance_data is not None
+                
+                # Получаем снимок стакана, если включено
+                order_book_snapshot = None
+                if self.settings.get('orderbook_snapshot_on_alert', False):
+                    order_book_snapshot = await self._get_order_book_snapshot(symbol)
+                
                 if not is_closed:
                     # Первый алерт (предварительный - в процессе формирования)
                     if symbol in self.volume_alerts_cache and self.volume_alerts_cache[symbol]['timestamp'] == timestamp:
@@ -178,7 +336,10 @@ class AlertManager:
                         'timestamp': datetime.fromtimestamp(timestamp / 1000),
                         'is_closed': False,
                         'is_true_signal': None,
+                        'has_imbalance': has_imbalance,
+                        'imbalance_data': imbalance_data,
                         'candle_data': candle_data,
+                        'order_book_snapshot': order_book_snapshot,
                         'message': f"Предварительный алерт: объем превышен в {volume_ratio:.2f}x раз"
                     }
                     
@@ -215,7 +376,10 @@ class AlertManager:
                             'close_timestamp': datetime.fromtimestamp(int(kline_data['end']) / 1000),
                             'is_closed': True,
                             'is_true_signal': final_is_long,
+                            'has_imbalance': has_imbalance,
+                            'imbalance_data': imbalance_data,
                             'candle_data': candle_data,
+                            'order_book_snapshot': order_book_snapshot,
                             'preliminary_alert': preliminary_alert,
                             'message': f"Финальный алерт: объем превышен в {volume_ratio:.2f}x раз ({'истинный' if final_is_long else 'ложный'} сигнал)"
                         }
@@ -240,7 +404,10 @@ class AlertManager:
                             'close_timestamp': datetime.fromtimestamp(int(kline_data['end']) / 1000),
                             'is_closed': True,
                             'is_true_signal': final_is_long,
+                            'has_imbalance': has_imbalance,
+                            'imbalance_data': imbalance_data,
                             'candle_data': candle_data,
+                            'order_book_snapshot': order_book_snapshot,
                             'message': f"Объем превышен в {volume_ratio:.2f}x раз ({'истинный' if final_is_long else 'ложный'} сигнал)"
                         }
                         
@@ -250,6 +417,69 @@ class AlertManager:
             
         except Exception as e:
             logger.error(f"Ошибка проверки алерта по объему для {symbol}: {e}")
+            return None
+
+    async def _analyze_imbalance(self, symbol: str) -> Optional[Dict]:
+        """Анализ имбаланса для символа"""
+        try:
+            if symbol not in self.candle_cache or len(self.candle_cache[symbol]) < 15:
+                return None
+            
+            candles = self.candle_cache[symbol]
+            
+            # Проверяем Fair Value Gap
+            if self.settings.get('fair_value_gap_enabled', True):
+                fvg = self.imbalance_analyzer.analyze_fair_value_gap(candles)
+                if fvg:
+                    return fvg
+            
+            # Проверяем Order Block
+            if self.settings.get('order_block_enabled', True):
+                ob = self.imbalance_analyzer.analyze_order_block(candles)
+                if ob:
+                    return ob
+            
+            # Проверяем Breaker Block
+            if self.settings.get('breaker_block_enabled', True):
+                bb = self.imbalance_analyzer.analyze_breaker_block(candles)
+                if bb:
+                    return bb
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Ошибка анализа имбаланса для {symbol}: {e}")
+            return None
+
+    async def _get_order_book_snapshot(self, symbol: str) -> Optional[Dict]:
+        """Получение снимка стакана заявок"""
+        try:
+            if not self.settings.get('orderbook_enabled', False):
+                return None
+            
+            url = f"https://api.bybit.com/v5/market/orderbook"
+            params = {
+                'category': 'linear',
+                'symbol': symbol,
+                'limit': 25
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        if data.get('retCode') == 0:
+                            result = data['result']
+                            return {
+                                'bids': [[float(bid[0]), float(bid[1])] for bid in result.get('b', [])],
+                                'asks': [[float(ask[0]), float(ask[1])] for ask in result.get('a', [])],
+                                'timestamp': datetime.now().isoformat()
+                            }
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Ошибка получения стакана для {symbol}: {e}")
             return None
 
     async def _process_candle_close(self, symbol: str, kline_data: Dict) -> List[Dict]:
@@ -301,6 +531,13 @@ class AlertManager:
                         'volume': float(kline_data['volume'])
                     }
                     
+                    # Анализируем имбаланс
+                    imbalance_data = None
+                    has_imbalance = False
+                    if self.settings.get('imbalance_enabled', False):
+                        imbalance_data = await self._analyze_imbalance(symbol)
+                        has_imbalance = imbalance_data is not None
+                    
                     alert_data = {
                         'symbol': symbol,
                         'alert_type': AlertType.CONSECUTIVE_LONG.value,
@@ -309,6 +546,8 @@ class AlertManager:
                         'timestamp': datetime.fromtimestamp(int(kline_data['start']) / 1000),
                         'close_timestamp': datetime.fromtimestamp(int(kline_data['end']) / 1000),
                         'is_closed': True,
+                        'has_imbalance': has_imbalance,
+                        'imbalance_data': imbalance_data,
                         'candle_data': candle_data,
                         'message': f"{self.consecutive_counters[symbol]} подряд идущих LONG свечей"
                     }
@@ -356,6 +595,16 @@ class AlertManager:
                     if volume_alert and volume_alert.get('candle_data'):
                         candle_data.update(volume_alert['candle_data'])
                     
+                    # Проверяем имбаланс для приоритетного сигнала
+                    has_imbalance = False
+                    imbalance_data = None
+                    if volume_alert and volume_alert.get('has_imbalance'):
+                        has_imbalance = True
+                        imbalance_data = volume_alert.get('imbalance_data')
+                    elif consecutive_alert and consecutive_alert.get('has_imbalance'):
+                        has_imbalance = True
+                        imbalance_data = consecutive_alert.get('imbalance_data')
+                    
                     priority_data = {
                         'symbol': symbol,
                         'alert_type': AlertType.PRIORITY.value,
@@ -364,8 +613,10 @@ class AlertManager:
                         'timestamp': consecutive_alert['timestamp'],
                         'close_timestamp': consecutive_alert['close_timestamp'],
                         'is_closed': True,
+                        'has_imbalance': has_imbalance,
+                        'imbalance_data': imbalance_data,
                         'candle_data': candle_data,
-                        'message': f"Приоритетный сигнал: {consecutive_alert['consecutive_count']} LONG свечей + всплеск объема"
+                        'message': f"Приоритетный сигнал: {consecutive_alert['consecutive_count']} LONG свечей + всплеск объема{' + имбаланс' if has_imbalance else ''}"
                     }
                     
                     if volume_alert:
@@ -405,7 +656,7 @@ class AlertManager:
             alert_id = await self.db_manager.save_alert(alert_data)
             alert_data['id'] = alert_id
             
-            # Отправляем в WebSocket
+            # Отправляем в WebSocket немедленно
             if self.connection_manager:
                 await self.connection_manager.broadcast_json({
                     'type': 'new_alert',

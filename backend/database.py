@@ -77,7 +77,7 @@ class DatabaseManager:
                 )
             """)
 
-            # Создаем обновленную таблицу алертов с поддержкой JSONB для данных свечи
+            # Создаем обновленную таблицу алертов с поддержкой имбаланса и стакана
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS alerts (
                     id SERIAL PRIMARY KEY,
@@ -90,12 +90,15 @@ class DatabaseManager:
                     average_volume_usdt DECIMAL(20, 8),
                     is_true_signal BOOLEAN,
                     is_closed BOOLEAN DEFAULT FALSE,
+                    has_imbalance BOOLEAN DEFAULT FALSE,
                     message TEXT,
                     telegram_sent BOOLEAN DEFAULT FALSE,
                     alert_timestamp TIMESTAMP NOT NULL,
                     close_timestamp TIMESTAMP,
                     candle_data JSONB,
                     preliminary_alert JSONB,
+                    imbalance_data JSONB,
+                    order_book_snapshot JSONB,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -125,6 +128,11 @@ class DatabaseManager:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_alerts_close_timestamp 
                 ON alerts(close_timestamp DESC NULLS LAST)
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_alerts_imbalance 
+                ON alerts(has_imbalance, alert_type)
             """)
 
             cursor.close()
@@ -163,10 +171,13 @@ class DatabaseManager:
                 ALTER TABLE alerts 
                 ADD COLUMN IF NOT EXISTS is_true_signal BOOLEAN,
                 ADD COLUMN IF NOT EXISTS is_closed BOOLEAN DEFAULT FALSE,
+                ADD COLUMN IF NOT EXISTS has_imbalance BOOLEAN DEFAULT FALSE,
                 ADD COLUMN IF NOT EXISTS alert_timestamp TIMESTAMP,
                 ADD COLUMN IF NOT EXISTS close_timestamp TIMESTAMP,
                 ADD COLUMN IF NOT EXISTS candle_data JSONB,
                 ADD COLUMN IF NOT EXISTS preliminary_alert JSONB,
+                ADD COLUMN IF NOT EXISTS imbalance_data JSONB,
+                ADD COLUMN IF NOT EXISTS order_book_snapshot JSONB,
                 ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             """)
 
@@ -329,13 +340,21 @@ class DatabaseManager:
             if 'preliminary_alert' in alert_data:
                 preliminary_alert_json = json.dumps(alert_data['preliminary_alert'], default=str)
             
+            imbalance_data_json = None
+            if 'imbalance_data' in alert_data and alert_data['imbalance_data']:
+                imbalance_data_json = json.dumps(alert_data['imbalance_data'])
+            
+            order_book_snapshot_json = None
+            if 'order_book_snapshot' in alert_data and alert_data['order_book_snapshot']:
+                order_book_snapshot_json = json.dumps(alert_data['order_book_snapshot'])
+            
             cursor.execute("""
                 INSERT INTO alerts 
                 (symbol, alert_type, price, volume_ratio, consecutive_count,
                  current_volume_usdt, average_volume_usdt, is_true_signal, 
-                 is_closed, message, alert_timestamp, close_timestamp,
-                 candle_data, preliminary_alert)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 is_closed, has_imbalance, message, alert_timestamp, close_timestamp,
+                 candle_data, preliminary_alert, imbalance_data, order_book_snapshot)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """, (
                 alert_data['symbol'],
@@ -347,11 +366,14 @@ class DatabaseManager:
                 alert_data.get('average_volume_usdt'),
                 alert_data.get('is_true_signal'),
                 alert_data.get('is_closed', False),
+                alert_data.get('has_imbalance', False),
                 alert_data.get('message', ''),
                 alert_data['timestamp'],
                 alert_data.get('close_timestamp'),
                 candle_data_json,
-                preliminary_alert_json
+                preliminary_alert_json,
+                imbalance_data_json,
+                order_book_snapshot_json
             ))
 
             alert_id = cursor.fetchone()[0]
@@ -372,12 +394,16 @@ class DatabaseManager:
             if 'candle_data' in alert_data:
                 candle_data_json = json.dumps(alert_data['candle_data'])
             
+            imbalance_data_json = None
+            if 'imbalance_data' in alert_data and alert_data['imbalance_data']:
+                imbalance_data_json = json.dumps(alert_data['imbalance_data'])
+            
             cursor.execute("""
                 UPDATE alerts 
                 SET price = %s, volume_ratio = %s, consecutive_count = %s,
                     current_volume_usdt = %s, average_volume_usdt = %s,
-                    is_true_signal = %s, is_closed = %s, message = %s,
-                    close_timestamp = %s, candle_data = %s, updated_at = CURRENT_TIMESTAMP
+                    is_true_signal = %s, is_closed = %s, has_imbalance = %s, message = %s,
+                    close_timestamp = %s, candle_data = %s, imbalance_data = %s, updated_at = CURRENT_TIMESTAMP
                 WHERE id = %s
             """, (
                 alert_data['price'],
@@ -387,9 +413,11 @@ class DatabaseManager:
                 alert_data.get('average_volume_usdt'),
                 alert_data.get('is_true_signal'),
                 alert_data.get('is_closed', False),
+                alert_data.get('has_imbalance', False),
                 alert_data.get('message', ''),
                 alert_data.get('close_timestamp'),
                 candle_data_json,
+                imbalance_data_json,
                 alert_id
             ))
 
@@ -405,8 +433,9 @@ class DatabaseManager:
             cursor.execute("""
                 SELECT id, symbol, alert_type, price, volume_ratio, consecutive_count,
                        current_volume_usdt, average_volume_usdt, is_true_signal, 
-                       is_closed, message, telegram_sent, alert_timestamp as timestamp,
-                       close_timestamp, candle_data, preliminary_alert, created_at, updated_at
+                       is_closed, has_imbalance, message, telegram_sent, alert_timestamp as timestamp,
+                       close_timestamp, candle_data, preliminary_alert, imbalance_data, 
+                       order_book_snapshot, created_at, updated_at
                 FROM alerts 
                 WHERE alert_type = %s
                 ORDER BY COALESCE(close_timestamp, alert_timestamp) DESC
@@ -424,6 +453,10 @@ class DatabaseManager:
                     alert['candle_data'] = json.loads(alert['candle_data'])
                 if alert['preliminary_alert']:
                     alert['preliminary_alert'] = json.loads(alert['preliminary_alert'])
+                if alert['imbalance_data']:
+                    alert['imbalance_data'] = json.loads(alert['imbalance_data'])
+                if alert['order_book_snapshot']:
+                    alert['order_book_snapshot'] = json.loads(alert['order_book_snapshot'])
                 alerts.append(alert)
 
             return alerts
@@ -439,8 +472,9 @@ class DatabaseManager:
             cursor.execute("""
                 SELECT id, symbol, alert_type, price, volume_ratio, consecutive_count,
                        current_volume_usdt, average_volume_usdt, is_true_signal, 
-                       is_closed, message, telegram_sent, alert_timestamp as timestamp,
-                       close_timestamp, candle_data, preliminary_alert, created_at, updated_at
+                       is_closed, has_imbalance, message, telegram_sent, alert_timestamp as timestamp,
+                       close_timestamp, candle_data, preliminary_alert, imbalance_data,
+                       order_book_snapshot, created_at, updated_at
                 FROM alerts 
                 ORDER BY COALESCE(close_timestamp, alert_timestamp) DESC
                 LIMIT %s
@@ -457,6 +491,10 @@ class DatabaseManager:
                     alert['candle_data'] = json.loads(alert['candle_data'])
                 if alert['preliminary_alert']:
                     alert['preliminary_alert'] = json.loads(alert['preliminary_alert'])
+                if alert['imbalance_data']:
+                    alert['imbalance_data'] = json.loads(alert['imbalance_data'])
+                if alert['order_book_snapshot']:
+                    alert['order_book_snapshot'] = json.loads(alert['order_book_snapshot'])
                 all_alerts.append(alert)
 
             # Разделяем по типам
