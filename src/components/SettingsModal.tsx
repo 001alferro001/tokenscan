@@ -48,7 +48,47 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ settings, onClose, onSave
 
   useEffect(() => {
     if (settings) {
-      setLocalSettings(JSON.parse(JSON.stringify(settings)));
+      // Создаем полную копию настроек с дефолтными значениями
+      const defaultSettings: Settings = {
+        volume_analyzer: {
+          analysis_hours: 1,
+          offset_minutes: 0,
+          volume_multiplier: 2.0,
+          min_volume_usdt: 1000,
+          consecutive_long_count: 5,
+          alert_grouping_minutes: 5,
+          data_retention_hours: 2,
+          update_interval_seconds: 1,
+          notification_enabled: true,
+          volume_type: 'long',
+          ...settings.volume_analyzer
+        },
+        alerts: {
+          volume_alerts_enabled: true,
+          consecutive_alerts_enabled: true,
+          priority_alerts_enabled: true,
+          ...settings.alerts
+        },
+        imbalance: {
+          fair_value_gap_enabled: true,
+          order_block_enabled: true,
+          breaker_block_enabled: true,
+          min_gap_percentage: 0.1,
+          min_strength: 0.5,
+          ...settings.imbalance
+        },
+        orderbook: {
+          enabled: false,
+          snapshot_on_alert: false,
+          ...settings.orderbook
+        },
+        telegram: {
+          enabled: false,
+          ...settings.telegram
+        }
+      };
+      
+      setLocalSettings(defaultSettings);
     }
   }, [settings]);
 
@@ -156,7 +196,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ settings, onClose, onSave
             {[
               { id: 'volume', label: 'Анализ объемов' },
               { id: 'alerts', label: 'Алерты' },
-              { id: 'imbalance', label: 'Имбаланс' },
+              { id: 'imbalance', label: 'Smart Money' },
               { id: 'orderbook', label: 'Стакан заявок' }
             ].map((tab) => (
               <button
@@ -401,16 +441,24 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ settings, onClose, onSave
             </div>
           )}
 
-          {/* Imbalance Settings */}
+          {/* Smart Money Settings */}
           {activeTab === 'imbalance' && (
             <div className="space-y-6">
-              <h3 className="text-lg font-semibold text-gray-900">Настройки анализа имбаланса (Smart Money)</h3>
+              <h3 className="text-lg font-semibold text-gray-900">Настройки Smart Money Concepts</h3>
+              
+              <div className="p-4 bg-purple-50 rounded-lg mb-6">
+                <h4 className="font-medium text-purple-900 mb-2">🧠 Smart Money Concepts</h4>
+                <p className="text-sm text-purple-700">
+                  Анализ имбалансов на основе концепций институциональной торговли. 
+                  Система автоматически определяет Fair Value Gaps, Order Blocks и Breaker Blocks.
+                </p>
+              </div>
               
               <div className="space-y-4">
                 <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
                   <div>
-                    <h4 className="font-medium text-gray-900">Fair Value Gap</h4>
-                    <p className="text-sm text-gray-600">Анализ разрывов в ценах между свечами</p>
+                    <h4 className="font-medium text-gray-900">Fair Value Gap (FVG)</h4>
+                    <p className="text-sm text-gray-600">Анализ разрывов в ценах между свечами - зоны несбалансированности</p>
                   </div>
                   <label className="relative inline-flex items-center cursor-pointer">
                     <input
@@ -425,8 +473,8 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ settings, onClose, onSave
 
                 <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
                   <div>
-                    <h4 className="font-medium text-gray-900">Order Block</h4>
-                    <p className="text-sm text-gray-600">Анализ блоков заявок институциональных игроков</p>
+                    <h4 className="font-medium text-gray-900">Order Block (OB)</h4>
+                    <p className="text-sm text-gray-600">Анализ блоков заявок институциональных игроков - зоны накопления</p>
                   </div>
                   <label className="relative inline-flex items-center cursor-pointer">
                     <input
@@ -441,8 +489,8 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ settings, onClose, onSave
 
                 <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
                   <div>
-                    <h4 className="font-medium text-gray-900">Breaker Block</h4>
-                    <p className="text-sm text-gray-600">Анализ пробитых уровней поддержки/сопротивления</p>
+                    <h4 className="font-medium text-gray-900">Breaker Block (BB)</h4>
+                    <p className="text-sm text-gray-600">Анализ пробитых уровней поддержки/сопротивления - смена структуры</p>
                   </div>
                   <label className="relative inline-flex items-center cursor-pointer">
                     <input
@@ -489,6 +537,16 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ settings, onClose, onSave
                   <p className="text-xs text-gray-500 mt-1">Минимальная сила сигнала для анализа</p>
                 </div>
               </div>
+
+              <div className="p-4 bg-green-50 rounded-lg">
+                <h4 className="font-medium text-green-900 mb-2">📊 Как это работает</h4>
+                <ul className="text-sm text-green-700 space-y-1">
+                  <li>• <strong>FVG:</strong> Ищет разрывы между high/low соседних свечей</li>
+                  <li>• <strong>OB:</strong> Определяет последние противоположные свечи перед сильным движением</li>
+                  <li>• <strong>BB:</strong> Находит пробитые уровни с последующим возвратом</li>
+                  <li>• Сигналы отображаются в отдельной вкладке "Smart Money"</li>
+                </ul>
+              </div>
             </div>
           )}
 
@@ -497,11 +555,19 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ settings, onClose, onSave
             <div className="space-y-6">
               <h3 className="text-lg font-semibold text-gray-900">Настройки стакана заявок</h3>
               
+              <div className="p-4 bg-blue-50 rounded-lg mb-6">
+                <h4 className="font-medium text-blue-900 mb-2">📋 Анализ стакана заявок</h4>
+                <p className="text-sm text-blue-700">
+                  Получение и анализ данных стакана заявок с биржи Bybit для более глубокого понимания рыночной ситуации.
+                  Снимки стакана сохраняются в момент срабатывания алертов.
+                </p>
+              </div>
+              
               <div className="space-y-4">
                 <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
                   <div>
                     <h4 className="font-medium text-gray-900">Анализ стакана заявок</h4>
-                    <p className="text-sm text-gray-600">Включить получение данных стакана с биржи</p>
+                    <p className="text-sm text-gray-600">Включить получение данных стакана с биржи Bybit</p>
                   </div>
                   <label className="relative inline-flex items-center cursor-pointer">
                     <input
@@ -517,26 +583,39 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ settings, onClose, onSave
                 <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
                   <div>
                     <h4 className="font-medium text-gray-900">Снимок при алерте</h4>
-                    <p className="text-sm text-gray-600">Сохранять снимок стакана при срабатывании алерта</p>
+                    <p className="text-sm text-gray-600">Автоматически сохранять снимок стакана при срабатывании алерта</p>
                   </div>
                   <label className="relative inline-flex items-center cursor-pointer">
                     <input
                       type="checkbox"
                       checked={localSettings.orderbook.snapshot_on_alert}
                       onChange={(e) => updateOrderbookSettings('snapshot_on_alert', e.target.checked)}
+                      disabled={!localSettings.orderbook.enabled}
                       className="sr-only peer"
                     />
-                    <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                    <div className={`w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600 ${!localSettings.orderbook.enabled ? 'opacity-50 cursor-not-allowed' : ''}`}></div>
                   </label>
                 </div>
               </div>
 
               <div className="p-4 bg-yellow-50 rounded-lg">
-                <h4 className="font-medium text-yellow-900 mb-2">⚠️ Внимание</h4>
-                <p className="text-sm text-yellow-700">
-                  Анализ стакана заявок увеличивает нагрузку на API биржи и может замедлить работу системы.
-                  Используйте только при необходимости детального анализа.
-                </p>
+                <h4 className="font-medium text-yellow-900 mb-2">⚠️ Важная информация</h4>
+                <ul className="text-sm text-yellow-700 space-y-1">
+                  <li>• Анализ стакана увеличивает нагрузку на API биржи</li>
+                  <li>• Может замедлить работу системы при большом количестве пар</li>
+                  <li>• Снимки стакана отображаются в модальном окне графика</li>
+                  <li>• Рекомендуется использовать только при необходимости</li>
+                </ul>
+              </div>
+
+              <div className="p-4 bg-green-50 rounded-lg">
+                <h4 className="font-medium text-green-900 mb-2">📈 Что вы получите</h4>
+                <ul className="text-sm text-green-700 space-y-1">
+                  <li>• Топ-25 заявок на покупку и продажу</li>
+                  <li>• Точное время снимка стакана</li>
+                  <li>• Анализ дисбаланса спроса и предложения</li>
+                  <li>• Дополнительный контекст для принятия решений</li>
+                </ul>
               </div>
             </div>
           )}
@@ -545,7 +624,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ settings, onClose, onSave
         {/* Footer */}
         <div className="flex items-center justify-between p-6 border-t border-gray-200 bg-gray-50">
           <div className="text-sm text-gray-600">
-            Изменения применятся после сохранения
+            Изменения применятся после сохранения и перезапуска системы
           </div>
           
           <div className="flex items-center space-x-3">
