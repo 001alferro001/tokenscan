@@ -76,6 +76,7 @@ interface Settings {
     alert_grouping_minutes: number;
     data_retention_hours: number;
     update_interval_seconds: number;
+    notification_enabled: boolean;
   };
   alerts: {
     volume_alerts_enabled: boolean;
@@ -117,7 +118,35 @@ const App: React.FC = () => {
   useEffect(() => {
     loadInitialData();
     connectWebSocket();
+    requestNotificationPermission();
   }, []);
+
+  const requestNotificationPermission = async () => {
+    if ('Notification' in window && Notification.permission === 'default') {
+      await Notification.requestPermission();
+    }
+  };
+
+  const showNotification = (alert: Alert) => {
+    if (!settings?.volume_analyzer?.notification_enabled) return;
+    if ('Notification' in window && Notification.permission === 'granted') {
+      const title = `Алерт: ${alert.symbol}`;
+      const body = alert.message;
+      const notification = new Notification(title, {
+        body,
+        icon: '/favicon.ico',
+        tag: `alert-${alert.id}`
+      });
+      
+      notification.onclick = () => {
+        window.focus();
+        setSelectedAlert(alert);
+        notification.close();
+      };
+      
+      setTimeout(() => notification.close(), 10000);
+    }
+  };
 
   const loadInitialData = async () => {
     try {
@@ -127,16 +156,32 @@ const App: React.FC = () => {
       const alertsResponse = await fetch('/api/alerts/all');
       if (alertsResponse.ok) {
         const alertsData = await alertsResponse.json();
-        setVolumeAlerts(alertsData.volume_alerts || []);
-        setConsecutiveAlerts(alertsData.consecutive_alerts || []);
-        setPriorityAlerts(alertsData.priority_alerts || []);
+        // Сортируем по времени закрытия (новые сверху)
+        setVolumeAlerts((alertsData.volume_alerts || []).sort((a: Alert, b: Alert) => 
+          new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
+        ));
+        setConsecutiveAlerts((alertsData.consecutive_alerts || []).sort((a: Alert, b: Alert) => 
+          new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
+        ));
+        setPriorityAlerts((alertsData.priority_alerts || []).sort((a: Alert, b: Alert) => 
+          new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
+        ));
       }
 
       // Загружаем watchlist
       const watchlistResponse = await fetch('/api/watchlist');
       if (watchlistResponse.ok) {
         const watchlistData = await watchlistResponse.json();
-        setWatchlist(watchlistData.pairs || []);
+        // Сортируем по проценту падения (больше сверху) и по алфавиту
+        const sortedWatchlist = (watchlistData.pairs || []).sort((a: WatchlistItem, b: WatchlistItem) => {
+          if (a.price_drop_percentage && b.price_drop_percentage) {
+            if (a.price_drop_percentage !== b.price_drop_percentage) {
+              return b.price_drop_percentage - a.price_drop_percentage;
+            }
+          }
+          return a.symbol.localeCompare(b.symbol);
+        });
+        setWatchlist(sortedWatchlist);
       }
 
       // Загружаем настройки
@@ -190,19 +235,40 @@ const App: React.FC = () => {
       case 'new_alert':
         const alert = data.alert;
         
-        // Добавляем новый алерт без перезагрузки
+        // Показываем уведомление
+        showNotification(alert);
+        
+        // Добавляем новый алерт БЕЗ перезагрузки всего списка
         if (alert.alert_type === 'volume_spike') {
           setVolumeAlerts(prev => {
             const existing = prev.find(a => a.id === alert.id);
             if (existing) {
-              return prev.map(a => a.id === alert.id ? alert : a);
+              // Обновляем существующий алерт
+              const updated = prev.map(a => a.id === alert.id ? alert : a);
+              return updated.sort((a, b) => 
+                new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
+              );
             }
-            return [alert, ...prev].slice(0, 100); // Ограничиваем количество
+            // Добавляем новый алерт
+            const newList = [alert, ...prev].slice(0, 100);
+            return newList.sort((a, b) => 
+              new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
+            );
           });
         } else if (alert.alert_type === 'consecutive_long') {
-          setConsecutiveAlerts(prev => [alert, ...prev].slice(0, 100));
+          setConsecutiveAlerts(prev => {
+            const newList = [alert, ...prev].slice(0, 100);
+            return newList.sort((a, b) => 
+              new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
+            );
+          });
         } else if (alert.alert_type === 'priority') {
-          setPriorityAlerts(prev => [alert, ...prev].slice(0, 100));
+          setPriorityAlerts(prev => {
+            const newList = [alert, ...prev].slice(0, 100);
+            return newList.sort((a, b) => 
+              new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
+            );
+          });
         }
 
         // Если есть имбаланс, добавляем в Smart Money алерты
@@ -253,7 +319,16 @@ const App: React.FC = () => {
       const response = await fetch('/api/watchlist');
       if (response.ok) {
         const data = await response.json();
-        setWatchlist(data.pairs || []);
+        // Сортируем по проценту падения и алфавиту
+        const sortedWatchlist = (data.pairs || []).sort((a: WatchlistItem, b: WatchlistItem) => {
+          if (a.price_drop_percentage && b.price_drop_percentage) {
+            if (a.price_drop_percentage !== b.price_drop_percentage) {
+              return b.price_drop_percentage - a.price_drop_percentage;
+            }
+          }
+          return a.symbol.localeCompare(b.symbol);
+        });
+        setWatchlist(sortedWatchlist);
       }
     } catch (error) {
       console.error('Ошибка загрузки watchlist:', error);
@@ -324,7 +399,11 @@ const App: React.FC = () => {
   };
 
   const renderAlertCard = (alert: Alert) => (
-    <div key={alert.id} className="bg-white rounded-lg shadow-md border border-gray-200 p-4 hover:shadow-lg transition-shadow">
+    <div 
+      key={alert.id} 
+      className="bg-white rounded-lg shadow-md border border-gray-200 p-4 hover:shadow-lg transition-shadow cursor-pointer w-full"
+      onClick={() => setSelectedAlert(alert)}
+    >
       <div className="flex items-start justify-between mb-3">
         <div className="flex items-center space-x-3">
           <span className="font-bold text-lg text-gray-900">{alert.symbol}</span>
@@ -336,17 +415,14 @@ const App: React.FC = () => {
         
         <div className="flex items-center space-x-2">
           <button
-            onClick={() => openTradingView(alert.symbol)}
+            onClick={(e) => {
+              e.stopPropagation();
+              openTradingView(alert.symbol);
+            }}
             className="text-blue-600 hover:text-blue-800 p-1"
             title="Открыть в TradingView"
           >
             <ExternalLink className="w-4 h-4" />
-          </button>
-          <button
-            onClick={() => setSelectedAlert(alert)}
-            className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded text-sm transition-colors"
-          >
-            График
           </button>
         </div>
       </div>
@@ -381,7 +457,7 @@ const App: React.FC = () => {
 
       <div className="mt-3 pt-3 border-t border-gray-200">
         <div className="text-xs text-gray-500">
-          <div>Время: {formatTime(alert.close_timestamp || alert.timestamp)}</div>
+          <div>Время закрытия: {formatTime(alert.close_timestamp || alert.timestamp)}</div>
           {alert.preliminary_alert && (
             <div>Предварительный: {formatTime(alert.preliminary_alert.timestamp)}</div>
           )}
@@ -391,7 +467,7 @@ const App: React.FC = () => {
   );
 
   const renderSmartMoneyCard = (alert: SmartMoneyAlert) => (
-    <div key={alert.id} className="bg-white rounded-lg shadow-md border border-gray-200 p-4 hover:shadow-lg transition-shadow">
+    <div key={alert.id} className="bg-white rounded-lg shadow-md border border-gray-200 p-4 hover:shadow-lg transition-shadow w-full">
       <div className="flex items-start justify-between mb-3">
         <div className="flex items-center space-x-3">
           <span className="font-bold text-lg text-gray-900">{alert.symbol}</span>
@@ -440,7 +516,7 @@ const App: React.FC = () => {
   );
 
   const renderWatchlistCard = (item: WatchlistItem) => (
-    <div key={item.id} className="bg-white rounded-lg shadow-md border border-gray-200 p-4 hover:shadow-lg transition-shadow">
+    <div key={item.id} className="bg-white rounded-lg shadow-md border border-gray-200 p-4 hover:shadow-lg transition-shadow w-full">
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center space-x-3">
           <div className={`w-3 h-3 rounded-full ${item.is_active ? 'bg-green-500' : 'bg-red-500'}`}></div>
@@ -571,9 +647,9 @@ const App: React.FC = () => {
               </button>
             </div>
             
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <div className="space-y-4">
               {volumeAlerts.length === 0 ? (
-                <div className="col-span-full text-center py-12 text-gray-500">
+                <div className="text-center py-12 text-gray-500">
                   <TrendingUp className="w-12 h-12 mx-auto mb-4 text-gray-300" />
                   <p>Нет алертов по объему</p>
                 </div>
@@ -597,9 +673,9 @@ const App: React.FC = () => {
               </button>
             </div>
             
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <div className="space-y-4">
               {consecutiveAlerts.length === 0 ? (
-                <div className="col-span-full text-center py-12 text-gray-500">
+                <div className="text-center py-12 text-gray-500">
                   <BarChart3 className="w-12 h-12 mx-auto mb-4 text-gray-300" />
                   <p>Нет алертов по последовательностям</p>
                 </div>
@@ -623,9 +699,9 @@ const App: React.FC = () => {
               </button>
             </div>
             
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <div className="space-y-4">
               {priorityAlerts.length === 0 ? (
-                <div className="col-span-full text-center py-12 text-gray-500">
+                <div className="text-center py-12 text-gray-500">
                   <Star className="w-12 h-12 mx-auto mb-4 text-gray-300" />
                   <p>Нет приоритетных алертов</p>
                 </div>
@@ -649,9 +725,9 @@ const App: React.FC = () => {
               </button>
             </div>
             
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <div className="space-y-4">
               {smartMoneyAlerts.length === 0 ? (
-                <div className="col-span-full text-center py-12 text-gray-500">
+                <div className="text-center py-12 text-gray-500">
                   <Brain className="w-12 h-12 mx-auto mb-4 text-gray-300" />
                   <p>Нет сигналов Smart Money</p>
                 </div>
@@ -675,9 +751,9 @@ const App: React.FC = () => {
               </button>
             </div>
             
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <div className="space-y-4">
               {watchlist.length === 0 ? (
-                <div className="col-span-full text-center py-12 text-gray-500">
+                <div className="text-center py-12 text-gray-500">
                   <List className="w-12 h-12 mx-auto mb-4 text-gray-300" />
                   <p>Нет торговых пар в списке</p>
                 </div>
@@ -701,9 +777,9 @@ const App: React.FC = () => {
               </button>
             </div>
             
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {streamData.slice(0, 12).map((item, index) => (
-                <div key={`${item.symbol}-${index}`} className="bg-white rounded-lg shadow-md border border-gray-200 p-4">
+            <div className="space-y-4">
+              {streamData.slice(0, 20).map((item, index) => (
+                <div key={`${item.symbol}-${index}`} className="bg-white rounded-lg shadow-md border border-gray-200 p-4 w-full">
                   <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center space-x-3">
                       <div className={`w-3 h-3 rounded-full ${item.is_long ? 'bg-green-500' : 'bg-red-500'}`}></div>

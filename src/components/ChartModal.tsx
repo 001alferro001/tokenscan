@@ -16,6 +16,7 @@ import {
 import { Chart } from 'react-chartjs-2';
 import 'chartjs-adapter-date-fns';
 import annotationPlugin from 'chartjs-plugin-annotation';
+import { CandlestickController, CandlestickElement } from 'chartjs-chart-financial';
 
 ChartJS.register(
   CategoryScale,
@@ -27,7 +28,9 @@ ChartJS.register(
   Title,
   Tooltip,
   Legend,
-  annotationPlugin
+  annotationPlugin,
+  CandlestickController,
+  CandlestickElement
 );
 
 interface Alert {
@@ -437,7 +440,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
             </div>
           ) : chartConfig ? (
             <div className="h-full">
-              <Chart type="line" data={chartConfig.data} options={chartConfig.options} />
+              <Chart type="candlestick" data={chartConfig.data} options={chartConfig.options} />
             </div>
           ) : (
             <div className="flex items-center justify-center h-full">

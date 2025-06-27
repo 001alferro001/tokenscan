@@ -175,6 +175,7 @@ class AlertManager:
             'alert_grouping_minutes': int(os.getenv('ALERT_GROUPING_MINUTES', 5)),
             'data_retention_hours': int(os.getenv('DATA_RETENTION_HOURS', 2)),
             'update_interval_seconds': int(os.getenv('UPDATE_INTERVAL_SECONDS', 1)),
+            'notification_enabled': True,
             'orderbook_enabled': False,
             'orderbook_snapshot_on_alert': False,
             'imbalance_enabled': True,
@@ -188,6 +189,7 @@ class AlertManager:
         self.volume_alerts_cache = {}  # symbol -> {timestamp, preliminary_alert, alert_level}
         self.consecutive_counters = {}  # symbol -> consecutive long count
         self.priority_signals = {}  # symbol -> priority signal data
+        self.alert_cooldowns = {}  # symbol -> last alert timestamp
         
         logger.info("AlertManager инициализирован с анализом имбаланса")
 
@@ -265,7 +267,7 @@ class AlertManager:
         return current_time >= candle_end_time
 
     async def _check_volume_alert(self, symbol: str, kline_data: Dict, is_closed: bool = False) -> Optional[Dict]:
-        """Проверка алерта по превышению объема с правильной логикой"""
+        """Проверка алерта по превышению объема с правильной логикой времени"""
         try:
             # Проверяем, является ли свеча LONG
             is_long = float(kline_data['close']) > float(kline_data['open'])
@@ -278,6 +280,17 @@ class AlertManager:
             # Проверяем минимальный объем
             if current_volume_usdt < self.settings['min_volume_usdt']:
                 return None
+            
+            # Проверяем кулдаун для повторных сигналов
+            if symbol in self.alert_cooldowns:
+                last_alert_time = self.alert_cooldowns[symbol]
+                current_time = datetime.now()
+                if (current_time - last_alert_time).total_seconds() < self.settings['alert_grouping_minutes'] * 60:
+                    # Проверяем, больше ли текущий объем предыдущего
+                    if symbol in self.volume_alerts_cache:
+                        prev_volume = self.volume_alerts_cache[symbol].get('volume_usdt', 0)
+                        if current_volume_usdt < prev_volume:
+                            return None
             
             # Получаем исторические объемы
             historical_volumes = await self.db_manager.get_historical_long_volumes(
@@ -297,7 +310,7 @@ class AlertManager:
                 timestamp = int(kline_data['start'])
                 current_price = float(kline_data['close'])
                 
-                # Создаем данные свечи для алерта (ВСЕГДА для закрытой свечи)
+                # Создаем данные свечи для алерта
                 candle_data = {
                     'open': float(kline_data['open']),
                     'high': float(kline_data['high']),
@@ -320,6 +333,9 @@ class AlertManager:
                 
                 if not is_closed:
                     # Первый алерт (предварительный - в процессе формирования)
+                    # ВРЕМЯ УКАЗЫВАЕМ АКТУАЛЬНОЕ - когда получен сигнал
+                    actual_time = datetime.now()
+                    
                     if symbol in self.volume_alerts_cache and self.volume_alerts_cache[symbol]['timestamp'] == timestamp:
                         return None  # Уже есть предварительный алерт для этой минуты
                     
@@ -334,7 +350,7 @@ class AlertManager:
                         'volume_ratio': round(volume_ratio, 2),
                         'current_volume_usdt': int(current_volume_usdt),
                         'average_volume_usdt': int(average_volume),
-                        'timestamp': datetime.fromtimestamp(timestamp / 1000),
+                        'timestamp': actual_time,  # АКТУАЛЬНОЕ ВРЕМЯ
                         'is_closed': False,
                         'is_true_signal': None,
                         'has_imbalance': has_imbalance,
@@ -348,12 +364,16 @@ class AlertManager:
                     self.volume_alerts_cache[symbol] = {
                         'timestamp': timestamp,
                         'preliminary_alert': alert_data,
-                        'alert_level': alert_level
+                        'alert_level': alert_level,
+                        'volume_usdt': current_volume_usdt
                     }
                     
                     return alert_data
                 else:
                     # Второй алерт (финальный - после закрытия свечи)
+                    # ВРЕМЯ ЗАКРЫТИЯ СВЕЧИ - начало следующей минуты
+                    close_time = datetime.fromtimestamp((timestamp + 60000) / 1000)
+                    
                     if symbol in self.volume_alerts_cache and self.volume_alerts_cache[symbol]['timestamp'] == timestamp:
                         # Обновляем существующий алерт
                         cached_data = self.volume_alerts_cache[symbol]
@@ -373,8 +393,8 @@ class AlertManager:
                             'volume_ratio': round(volume_ratio, 2),
                             'current_volume_usdt': int(current_volume_usdt),
                             'average_volume_usdt': int(average_volume),
-                            'timestamp': datetime.fromtimestamp(timestamp / 1000),
-                            'close_timestamp': datetime.fromtimestamp(int(kline_data['end']) / 1000),
+                            'timestamp': preliminary_alert['timestamp'],  # Время предварительного
+                            'close_timestamp': close_time,  # Время закрытия свечи
                             'is_closed': True,
                             'is_true_signal': final_is_long,
                             'has_imbalance': has_imbalance,
@@ -385,8 +405,9 @@ class AlertManager:
                             'message': f"Финальный алерт: объем превышен в {volume_ratio:.2f}x раз ({'истинный' if final_is_long else 'ложный'} сигнал)"
                         }
                         
-                        # Удаляем из кэша
+                        # Удаляем из кэша и обновляем кулдаун
                         del self.volume_alerts_cache[symbol]
+                        self.alert_cooldowns[symbol] = datetime.now()
                         
                         return alert_data
                     else:
@@ -401,8 +422,8 @@ class AlertManager:
                             'volume_ratio': round(volume_ratio, 2),
                             'current_volume_usdt': int(current_volume_usdt),
                             'average_volume_usdt': int(average_volume),
-                            'timestamp': datetime.fromtimestamp(timestamp / 1000),
-                            'close_timestamp': datetime.fromtimestamp(int(kline_data['end']) / 1000),
+                            'timestamp': close_time,  # Время закрытия свечи
+                            'close_timestamp': close_time,
                             'is_closed': True,
                             'is_true_signal': final_is_long,
                             'has_imbalance': has_imbalance,
@@ -411,6 +432,9 @@ class AlertManager:
                             'order_book_snapshot': order_book_snapshot,
                             'message': f"Объем превышен в {volume_ratio:.2f}x раз ({'истинный' if final_is_long else 'ложный'} сигнал)"
                         }
+                        
+                        # Обновляем кулдаун
+                        self.alert_cooldowns[symbol] = datetime.now()
                         
                         return alert_data
             
@@ -525,6 +549,10 @@ class AlertManager:
                 
                 # Проверяем, достигли ли нужного количества
                 if self.consecutive_counters[symbol] == self.settings['consecutive_long_count']:
+                    # Время закрытия свечи - начало следующей минуты
+                    timestamp = int(kline_data['start'])
+                    close_time = datetime.fromtimestamp((timestamp + 60000) / 1000)
+                    
                     # Получаем данные последней закрытой свечи
                     candle_data = {
                         'open': float(kline_data['open']),
@@ -546,8 +574,8 @@ class AlertManager:
                         'alert_type': AlertType.CONSECUTIVE_LONG.value,
                         'price': float(kline_data['close']),
                         'consecutive_count': self.consecutive_counters[symbol],
-                        'timestamp': datetime.fromtimestamp(int(kline_data['start']) / 1000),
-                        'close_timestamp': datetime.fromtimestamp(int(kline_data['end']) / 1000),
+                        'timestamp': close_time,  # Время закрытия свечи
+                        'close_timestamp': close_time,
                         'is_closed': True,
                         'has_imbalance': has_imbalance,
                         'imbalance_data': imbalance_data,
@@ -728,6 +756,12 @@ class AlertManager:
             for symbol in list(self.volume_alerts_cache.keys()):
                 if self.volume_alerts_cache[symbol]['timestamp'] < alert_cutoff_timestamp:
                     del self.volume_alerts_cache[symbol]
+            
+            # Очищаем кулдауны (старше часа)
+            cooldown_cutoff = datetime.now() - timedelta(hours=1)
+            for symbol in list(self.alert_cooldowns.keys()):
+                if self.alert_cooldowns[symbol] < cooldown_cutoff:
+                    del self.alert_cooldowns[symbol]
             
             logger.info("Очистка старых данных завершена")
             
