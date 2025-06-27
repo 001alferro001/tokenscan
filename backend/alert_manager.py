@@ -190,6 +190,7 @@ class AlertManager:
         self.candle_cache = {}  # symbol -> list of recent candles
         self.volume_alerts_cache = {}  # symbol -> {timestamp, alert_id, alert_level}
         self.consecutive_counters = {}  # symbol -> consecutive long count
+        self.consecutive_alert_ids = {}  # symbol -> ID текущего алерта по последовательности
         self.priority_signals = {}  # symbol -> priority signal data
         self.alert_cooldowns = {}  # symbol -> last alert timestamp
         
@@ -593,35 +594,38 @@ class AlertManager:
         try:
             # Проверяем только закрытые свечи
             is_long = float(kline_data['close']) > float(kline_data['open'])
-            
+
+            # Инициализируем счетчик и ID алерта, если их нет
             if symbol not in self.consecutive_counters:
                 self.consecutive_counters[symbol] = 0
-            
+                self.consecutive_alert_ids[symbol] = None
+
+            # Время закрытия свечи
+            timestamp = int(kline_data['start'])
+            close_time = datetime.fromtimestamp((timestamp + 60000) / 1000)
+
+            # Данные свечи
+            candle_data = {
+                'open': float(kline_data['open']),
+                'high': float(kline_data['high']),
+                'low': float(kline_data['low']),
+                'close': float(kline_data['close']),
+                'volume': float(kline_data['volume'])
+            }
+
+            # Анализируем имбаланс
+            imbalance_data = None
+            has_imbalance = False
+            if self.settings.get('imbalance_enabled', False):
+                imbalance_data = await self._analyze_imbalance(symbol)
+                has_imbalance = imbalance_data is not None
+
             if is_long:
+                # Увеличиваем счетчик LONG свечей
                 self.consecutive_counters[symbol] += 1
-                
-                # ПРОВЕРЯЕМ ТОЛЬКО КОГДА ДОСТИГЛИ НУЖНОГО КОЛИЧЕСТВА
-                if self.consecutive_counters[symbol] == self.settings['consecutive_long_count']:
-                    # Время закрытия свечи - начало следующей минуты
-                    timestamp = int(kline_data['start'])
-                    close_time = datetime.fromtimestamp((timestamp + 60000) / 1000)
-                    
-                    # Получаем данные последней закрытой свечи
-                    candle_data = {
-                        'open': float(kline_data['open']),
-                        'high': float(kline_data['high']),
-                        'low': float(kline_data['low']),
-                        'close': float(kline_data['close']),
-                        'volume': float(kline_data['volume'])
-                    }
-                    
-                    # Анализируем имбаланс
-                    imbalance_data = None
-                    has_imbalance = False
-                    if self.settings.get('imbalance_enabled', False):
-                        imbalance_data = await self._analyze_imbalance(symbol)
-                        has_imbalance = imbalance_data is not None
-                    
+
+                # Проверяем, достигнуто ли нужное количество свечей
+                if self.consecutive_counters[symbol] >= self.settings['consecutive_long_count']:
                     alert_data = {
                         'symbol': symbol,
                         'alert_type': AlertType.CONSECUTIVE_LONG.value,
@@ -635,23 +639,52 @@ class AlertManager:
                         'candle_data': candle_data,
                         'message': f"{self.consecutive_counters[symbol]} подряд идущих LONG свечей (закрытых)"
                     }
-                    
-                    return alert_data
-                elif self.consecutive_counters[symbol] > self.settings['consecutive_long_count']:
-                    # Обновляем счетчик без создания нового алерта
+
+                    # Если уже есть активный алерт, обновляем его
+                    if self.consecutive_alert_ids[symbol] is not None:
+                        alert_data['id'] = self.consecutive_alert_ids[symbol]
+                        await self.db_manager.update_alert(self.consecutive_alert_ids[symbol], alert_data)
+                    else:
+                        # Создаем новый алерт
+                        alert_id = await self.db_manager.save_alert(alert_data)
+                        alert_data['id'] = alert_id
+                        self.consecutive_alert_ids[symbol] = alert_id
+
                     # Отправляем обновление в интерфейс
                     if self.connection_manager:
                         await self.connection_manager.broadcast_json({
                             'type': 'consecutive_update',
                             'symbol': symbol,
-                            'count': self.consecutive_counters[symbol]
+                            'count': self.consecutive_counters[symbol],
+                            'alert_id': alert_data['id']
                         })
+
+                    return alert_data
             else:
-                # Сбрасываем счетчик при SHORT свече
+                # При появлении SHORT свечи сбрасываем счетчик и закрываем существующий алерт
+                if self.consecutive_counters[symbol] >= self.settings['consecutive_long_count'] and self.consecutive_alert_ids[symbol] is not None:
+                    # Закрываем существующий алерт
+                    await self.db_manager.update_alert(self.consecutive_alert_ids[symbol], {
+                        'id': self.consecutive_alert_ids[symbol],
+                        'symbol': symbol,
+                        'alert_type': AlertType.CONSECUTIVE_LONG.value,
+                        'price': float(kline_data['close']),
+                        'consecutive_count': self.consecutive_counters[symbol],
+                        'timestamp': close_time,
+                        'close_timestamp': close_time,
+                        'is_closed': True,
+                        'has_imbalance': has_imbalance,
+                        'imbalance_data': imbalance_data,
+                        'candle_data': candle_data,
+                        'message': "Последовательность LONG свечей прервана SHORT свечей"
+                    })
+
+                # Сбрасываем счетчик и ID алерта
                 self.consecutive_counters[symbol] = 0
-            
+                self.consecutive_alert_ids[symbol] = None
+
             return None
-            
+
         except Exception as e:
             logger.error(f"Ошибка проверки последовательных LONG свечей для {symbol}: {e}")
             return None
@@ -736,18 +769,20 @@ class AlertManager:
     async def _send_alert(self, alert_data: Dict):
         """Отправка алерта"""
         try:
-            # Если у алерта уже есть ID, значит он уже сохранен (обновление)
-            if 'id' not in alert_data:
+            # Если у алерта есть ID, обновляем существующий, иначе создаем новый
+            if 'id' in alert_data:
+                await self.db_manager.update_alert(alert_data['id'], alert_data)
+            else:
                 alert_id = await self.db_manager.save_alert(alert_data)
                 alert_data['id'] = alert_id
-            
-            # Отправляем в WebSocket немедленно
+
+            # Отправляем в WebSocket
             if self.connection_manager:
                 await self.connection_manager.broadcast_json({
                     'type': 'new_alert',
                     'alert': self._serialize_alert(alert_data)
                 })
-            
+
             # Отправляем в Telegram (только для финальных алертов)
             if self.telegram_bot and alert_data.get('is_closed', False):
                 if alert_data['alert_type'] == AlertType.VOLUME_SPIKE.value:
@@ -756,9 +791,9 @@ class AlertManager:
                     await self.telegram_bot.send_consecutive_alert(alert_data)
                 elif alert_data['alert_type'] == AlertType.PRIORITY.value:
                     await self.telegram_bot.send_priority_alert(alert_data)
-            
+
             logger.info(f"Алерт отправлен: {alert_data['symbol']} - {alert_data['alert_type']}")
-            
+
         except Exception as e:
             logger.error(f"Ошибка отправки алерта: {e}")
 
