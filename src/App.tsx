@@ -13,6 +13,7 @@ import {
 import ChartModal from './components/ChartModal';
 import WatchlistModal from './components/WatchlistModal';
 import StreamDataModal from './components/StreamDataModal';
+import SettingsModal from './components/SettingsModal';
 
 interface Alert {
   id: number;
@@ -91,6 +92,9 @@ interface Settings {
   orderbook: {
     enabled: boolean;
     snapshot_on_alert: boolean;
+  };
+  telegram: {
+    enabled: boolean;
   };
 }
 
@@ -280,6 +284,10 @@ const App: React.FC = () => {
     const cleanSymbol = symbol.replace('USDT', '');
     const url = `https://www.tradingview.com/chart/?symbol=BYBIT:${cleanSymbol}USDT.P&interval=1`;
     window.open(url, '_blank');
+  };
+
+  const handleSettingsSave = (newSettings: Settings) => {
+    setSettings(newSettings);
   };
 
   const formatTime = (timestamp: string) => {
@@ -503,8 +511,9 @@ const App: React.FC = () => {
             
             <div className="flex items-center space-x-4">
               <button
-                onClick={() => setShowSettings(!showSettings)}
-                className="text-gray-600 hover:text-gray-900 p-2"
+                onClick={() => setShowSettings(true)}
+                className="text-gray-600 hover:text-gray-900 p-2 rounded-lg hover:bg-gray-100 transition-colors"
+                title="Настройки"
               >
                 <Settings className="w-5 h-5" />
               </button>
@@ -752,6 +761,14 @@ const App: React.FC = () => {
           streamData={streamData}
           connectionStatus={connectionStatus}
           onClose={() => setShowStreamModal(false)}
+        />
+      )}
+
+      {showSettings && (
+        <SettingsModal
+          settings={settings}
+          onClose={() => setShowSettings(false)}
+          onSave={handleSettingsSave}
         />
       )}
     </div>
