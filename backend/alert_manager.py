@@ -157,10 +157,11 @@ class ImbalanceAnalyzer:
         return None
 
 class AlertManager:
-    def __init__(self, db_manager, telegram_bot=None, connection_manager=None):
+    def __init__(self, db_manager, telegram_bot=None, connection_manager=None, time_sync=None):
         self.db_manager = db_manager
         self.telegram_bot = telegram_bot
         self.connection_manager = connection_manager
+        self.time_sync = time_sync  # Добавляем синхронизацию времени
         self.imbalance_analyzer = ImbalanceAnalyzer()
         
         # Настройки из переменных окружения
@@ -194,7 +195,23 @@ class AlertManager:
         self.priority_signals = {}  # symbol -> priority signal data
         self.alert_cooldowns = {}  # symbol -> last alert timestamp
         
-        logger.info("AlertManager инициализирован с анализом имбаланса")
+        logger.info("AlertManager инициализирован с анализом имбаланса и синхронизацией времени")
+
+    def _get_current_time(self) -> datetime:
+        """Получить текущее время (биржевое, если доступно)"""
+        if self.time_sync:
+            return self.time_sync.get_exchange_time()
+        return datetime.now()
+
+    def _is_candle_closed(self, kline_data: Dict) -> bool:
+        """Проверка, закрылась ли свеча (используя биржевое время)"""
+        if self.time_sync:
+            return self.time_sync.is_candle_closed(kline_data)
+        
+        # Fallback на локальное время
+        current_time = datetime.now().timestamp() * 1000
+        candle_end_time = int(kline_data['end'])
+        return current_time >= candle_end_time
 
     async def process_kline_data(self, symbol: str, kline_data: Dict) -> List[Dict]:
         """Обработка данных свечи и генерация алертов"""
@@ -261,14 +278,6 @@ class AlertManager:
         if len(self.candle_cache[symbol]) > max_cache_size:
             self.candle_cache[symbol] = self.candle_cache[symbol][-max_cache_size:]
 
-    def _is_candle_closed(self, kline_data: Dict) -> bool:
-        """Проверка, закрылась ли свеча"""
-        current_time = datetime.now().timestamp() * 1000
-        candle_end_time = int(kline_data['end'])
-        
-        # Свеча считается закрытой, если прошло время её окончания
-        return current_time >= candle_end_time
-
     async def _check_volume_alert(self, symbol: str, kline_data: Dict, is_closed: bool = False) -> Optional[Dict]:
         """Проверка алерта по превышению объема"""
         try:
@@ -330,7 +339,7 @@ class AlertManager:
                 
                 if not is_closed:
                     # Первый алерт (предварительный - в процессе формирования)
-                    actual_time = datetime.now()
+                    actual_time = self._get_current_time()  # Используем биржевое время
                     
                     # Проверяем, нет ли уже предварительного алерта для этой минуты
                     if symbol in self.volume_alerts_cache and self.volume_alerts_cache[symbol]['timestamp'] == timestamp:
@@ -410,7 +419,10 @@ class AlertManager:
                     return alert_data
                 else:
                     # Второй алерт (финальный - после закрытия свечи)
-                    close_time = datetime.fromtimestamp((timestamp + 60000) / 1000)
+                    if self.time_sync:
+                        close_time = self.time_sync.get_candle_close_time(timestamp)
+                    else:
+                        close_time = datetime.fromtimestamp((timestamp + 60000) / 1000)
                     
                     # Определяем, истинный ли это сигнал (свеча закрылась в LONG)
                     final_is_long = float(kline_data['close']) > float(kline_data['open'])
@@ -449,7 +461,7 @@ class AlertManager:
                         # Удаляем из кэша и обновляем кулдаун только для истинных сигналов
                         del self.volume_alerts_cache[symbol]
                         if final_is_long:
-                            self.alert_cooldowns[symbol] = datetime.now()
+                            self.alert_cooldowns[symbol] = self._get_current_time()
                         
                         logger.info(f"Обновлен финальный алерт для {symbol}: {'истинный' if final_is_long else 'ложный'}")
                         return alert_data
@@ -481,7 +493,7 @@ class AlertManager:
                         
                         # Обновляем кулдаун только для истинных сигналов
                         if final_is_long:
-                            self.alert_cooldowns[symbol] = datetime.now()
+                            self.alert_cooldowns[symbol] = self._get_current_time()
                         
                         logger.info(f"Создан новый финальный алерт для {symbol}: {'истинный' if final_is_long else 'ложный'}")
                         return alert_data
@@ -546,7 +558,7 @@ class AlertManager:
                             return {
                                 'bids': [[float(bid[0]), float(bid[1])] for bid in result.get('b', [])],
                                 'asks': [[float(ask[0]), float(ask[1])] for ask in result.get('a', [])],
-                                'timestamp': datetime.now().isoformat()
+                                'timestamp': self._get_current_time().isoformat()  # Используем биржевое время
                             }
             
             return None
@@ -594,9 +606,12 @@ class AlertManager:
                 self.consecutive_counters[symbol] = 0
                 self.consecutive_alert_ids[symbol] = None
 
-            # Время закрытия свечи
+            # Время закрытия свечи (используем биржевое время)
             timestamp = int(kline_data['start'])
-            close_time = datetime.fromtimestamp((timestamp + 60000) / 1000)
+            if self.time_sync:
+                close_time = self.time_sync.get_candle_close_time(timestamp)
+            else:
+                close_time = datetime.fromtimestamp((timestamp + 60000) / 1000)
 
             # Данные свечи
             candle_data = {
@@ -821,7 +836,7 @@ class AlertManager:
         """Очистка старых данных"""
         try:
             # Очищаем кэш свечей
-            cutoff_time = datetime.now() - timedelta(hours=self.settings['data_retention_hours'])
+            cutoff_time = self._get_current_time() - timedelta(hours=self.settings['data_retention_hours'])
             cutoff_timestamp = int(cutoff_time.timestamp() * 1000)
             
             for symbol in list(self.candle_cache.keys()):
@@ -835,7 +850,7 @@ class AlertManager:
                         del self.candle_cache[symbol]
             
             # Очищаем кэш объемных алертов (старше 5 минут)
-            alert_cutoff = datetime.now() - timedelta(minutes=5)
+            alert_cutoff = self._get_current_time() - timedelta(minutes=5)
             alert_cutoff_timestamp = int(alert_cutoff.timestamp() * 1000)
             
             for symbol in list(self.volume_alerts_cache.keys()):
@@ -843,7 +858,7 @@ class AlertManager:
                     del self.volume_alerts_cache[symbol]
             
             # Очищаем кулдауны (старше часа)
-            cooldown_cutoff = datetime.now() - timedelta(hours=1)
+            cooldown_cutoff = self._get_current_time() - timedelta(hours=1)
             for symbol in list(self.alert_cooldowns.keys()):
                 if self.alert_cooldowns[symbol] < cooldown_cutoff:
                     del self.alert_cooldowns[symbol]

@@ -8,7 +8,8 @@ import {
   Settings, 
   ExternalLink,
   Brain,
-  RefreshCw
+  RefreshCw,
+  Clock
 } from 'lucide-react';
 import ChartModal from './components/ChartModal';
 import SmartMoneyChartModal from './components/SmartMoneyChartModal';
@@ -70,6 +71,15 @@ interface SmartMoneyAlert {
   related_alert_id?: number;
 }
 
+interface TimeSync {
+  is_synced: boolean;
+  last_sync?: string;
+  time_offset_ms: number;
+  exchange_time: string;
+  local_time: string;
+  sync_age_seconds?: number;
+}
+
 interface Settings {
   volume_analyzer: {
     analysis_hours: number;
@@ -100,6 +110,7 @@ interface Settings {
   telegram: {
     enabled: boolean;
   };
+  time_sync?: TimeSync;
 }
 
 const App: React.FC = () => {
@@ -118,12 +129,40 @@ const App: React.FC = () => {
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
   const [settings, setSettings] = useState<Settings | null>(null);
   const [loading, setLoading] = useState(true);
+  const [currentTime, setCurrentTime] = useState<Date>(new Date());
+  const [timeSync, setTimeSync] = useState<TimeSync | null>(null);
 
   useEffect(() => {
     loadInitialData();
     connectWebSocket();
     requestNotificationPermission();
+    
+    // Обновляем время каждую секунду
+    const timeInterval = setInterval(() => {
+      setCurrentTime(new Date());
+    }, 1000);
+    
+    // Загружаем информацию о синхронизации времени каждые 30 секунд
+    const syncInterval = setInterval(loadTimeSync, 30000);
+    loadTimeSync(); // Первоначальная загрузка
+    
+    return () => {
+      clearInterval(timeInterval);
+      clearInterval(syncInterval);
+    };
   }, []);
+
+  const loadTimeSync = async () => {
+    try {
+      const response = await fetch('/api/time');
+      if (response.ok) {
+        const timeSyncData = await response.json();
+        setTimeSync(timeSyncData);
+      }
+    } catch (error) {
+      console.error('Ошибка загрузки информации о времени:', error);
+    }
+  };
 
   const requestNotificationPermission = async () => {
     if ('Notification' in window && Notification.permission === 'default') {
@@ -193,6 +232,9 @@ const App: React.FC = () => {
       if (settingsResponse.ok) {
         const settingsData = await settingsResponse.json();
         setSettings(settingsData);
+        if (settingsData.time_sync) {
+          setTimeSync(settingsData.time_sync);
+        }
       }
 
     } catch (error) {
@@ -404,6 +446,20 @@ const App: React.FC = () => {
     return <span className="px-2 py-1 bg-gray-100 text-gray-800 text-xs rounded-full">Неизвестно</span>;
   };
 
+  const getTimeSyncStatus = () => {
+    if (!timeSync) return { color: 'text-gray-500', text: 'Нет данных' };
+    
+    if (!timeSync.is_synced) {
+      return { color: 'text-red-500', text: 'Не синхронизировано' };
+    }
+    
+    if (timeSync.sync_age_seconds && timeSync.sync_age_seconds > 600) { // 10 минут
+      return { color: 'text-yellow-500', text: 'Устаревшая синхронизация' };
+    }
+    
+    return { color: 'text-green-500', text: 'Синхронизировано' };
+  };
+
   const renderAlertCard = (alert: Alert) => (
     <div 
       key={alert.id} 
@@ -587,6 +643,8 @@ const App: React.FC = () => {
     );
   }
 
+  const timeSyncStatus = getTimeSyncStatus();
+
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
@@ -607,7 +665,33 @@ const App: React.FC = () => {
               </div>
             </div>
             
-            <div className="flex items-center space-x-4">
+            <div className="flex items-center space-x-6">
+              {/* Часы с биржевым временем */}
+              <div className="flex items-center space-x-3 bg-gray-100 rounded-lg px-4 py-2">
+                <Clock className="w-5 h-5 text-gray-600" />
+                <div className="text-center">
+                  <div className="text-lg font-mono font-bold text-gray-900">
+                    {timeSync && timeSync.is_synced 
+                      ? new Date(timeSync.exchange_time).toLocaleTimeString('ru-RU')
+                      : currentTime.toLocaleTimeString('ru-RU')
+                    }
+                  </div>
+                  <div className={`text-xs ${timeSyncStatus.color}`}>
+                    {timeSync && timeSync.is_synced ? 'Биржевое время' : 'Локальное время'}
+                  </div>
+                </div>
+                <div className="text-xs text-gray-500">
+                  <div className={timeSyncStatus.color}>
+                    {timeSyncStatus.text}
+                  </div>
+                  {timeSync && timeSync.time_offset_ms !== 0 && (
+                    <div>
+                      {timeSync.time_offset_ms > 0 ? '+' : ''}{Math.round(timeSync.time_offset_ms)}мс
+                    </div>
+                  )}
+                </div>
+              </div>
+              
               <button
                 onClick={() => setShowSettings(true)}
                 className="text-gray-600 hover:text-gray-900 p-2 rounded-lg hover:bg-gray-100 transition-colors"
