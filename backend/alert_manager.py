@@ -177,7 +177,7 @@ class AlertManager:
             'data_retention_hours': int(os.getenv('DATA_RETENTION_HOURS', 2)),
             'update_interval_seconds': int(os.getenv('UPDATE_INTERVAL_SECONDS', 1)),
             'notification_enabled': True,
-            'volume_type': 'long',  # 'all', 'long', 'short'
+            'volume_type': 'long',
             'orderbook_enabled': False,
             'orderbook_snapshot_on_alert': False,
             'imbalance_enabled': True,
@@ -778,8 +778,9 @@ class AlertManager:
 
             # Отправляем в WebSocket
             if self.connection_manager:
+                event_type = 'alert_updated' if 'id' in alert_data else 'new_alert'
                 await self.connection_manager.broadcast_json({
-                    'type': 'new_alert',
+                    'type': event_type,
                     'alert': self._serialize_alert(alert_data)
                 })
 
