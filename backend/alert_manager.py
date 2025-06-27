@@ -283,6 +283,8 @@ class AlertManager:
             if current_volume_usdt < self.settings['min_volume_usdt']:
                 return None
             
+            timestamp = int(kline_data['start'])
+            
             # Проверяем кулдаун для повторных сигналов с учетом смещения
             if symbol in self.alert_cooldowns:
                 last_alert_time = self.alert_cooldowns[symbol]
@@ -311,7 +313,6 @@ class AlertManager:
             volume_ratio = current_volume_usdt / average_volume if average_volume > 0 else 0
             
             if volume_ratio >= self.settings['volume_multiplier']:
-                timestamp = int(kline_data['start'])
                 current_price = float(kline_data['close'])
                 
                 # Создаем данные свечи для алерта
@@ -340,8 +341,12 @@ class AlertManager:
                     # ВРЕМЯ УКАЗЫВАЕМ АКТУАЛЬНОЕ - когда получен сигнал
                     actual_time = datetime.now()
                     
+                    # Проверяем, нет ли уже предварительного алерта для этой минуты
                     if symbol in self.volume_alerts_cache and self.volume_alerts_cache[symbol]['timestamp'] == timestamp:
-                        return None  # Уже есть предварительный алерт для этой минуты
+                        # Обновляем существующий предварительный алерт, если объем больше
+                        cached_volume = self.volume_alerts_cache[symbol].get('volume_usdt', 0)
+                        if current_volume_usdt <= cached_volume:
+                            return None
                     
                     # Сохраняем уровень цены, на котором сработал алерт
                     alert_level = current_price
@@ -378,14 +383,14 @@ class AlertManager:
                     # ВРЕМЯ ЗАКРЫТИЯ СВЕЧИ - начало следующей минуты
                     close_time = datetime.fromtimestamp((timestamp + 60000) / 1000)
                     
+                    # Определяем, истинный ли это сигнал (свеча закрылась в LONG)
+                    final_is_long = float(kline_data['close']) > float(kline_data['open'])
+                    
                     if symbol in self.volume_alerts_cache and self.volume_alerts_cache[symbol]['timestamp'] == timestamp:
                         # Обновляем существующий алерт
                         cached_data = self.volume_alerts_cache[symbol]
                         preliminary_alert = cached_data['preliminary_alert']
                         alert_level = cached_data.get('alert_level', current_price)
-                        
-                        # Определяем, истинный ли это сигнал (свеча закрылась в LONG)
-                        final_is_long = float(kline_data['close']) > float(kline_data['open'])
                         
                         # Обновляем данные свечи с уровнем алерта
                         candle_data['alert_level'] = alert_level
@@ -409,14 +414,14 @@ class AlertManager:
                             'message': f"Финальный алерт: объем превышен в {volume_ratio:.2f}x раз ({'истинный' if final_is_long else 'ложный'} сигнал)"
                         }
                         
-                        # Удаляем из кэша и обновляем кулдаун
+                        # Удаляем из кэша и обновляем кулдаун только для истинных сигналов
                         del self.volume_alerts_cache[symbol]
-                        self.alert_cooldowns[symbol] = datetime.now()
+                        if final_is_long:
+                            self.alert_cooldowns[symbol] = datetime.now()
                         
                         return alert_data
                     else:
                         # Создаем новый финальный алерт (если не было предварительного)
-                        final_is_long = float(kline_data['close']) > float(kline_data['open'])
                         candle_data['alert_level'] = current_price
                         
                         alert_data = {
@@ -437,8 +442,9 @@ class AlertManager:
                             'message': f"Объем превышен в {volume_ratio:.2f}x раз ({'истинный' if final_is_long else 'ложный'} сигнал)"
                         }
                         
-                        # Обновляем кулдаун
-                        self.alert_cooldowns[symbol] = datetime.now()
+                        # Обновляем кулдаун только для истинных сигналов
+                        if final_is_long:
+                            self.alert_cooldowns[symbol] = datetime.now()
                         
                         return alert_data
             
@@ -551,7 +557,7 @@ class AlertManager:
             if is_long:
                 self.consecutive_counters[symbol] += 1
                 
-                # ПРОВЕРЯЕМ ТОЛЬКО КОГДА ДОСТИГЛИ НУЖНОГО КОЛИЧЕСТВА + 1 (т.е. в начале следующей свечи)
+                # ПРОВЕРЯЕМ ТОЛЬКО КОГДА ДОСТИГЛИ НУЖНОГО КОЛИЧЕСТВА
                 if self.consecutive_counters[symbol] == self.settings['consecutive_long_count']:
                     # Время закрытия свечи - начало следующей минуты
                     timestamp = int(kline_data['start'])

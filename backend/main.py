@@ -398,17 +398,27 @@ async def update_settings(settings: dict):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# Статические файлы и SPA
-app.mount("/assets", StaticFiles(directory="dist/assets"), name="assets")
+# Проверяем существование директории dist перед монтированием
+if os.path.exists("dist"):
+    if os.path.exists("dist/assets"):
+        app.mount("/assets", StaticFiles(directory="dist/assets"), name="assets")
+    
+    @app.get("/vite.svg")
+    async def get_vite_svg():
+        if os.path.exists("dist/vite.svg"):
+            return FileResponse("dist/vite.svg")
+        raise HTTPException(status_code=404, detail="File not found")
 
-@app.get("/vite.svg")
-async def get_vite_svg():
-    return FileResponse("dist/vite.svg")
-
-@app.get("/{full_path:path}")
-async def serve_spa(full_path: str):
-    """Обслуживание SPA для всех маршрутов"""
-    return FileResponse("dist/index.html")
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        """Обслуживание SPA для всех маршрутов"""
+        if os.path.exists("dist/index.html"):
+            return FileResponse("dist/index.html")
+        raise HTTPException(status_code=404, detail="SPA not built")
+else:
+    @app.get("/")
+    async def root():
+        return {"message": "Frontend not built. Run 'npm run build' first."}
 
 if __name__ == "__main__":
     # Настройки сервера из переменных окружения
