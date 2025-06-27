@@ -11,6 +11,7 @@ import {
   RefreshCw
 } from 'lucide-react';
 import ChartModal from './components/ChartModal';
+import SmartMoneyChartModal from './components/SmartMoneyChartModal';
 import WatchlistModal from './components/WatchlistModal';
 import StreamDataModal from './components/StreamDataModal';
 import SettingsModal from './components/SettingsModal';
@@ -64,6 +65,8 @@ interface SmartMoneyAlert {
   strength: number;
   price: number;
   timestamp: string;
+  top?: number;
+  bottom?: number;
   related_alert_id?: number;
 }
 
@@ -108,6 +111,7 @@ const App: React.FC = () => {
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
   const [streamData, setStreamData] = useState<StreamData[]>([]);
   const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null);
+  const [selectedSmartMoneyAlert, setSelectedSmartMoneyAlert] = useState<SmartMoneyAlert | null>(null);
   const [showWatchlistModal, setShowWatchlistModal] = useState(false);
   const [showStreamModal, setShowStreamModal] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -238,7 +242,7 @@ const App: React.FC = () => {
         // Показываем уведомление
         showNotification(alert);
         
-        // Добавляем новый алерт БЕЗ перезагрузки всего списка
+        // Обновляем алерты без дублирования
         if (alert.alert_type === 'volume_spike') {
           setVolumeAlerts(prev => {
             const existing = prev.find(a => a.id === alert.id);
@@ -281,6 +285,8 @@ const App: React.FC = () => {
             strength: alert.imbalance_data.strength,
             price: alert.price,
             timestamp: alert.timestamp,
+            top: alert.imbalance_data.top,
+            bottom: alert.imbalance_data.bottom,
             related_alert_id: alert.id
           };
           setSmartMoneyAlerts(prev => [smartMoneyAlert, ...prev].slice(0, 50));
@@ -467,7 +473,11 @@ const App: React.FC = () => {
   );
 
   const renderSmartMoneyCard = (alert: SmartMoneyAlert) => (
-    <div key={alert.id} className="bg-white rounded-lg shadow-md border border-gray-200 p-4 hover:shadow-lg transition-shadow w-full">
+    <div 
+      key={alert.id} 
+      className="bg-white rounded-lg shadow-md border border-gray-200 p-4 hover:shadow-lg transition-shadow cursor-pointer w-full"
+      onClick={() => setSelectedSmartMoneyAlert(alert)}
+    >
       <div className="flex items-start justify-between mb-3">
         <div className="flex items-center space-x-3">
           <span className="font-bold text-lg text-gray-900">{alert.symbol}</span>
@@ -479,7 +489,10 @@ const App: React.FC = () => {
         </div>
         
         <button
-          onClick={() => openTradingView(alert.symbol)}
+          onClick={(e) => {
+            e.stopPropagation();
+            openTradingView(alert.symbol);
+          }}
           className="text-blue-600 hover:text-blue-800 p-1"
           title="Открыть в TradingView"
         >
@@ -512,6 +525,15 @@ const App: React.FC = () => {
           <div className="text-gray-900">{formatTime(alert.timestamp)}</div>
         </div>
       </div>
+
+      {alert.top && alert.bottom && (
+        <div className="mt-3 pt-3 border-t border-gray-200">
+          <div className="grid grid-cols-2 gap-4 text-xs text-gray-500">
+            <div>Верх: ${alert.top.toFixed(6)}</div>
+            <div>Низ: ${alert.bottom.toFixed(6)}</div>
+          </div>
+        </div>
+      )}
     </div>
   );
 
@@ -769,12 +791,6 @@ const App: React.FC = () => {
           <div>
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-2xl font-bold text-gray-900">Потоковые данные</h2>
-              <button
-                onClick={() => setShowStreamModal(true)}
-                className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors"
-              >
-                Подробнее
-              </button>
             </div>
             
             <div className="space-y-4">
@@ -821,6 +837,13 @@ const App: React.FC = () => {
         <ChartModal
           alert={selectedAlert}
           onClose={() => setSelectedAlert(null)}
+        />
+      )}
+
+      {selectedSmartMoneyAlert && (
+        <SmartMoneyChartModal
+          alert={selectedSmartMoneyAlert}
+          onClose={() => setSelectedSmartMoneyAlert(null)}
         />
       )}
 

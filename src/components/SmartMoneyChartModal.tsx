@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, ExternalLink, Download, BookOpen } from 'lucide-react';
+import { X, ExternalLink, Download } from 'lucide-react';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -17,7 +17,6 @@ import { Chart } from 'react-chartjs-2';
 import 'chartjs-adapter-date-fns';
 import annotationPlugin from 'chartjs-plugin-annotation';
 import { CandlestickController, CandlestickElement } from 'chartjs-chart-financial';
-import OrderBookModal from './OrderBookModal';
 
 ChartJS.register(
   CategoryScale,
@@ -34,36 +33,17 @@ ChartJS.register(
   CandlestickElement
 );
 
-interface Alert {
+interface SmartMoneyAlert {
   id: number;
   symbol: string;
-  alert_type: string;
+  type: 'fair_value_gap' | 'order_block' | 'breaker_block';
+  direction: 'bullish' | 'bearish';
+  strength: number;
   price: number;
   timestamp: string;
-  close_timestamp?: string;
-  preliminary_alert?: Alert;
-  has_imbalance?: boolean;
-  imbalance_data?: {
-    type: 'fair_value_gap' | 'order_block' | 'breaker_block';
-    strength: number;
-    direction: 'bullish' | 'bearish';
-    top: number;
-    bottom: number;
-    timestamp: number;
-  };
-  candle_data?: {
-    open: number;
-    high: number;
-    low: number;
-    close: number;
-    volume: number;
-    alert_level?: number;
-  };
-  order_book_snapshot?: {
-    bids: Array<[number, number]>;
-    asks: Array<[number, number]>;
-    timestamp: string;
-  };
+  top?: number;
+  bottom?: number;
+  related_alert_id?: number;
 }
 
 interface ChartData {
@@ -77,16 +57,15 @@ interface ChartData {
   is_long: boolean;
 }
 
-interface ChartModalProps {
-  alert: Alert;
+interface SmartMoneyChartModalProps {
+  alert: SmartMoneyAlert;
   onClose: () => void;
 }
 
-const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
+const SmartMoneyChartModal: React.FC<SmartMoneyChartModalProps> = ({ alert, onClose }) => {
   const [chartData, setChartData] = useState<ChartData[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [showOrderBook, setShowOrderBook] = useState(false);
 
   useEffect(() => {
     loadChartData();
@@ -97,7 +76,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
       setLoading(true);
       setError(null);
 
-      const response = await fetch(`/api/chart-data/${alert.symbol}?hours=1&alert_time=${alert.close_timestamp || alert.timestamp}`);
+      const response = await fetch(`/api/chart-data/${alert.symbol}?hours=1&alert_time=${alert.timestamp}`);
       
       if (!response.ok) {
         throw new Error('Ошибка загрузки данных графика');
@@ -130,7 +109,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${alert.symbol}_chart_data.csv`;
+    a.download = `${alert.symbol}_smart_money_chart.csv`;
     a.click();
     window.URL.revokeObjectURL(url);
   };
@@ -138,8 +117,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
   const getMainChartConfig = () => {
     if (chartData.length === 0) return null;
 
-    const alertTime = new Date(alert.close_timestamp || alert.timestamp).getTime();
-    const preliminaryTime = alert.preliminary_alert ? new Date(alert.preliminary_alert.timestamp).getTime() : null;
+    const alertTime = new Date(alert.timestamp).getTime();
 
     // Создаем свечные данные
     const candleData = chartData.map(d => ({
@@ -150,101 +128,64 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
       c: d.close
     }));
 
-    // Отметки алертов
-    const alertPoints = [];
-    
-    if (preliminaryTime) {
-      alertPoints.push({
-        x: preliminaryTime,
-        y: alert.preliminary_alert?.price || alert.price
-      });
-    }
-    
-    alertPoints.push({
+    // Отметка Smart Money сигнала
+    const smartMoneyPoints = [{
       x: alertTime,
       y: alert.price
-    });
+    }];
 
-    // Уровень алерта
-    let alertLevelData = [];
-    if (alert.candle_data?.alert_level) {
-      alertLevelData = [{
-        x: alertTime,
-        y: alert.candle_data.alert_level
-      }];
-    }
-
-    // Аннотации для имбаланса
+    // Аннотации для Smart Money паттернов
     const annotations: any = {};
     
-    if (alert.has_imbalance && alert.imbalance_data) {
-      const imbalanceTime = alert.imbalance_data.timestamp || alertTime;
-      
-      // Линии границ имбаланса
-      annotations.imbalanceTop = {
+    if (alert.top && alert.bottom) {
+      // Линии границ паттерна
+      annotations.patternTop = {
         type: 'line',
-        xMin: imbalanceTime,
-        xMax: imbalanceTime + 300000, // 5 минут вправо
-        yMin: alert.imbalance_data.top,
-        yMax: alert.imbalance_data.top,
-        borderColor: alert.imbalance_data.direction === 'bullish' ? 'rgb(34, 197, 94)' : 'rgb(239, 68, 68)',
+        xMin: alertTime,
+        xMax: alertTime + 300000, // 5 минут вправо
+        yMin: alert.top,
+        yMax: alert.top,
+        borderColor: alert.direction === 'bullish' ? 'rgb(34, 197, 94)' : 'rgb(239, 68, 68)',
         borderWidth: 2,
         borderDash: [3, 3],
         label: {
-          content: `${alert.imbalance_data.type.toUpperCase()} TOP`,
+          content: `${alert.type.toUpperCase()} TOP`,
           enabled: true,
           position: 'end',
-          backgroundColor: alert.imbalance_data.direction === 'bullish' ? 'rgb(34, 197, 94)' : 'rgb(239, 68, 68)',
+          backgroundColor: alert.direction === 'bullish' ? 'rgb(34, 197, 94)' : 'rgb(239, 68, 68)',
           color: 'white',
           padding: 4
         }
       };
 
-      annotations.imbalanceBottom = {
+      annotations.patternBottom = {
         type: 'line',
-        xMin: imbalanceTime,
-        xMax: imbalanceTime + 300000, // 5 минут вправо
-        yMin: alert.imbalance_data.bottom,
-        yMax: alert.imbalance_data.bottom,
-        borderColor: alert.imbalance_data.direction === 'bullish' ? 'rgb(34, 197, 94)' : 'rgb(239, 68, 68)',
+        xMin: alertTime,
+        xMax: alertTime + 300000, // 5 минут вправо
+        yMin: alert.bottom,
+        yMax: alert.bottom,
+        borderColor: alert.direction === 'bullish' ? 'rgb(34, 197, 94)' : 'rgb(239, 68, 68)',
         borderWidth: 2,
         borderDash: [3, 3],
         label: {
-          content: `${alert.imbalance_data.type.toUpperCase()} BOTTOM`,
+          content: `${alert.type.toUpperCase()} BOTTOM`,
           enabled: true,
           position: 'end',
-          backgroundColor: alert.imbalance_data.direction === 'bullish' ? 'rgb(34, 197, 94)' : 'rgb(239, 68, 68)',
+          backgroundColor: alert.direction === 'bullish' ? 'rgb(34, 197, 94)' : 'rgb(239, 68, 68)',
           color: 'white',
           padding: 4
         }
       };
 
-      // Зона имбаланса
-      annotations.imbalanceZone = {
+      // Зона паттерна
+      annotations.patternZone = {
         type: 'box',
-        xMin: imbalanceTime,
-        xMax: imbalanceTime + 300000,
-        yMin: alert.imbalance_data.bottom,
-        yMax: alert.imbalance_data.top,
-        backgroundColor: alert.imbalance_data.direction === 'bullish' ? 'rgba(34, 197, 94, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+        xMin: alertTime,
+        xMax: alertTime + 300000,
+        yMin: alert.bottom,
+        yMax: alert.top,
+        backgroundColor: alert.direction === 'bullish' ? 'rgba(34, 197, 94, 0.1)' : 'rgba(239, 68, 68, 0.1)',
         borderColor: 'transparent'
-      };
-    }
-
-    // Линия уровня алерта
-    if (alert.candle_data?.alert_level) {
-      annotations.alertLevel = {
-        type: 'line',
-        yMin: alert.candle_data.alert_level,
-        yMax: alert.candle_data.alert_level,
-        borderColor: 'rgb(168, 85, 247)',
-        borderWidth: 2,
-        borderDash: [5, 5],
-        label: {
-          content: 'Уровень алерта',
-          enabled: true,
-          position: 'end'
-        }
       };
     }
 
@@ -261,23 +202,14 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
           }
         },
         {
-          label: 'Алерты',
-          data: alertPoints,
+          label: 'Smart Money Signal',
+          data: smartMoneyPoints,
           type: 'scatter' as const,
-          backgroundColor: 'rgb(255, 215, 0)',
-          borderColor: 'rgb(255, 193, 7)',
-          pointRadius: 8,
-          pointHoverRadius: 10
-        },
-        ...(alertLevelData.length > 0 ? [{
-          label: 'Уровень алерта',
-          data: alertLevelData,
-          type: 'scatter' as const,
-          backgroundColor: 'rgb(168, 85, 247)',
-          borderColor: 'rgb(168, 85, 247)',
-          pointRadius: 6,
-          pointHoverRadius: 8
-        }] : [])
+          backgroundColor: alert.direction === 'bullish' ? 'rgb(34, 197, 94)' : 'rgb(239, 68, 68)',
+          borderColor: alert.direction === 'bullish' ? 'rgb(21, 128, 61)' : 'rgb(185, 28, 28)',
+          pointRadius: 10,
+          pointHoverRadius: 12
+        }
       ]
     };
 
@@ -291,7 +223,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
       plugins: {
         title: {
           display: true,
-          text: `${alert.symbol} - Свечной график`,
+          text: `${alert.symbol} - Smart Money: ${alert.type.replace('_', ' ').toUpperCase()}`,
           color: '#374151'
         },
         legend: {
@@ -317,9 +249,12 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
                   ];
                 }
               } else if (context.datasetIndex === 1) {
-                return `Алерт: $${context.parsed.y.toFixed(8)}`;
-              } else {
-                return `Уровень алерта: $${context.parsed.y.toFixed(8)}`;
+                return [
+                  `Smart Money: ${alert.type.replace('_', ' ').toUpperCase()}`,
+                  `Direction: ${alert.direction.toUpperCase()}`,
+                  `Strength: ${alert.strength.toFixed(2)}%`,
+                  `Price: $${context.parsed.y.toFixed(8)}`
+                ];
               }
               return '';
             }
@@ -464,31 +399,21 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
           <div>
             <h2 className="text-2xl font-bold text-gray-900">{alert.symbol}</h2>
             <p className="text-gray-600">
-              График с данными • Алерт: {new Date(alert.close_timestamp || alert.timestamp).toLocaleString('ru-RU')}
+              Smart Money: {alert.type.replace('_', ' ').toUpperCase()} • {new Date(alert.timestamp).toLocaleString('ru-RU')}
             </p>
-            {alert.has_imbalance && (
-              <div className="flex items-center space-x-2 mt-2">
-                <span className="text-orange-500 text-sm">⚠️ Обнаружен имбаланс</span>
-                {alert.imbalance_data && (
-                  <span className="text-xs text-gray-500">
-                    ({alert.imbalance_data.type}, {alert.imbalance_data.direction}, сила: {alert.imbalance_data.strength.toFixed(1)}%)
-                  </span>
-                )}
-              </div>
-            )}
+            <div className="flex items-center space-x-4 mt-2">
+              <span className={`px-3 py-1 rounded-full text-sm font-medium ${
+                alert.direction === 'bullish' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+              }`}>
+                {alert.direction === 'bullish' ? 'Бычий' : 'Медвежий'}
+              </span>
+              <span className="text-sm text-gray-600">
+                Сила: <span className="font-semibold text-purple-600">{alert.strength.toFixed(2)}%</span>
+              </span>
+            </div>
           </div>
           
           <div className="flex items-center space-x-3">
-            {alert.order_book_snapshot && (
-              <button
-                onClick={() => setShowOrderBook(true)}
-                className="flex items-center space-x-2 bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg transition-colors"
-              >
-                <BookOpen className="w-4 h-4" />
-                <span>Стакан</span>
-              </button>
-            )}
-            
             <button
               onClick={downloadChart}
               className="flex items-center space-x-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg transition-colors"
@@ -554,81 +479,71 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
           )}
         </div>
 
-        {/* Alert Info */}
+        {/* Pattern Info */}
         <div className="p-6 border-t border-gray-200 bg-gray-50">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
             <div>
-              <span className="text-gray-600">Тип алерта:</span>
+              <span className="text-gray-600">Паттерн:</span>
               <span className="ml-2 text-gray-900 font-medium">
-                {alert.alert_type === 'volume_spike' ? 'Превышение объема' :
-                 alert.alert_type === 'consecutive_long' ? 'LONG последовательность' :
-                 alert.alert_type === 'priority' ? 'Приоритетный' : 'Неизвестный'}
+                {alert.type === 'fair_value_gap' && 'Fair Value Gap'}
+                {alert.type === 'order_block' && 'Order Block'}
+                {alert.type === 'breaker_block' && 'Breaker Block'}
               </span>
             </div>
             <div>
-              <span className="text-gray-600">Цена алерта:</span>
+              <span className="text-gray-600">Направление:</span>
+              <span className={`ml-2 font-medium ${
+                alert.direction === 'bullish' ? 'text-green-600' : 'text-red-600'
+              }`}>
+                {alert.direction === 'bullish' ? 'Бычий' : 'Медвежий'}
+              </span>
+            </div>
+            <div>
+              <span className="text-gray-600">Сила сигнала:</span>
+              <span className="ml-2 text-purple-600 font-semibold">{alert.strength.toFixed(2)}%</span>
+            </div>
+            <div>
+              <span className="text-gray-600">Цена:</span>
               <span className="ml-2 text-gray-900 font-mono">${alert.price.toFixed(8)}</span>
-            </div>
-            <div>
-              <span className="text-gray-600">Время:</span>
-              <span className="ml-2 text-gray-900">
-                {new Date(alert.close_timestamp || alert.timestamp).toLocaleString('ru-RU')}
-              </span>
-            </div>
-            <div>
-              <span className="text-gray-600">Свечей на графике:</span>
-              <span className="ml-2 text-gray-900">{chartData.length}</span>
             </div>
           </div>
           
-          {/* OHLCV данные свечи алерта */}
-          {alert.candle_data && (
+          {/* Pattern boundaries */}
+          {alert.top && alert.bottom && (
             <div className="mt-4 p-4 bg-white rounded-lg border border-gray-200">
-              <div className="text-sm font-medium text-gray-700 mb-2">Данные свечи алерта (OHLCV):</div>
-              <div className="grid grid-cols-5 gap-4 text-sm">
+              <div className="text-sm font-medium text-gray-700 mb-2">Границы паттерна:</div>
+              <div className="grid grid-cols-2 gap-4 text-sm">
                 <div>
-                  <span className="text-gray-600">Open:</span>
-                  <div className="text-gray-900 font-mono">${alert.candle_data.open.toFixed(8)}</div>
+                  <span className="text-gray-600">Верхняя граница:</span>
+                  <div className="text-gray-900 font-mono">${alert.top.toFixed(8)}</div>
                 </div>
                 <div>
-                  <span className="text-gray-600">High:</span>
-                  <div className="text-gray-900 font-mono">${alert.candle_data.high.toFixed(8)}</div>
-                </div>
-                <div>
-                  <span className="text-gray-600">Low:</span>
-                  <div className="text-gray-900 font-mono">${alert.candle_data.low.toFixed(8)}</div>
-                </div>
-                <div>
-                  <span className="text-gray-600">Close:</span>
-                  <div className="text-gray-900 font-mono">${alert.candle_data.close.toFixed(8)}</div>
-                </div>
-                <div>
-                  <span className="text-gray-600">Volume:</span>
-                  <div className="text-gray-900 font-mono">{alert.candle_data.volume.toFixed(2)}</div>
+                  <span className="text-gray-600">Нижняя граница:</span>
+                  <div className="text-gray-900 font-mono">${alert.bottom.toFixed(8)}</div>
                 </div>
               </div>
-              {alert.candle_data.alert_level && (
-                <div className="mt-2 text-sm">
-                  <span className="text-gray-600">Уровень первоначального алерта:</span>
-                  <span className="ml-2 text-purple-600 font-mono">${alert.candle_data.alert_level.toFixed(8)}</span>
-                </div>
-              )}
             </div>
           )}
+
+          {/* Pattern explanation */}
+          <div className="mt-4 p-4 bg-blue-50 rounded-lg">
+            <div className="text-sm font-medium text-blue-900 mb-2">Объяснение паттерна:</div>
+            <div className="text-sm text-blue-700">
+              {alert.type === 'fair_value_gap' && (
+                <p>Fair Value Gap - разрыв в ценах между свечами, указывающий на дисбаланс спроса и предложения. Часто цена возвращается для заполнения этого разрыва.</p>
+              )}
+              {alert.type === 'order_block' && (
+                <p>Order Block - зона накопления крупных заявок институциональных игроков. Эти уровни часто выступают как сильная поддержка или сопротивление.</p>
+              )}
+              {alert.type === 'breaker_block' && (
+                <p>Breaker Block - пробитый уровень поддержки/сопротивления, который меняет свою роль. Бывшая поддержка становится сопротивлением и наоборот.</p>
+              )}
+            </div>
+          </div>
         </div>
       </div>
-
-      {/* Order Book Modal */}
-      {showOrderBook && alert.order_book_snapshot && (
-        <OrderBookModal
-          orderBook={alert.order_book_snapshot}
-          alertPrice={alert.price}
-          symbol={alert.symbol}
-          onClose={() => setShowOrderBook(false)}
-        />
-      )}
     </div>
   );
 };
 
-export default ChartModal;
+export default SmartMoneyChartModal;
