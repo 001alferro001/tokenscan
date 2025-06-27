@@ -27,8 +27,8 @@ class BybitWebSocketClient:
         """Запуск WebSocket соединения"""
         self.is_running = True
         
-        # Сначала загружаем исторические данные
-        await self.load_historical_data()
+        # Сначала загружаем исторические данные с проверкой целостности
+        await self.load_historical_data_with_integrity_check()
         
         # Затем подключаемся к WebSocket для real-time данных
         while self.is_running:
@@ -46,26 +46,53 @@ class BybitWebSocketClient:
         if self.websocket:
             await self.websocket.close()
 
-    async def load_historical_data(self):
-        """Загрузка исторических данных за настраиваемый период"""
-        logger.info("Загрузка исторических данных...")
+    async def load_historical_data_with_integrity_check(self):
+        """Загрузка исторических данных с проверкой целостности"""
+        logger.info("Проверка целостности исторических данных...")
         
         # Получаем период хранения из настроек
         retention_hours = self.alert_manager.settings.get('data_retention_hours', 2)
-        limit = retention_hours * 60  # Количество минут
         
         for symbol in self.trading_pairs:
             try:
-                # Получаем данные за указанный период
+                # Проверяем целостность данных
+                integrity_info = await self.alert_manager.db_manager.check_data_integrity(symbol, retention_hours)
+                
+                logger.info(f"{symbol}: {integrity_info['total_existing']}/{integrity_info['total_expected']} свечей "
+                           f"({integrity_info['integrity_percentage']:.1f}% целостность)")
+                
+                # Если целостность менее 90% или есть недостающие данные, загружаем
+                if integrity_info['integrity_percentage'] < 90 or integrity_info['missing_count'] > 0:
+                    logger.info(f"Загрузка недостающих данных для {symbol}...")
+                    await self.load_missing_data(symbol, integrity_info['missing_periods'], retention_hours)
+                else:
+                    logger.info(f"Данные для {symbol} актуальны")
+                
+                # Небольшая задержка между запросами
+                await asyncio.sleep(0.1)
+                        
+            except Exception as e:
+                logger.error(f"Ошибка проверки данных для {symbol}: {e}")
+                continue
+
+        logger.info("Проверка целостности данных завершена")
+
+    async def load_missing_data(self, symbol: str, missing_periods: List[int], retention_hours: int):
+        """Загрузка недостающих исторических данных"""
+        try:
+            if not missing_periods:
+                # Загружаем весь период
+                limit = min(retention_hours * 60, 1000)  # Bybit ограничивает до 1000
+                
                 url = f"{self.rest_url}/v5/market/kline"
                 params = {
                     'category': 'linear',
                     'symbol': symbol,
                     'interval': '1',
-                    'limit': min(limit, 1000)  # Bybit ограничивает до 1000
+                    'limit': limit
                 }
                 
-                response = requests.get(url, params=params)
+                response = requests.get(url, params=params, timeout=10)
                 data = response.json()
                 
                 if data.get('retCode') == 0:
@@ -84,15 +111,59 @@ class BybitWebSocketClient:
                         
                         # Сохраняем в базу данных
                         await self.alert_manager.db_manager.save_kline_data(symbol, kline_data)
+            else:
+                # Загружаем только недостающие периоды (группами)
+                # Группируем последовательные периоды для оптимизации запросов
+                groups = []
+                current_group = [missing_periods[0]]
                 
-                # Небольшая задержка между запросами
-                await asyncio.sleep(0.1)
+                for i in range(1, len(missing_periods)):
+                    if missing_periods[i] - missing_periods[i-1] == 60000:  # Последовательные минуты
+                        current_group.append(missing_periods[i])
+                    else:
+                        groups.append(current_group)
+                        current_group = [missing_periods[i]]
+                
+                groups.append(current_group)
+                
+                # Загружаем каждую группу
+                for group in groups:
+                    start_time = group[0]
+                    end_time = group[-1] + 60000
+                    
+                    url = f"{self.rest_url}/v5/market/kline"
+                    params = {
+                        'category': 'linear',
+                        'symbol': symbol,
+                        'interval': '1',
+                        'start': start_time,
+                        'end': end_time
+                    }
+                    
+                    response = requests.get(url, params=params, timeout=10)
+                    data = response.json()
+                    
+                    if data.get('retCode') == 0:
+                        klines = data['result']['list']
                         
-            except Exception as e:
-                logger.error(f"Ошибка загрузки исторических данных для {symbol}: {e}")
-                continue
-
-        logger.info("Исторические данные загружены")
+                        for kline in reversed(klines):
+                            kline_data = {
+                                'start': int(kline[0]),
+                                'end': int(kline[0]) + 60000,
+                                'open': kline[1],
+                                'high': kline[2],
+                                'low': kline[3],
+                                'close': kline[4],
+                                'volume': kline[5]
+                            }
+                            
+                            await self.alert_manager.db_manager.save_kline_data(symbol, kline_data)
+                    
+                    # Задержка между запросами групп
+                    await asyncio.sleep(0.2)
+                    
+        except Exception as e:
+            logger.error(f"Ошибка загрузки недостающих данных для {symbol}: {e}")
 
     async def connect_websocket(self):
         """Подключение к WebSocket"""

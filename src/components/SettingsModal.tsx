@@ -4,6 +4,7 @@ import { X, Save, RefreshCw } from 'lucide-react';
 interface Settings {
   volume_analyzer: {
     analysis_hours: number;
+    offset_minutes: number;
     volume_multiplier: number;
     min_volume_usdt: number;
     consecutive_long_count: number;
@@ -11,6 +12,7 @@ interface Settings {
     data_retention_hours: number;
     update_interval_seconds: number;
     notification_enabled: boolean;
+    volume_type: 'all' | 'long' | 'short';
   };
   alerts: {
     volume_alerts_enabled: boolean;
@@ -197,6 +199,21 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ settings, onClose, onSave
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Смещение (минуты)
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="60"
+                    value={localSettings.volume_analyzer.offset_minutes}
+                    onChange={(e) => updateVolumeSettings('offset_minutes', parseInt(e.target.value))}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">Смещение для расчета среднего объема</p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
                     Множитель объема
                   </label>
                   <input
@@ -209,6 +226,22 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ settings, onClose, onSave
                     className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                   />
                   <p className="text-xs text-gray-500 mt-1">Во сколько раз объем должен превышать средний</p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Тип свечей для анализа
+                  </label>
+                  <select
+                    value={localSettings.volume_analyzer.volume_type}
+                    onChange={(e) => updateVolumeSettings('volume_type', e.target.value)}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="all">Все свечи</option>
+                    <option value="long">Только LONG</option>
+                    <option value="short">Только SHORT</option>
+                  </select>
+                  <p className="text-xs text-gray-500 mt-1">Какие свечи учитывать при расчете среднего объема</p>
                 </div>
 
                 <div>
@@ -271,6 +304,16 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ settings, onClose, onSave
                   />
                   <p className="text-xs text-gray-500 mt-1">Сколько часов хранить исторические данные</p>
                 </div>
+              </div>
+
+              <div className="p-4 bg-blue-50 rounded-lg">
+                <h4 className="font-medium text-blue-900 mb-2">Логика расчета среднего объема</h4>
+                <p className="text-sm text-blue-700">
+                  От текущей свечи отступаем влево на <strong>{localSettings.volume_analyzer.offset_minutes + localSettings.volume_analyzer.analysis_hours * 60}</strong> минут, 
+                  затем анализируем <strong>{localSettings.volume_analyzer.analysis_hours * 60}</strong> минут данных 
+                  ({localSettings.volume_analyzer.volume_type === 'all' ? 'все свечи' : 
+                    localSettings.volume_analyzer.volume_type === 'long' ? 'только LONG свечи' : 'только SHORT свечи'}).
+                </p>
               </div>
             </div>
           )}

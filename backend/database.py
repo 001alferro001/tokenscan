@@ -193,6 +193,53 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Ошибка обновления таблиц: {e}")
 
+    async def check_data_integrity(self, symbol: str, hours: int) -> Dict:
+        """Проверка целостности исторических данных"""
+        try:
+            cursor = self.connection.cursor()
+            
+            # Определяем временные границы
+            end_time = int(datetime.now().timestamp() * 1000)
+            start_time = end_time - (hours * 60 * 60 * 1000)
+            
+            # Получаем существующие данные
+            cursor.execute("""
+                SELECT open_time FROM kline_data 
+                WHERE symbol = %s AND open_time >= %s AND open_time <= %s
+                ORDER BY open_time
+            """, (symbol, start_time, end_time))
+            
+            existing_times = [row[0] for row in cursor.fetchall()]
+            cursor.close()
+            
+            # Генерируем ожидаемые временные метки (каждую минуту)
+            expected_times = []
+            current_time = start_time
+            while current_time <= end_time:
+                expected_times.append(current_time)
+                current_time += 60000  # +1 минута
+            
+            # Находим недостающие периоды
+            missing_times = [t for t in expected_times if t not in existing_times]
+            
+            return {
+                'total_expected': len(expected_times),
+                'total_existing': len(existing_times),
+                'missing_count': len(missing_times),
+                'missing_periods': missing_times,
+                'integrity_percentage': (len(existing_times) / len(expected_times)) * 100 if expected_times else 100
+            }
+            
+        except Exception as e:
+            logger.error(f"Ошибка проверки целостности данных для {symbol}: {e}")
+            return {
+                'total_expected': 0,
+                'total_existing': 0,
+                'missing_count': 0,
+                'missing_periods': [],
+                'integrity_percentage': 0
+            }
+
     async def get_watchlist(self) -> List[str]:
         """Получить список активных торговых пар"""
         try:
@@ -220,7 +267,9 @@ class DatabaseManager:
                 SELECT id, symbol, is_active, price_drop_percentage, 
                        current_price, historical_price, created_at, updated_at
                 FROM watchlist 
-                ORDER BY updated_at DESC
+                ORDER BY 
+                    CASE WHEN price_drop_percentage IS NOT NULL THEN price_drop_percentage ELSE 0 END DESC,
+                    symbol ASC
             """)
 
             result = cursor.fetchall()
@@ -327,9 +376,28 @@ class DatabaseManager:
             logger.error(f"Ошибка сохранения данных свечи: {e}")
 
     async def save_alert(self, alert_data: Dict) -> int:
-        """Сохранение алерта в базу данных"""
+        """Сохранение алерта в базу данных с проверкой дублирования"""
         try:
             cursor = self.connection.cursor()
+            
+            # Проверяем, есть ли уже такой алерт (для предотвращения дублирования)
+            if not alert_data.get('is_closed', False):
+                # Для предварительных алертов проверяем по символу и времени
+                cursor.execute("""
+                    SELECT id FROM alerts 
+                    WHERE symbol = %s AND alert_type = %s 
+                    AND is_closed = FALSE 
+                    AND alert_timestamp >= %s
+                """, (
+                    alert_data['symbol'],
+                    alert_data['alert_type'],
+                    alert_data['timestamp'] - timedelta(minutes=1) if isinstance(alert_data['timestamp'], datetime) else datetime.now() - timedelta(minutes=1)
+                ))
+                
+                existing = cursor.fetchone()
+                if existing:
+                    cursor.close()
+                    return existing[0]
             
             # Подготавливаем данные для сохранения
             candle_data_json = None
@@ -526,20 +594,29 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Ошибка очистки алертов: {e}")
 
-    async def get_historical_long_volumes(self, symbol: str, hours: int, offset_minutes: int = 0) -> List[float]:
-        """Получить объемы LONG свечей за указанный период"""
+    async def get_historical_long_volumes(self, symbol: str, hours: int, offset_minutes: int = 0, 
+                                        volume_type: str = 'long') -> List[float]:
+        """Получить объемы свечей за указанный период с настройками смещения и типа"""
         try:
             cursor = self.connection.cursor()
 
-            # Рассчитываем временные границы
+            # Рассчитываем временные границы с учетом смещения
             current_time = int(datetime.now().timestamp() * 1000)
             end_time = current_time - (offset_minutes * 60 * 1000)
             start_time = end_time - (hours * 60 * 60 * 1000)
 
-            cursor.execute("""
+            # Формируем условие в зависимости от типа объемов
+            if volume_type == 'long':
+                condition = "AND is_long = TRUE"
+            elif volume_type == 'short':
+                condition = "AND is_long = FALSE"
+            else:  # 'all'
+                condition = ""
+
+            cursor.execute(f"""
                 SELECT volume_usdt FROM kline_data 
                 WHERE symbol = %s 
-                AND is_long = TRUE 
+                {condition}
                 AND open_time >= %s 
                 AND open_time < %s
                 ORDER BY open_time

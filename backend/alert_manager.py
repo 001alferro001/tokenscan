@@ -169,6 +169,7 @@ class AlertManager:
             'consecutive_alerts_enabled': True,
             'priority_alerts_enabled': True,
             'analysis_hours': int(os.getenv('ANALYSIS_HOURS', 1)),
+            'offset_minutes': int(os.getenv('OFFSET_MINUTES', 0)),
             'volume_multiplier': float(os.getenv('VOLUME_MULTIPLIER', 2.0)),
             'min_volume_usdt': int(os.getenv('MIN_VOLUME_USDT', 1000)),
             'consecutive_long_count': int(os.getenv('CONSECUTIVE_LONG_COUNT', 5)),
@@ -176,6 +177,7 @@ class AlertManager:
             'data_retention_hours': int(os.getenv('DATA_RETENTION_HOURS', 2)),
             'update_interval_seconds': int(os.getenv('UPDATE_INTERVAL_SECONDS', 1)),
             'notification_enabled': True,
+            'volume_type': 'long',  # 'all', 'long', 'short'
             'orderbook_enabled': False,
             'orderbook_snapshot_on_alert': False,
             'imbalance_enabled': True,
@@ -267,7 +269,7 @@ class AlertManager:
         return current_time >= candle_end_time
 
     async def _check_volume_alert(self, symbol: str, kline_data: Dict, is_closed: bool = False) -> Optional[Dict]:
-        """Проверка алерта по превышению объема с правильной логикой времени"""
+        """Проверка алерта по превышению объема с правильной логикой времени и смещения"""
         try:
             # Проверяем, является ли свеча LONG
             is_long = float(kline_data['close']) > float(kline_data['open'])
@@ -281,22 +283,24 @@ class AlertManager:
             if current_volume_usdt < self.settings['min_volume_usdt']:
                 return None
             
-            # Проверяем кулдаун для повторных сигналов
+            # Проверяем кулдаун для повторных сигналов с учетом смещения
             if symbol in self.alert_cooldowns:
                 last_alert_time = self.alert_cooldowns[symbol]
                 current_time = datetime.now()
-                if (current_time - last_alert_time).total_seconds() < self.settings['alert_grouping_minutes'] * 60:
+                cooldown_period = self.settings['offset_minutes'] + self.settings['alert_grouping_minutes']
+                if (current_time - last_alert_time).total_seconds() < cooldown_period * 60:
                     # Проверяем, больше ли текущий объем предыдущего
                     if symbol in self.volume_alerts_cache:
                         prev_volume = self.volume_alerts_cache[symbol].get('volume_usdt', 0)
                         if current_volume_usdt < prev_volume:
                             return None
             
-            # Получаем исторические объемы
+            # Получаем исторические объемы с учетом смещения и типа
             historical_volumes = await self.db_manager.get_historical_long_volumes(
                 symbol, 
                 self.settings['analysis_hours'], 
-                offset_minutes=1  # Исключаем текущую минуту
+                offset_minutes=self.settings['offset_minutes'],
+                volume_type=self.settings['volume_type']
             )
             
             if len(historical_volumes) < 10:
@@ -547,7 +551,7 @@ class AlertManager:
             if is_long:
                 self.consecutive_counters[symbol] += 1
                 
-                # Проверяем, достигли ли нужного количества
+                # ПРОВЕРЯЕМ ТОЛЬКО КОГДА ДОСТИГЛИ НУЖНОГО КОЛИЧЕСТВА + 1 (т.е. в начале следующей свечи)
                 if self.consecutive_counters[symbol] == self.settings['consecutive_long_count']:
                     # Время закрытия свечи - начало следующей минуты
                     timestamp = int(kline_data['start'])

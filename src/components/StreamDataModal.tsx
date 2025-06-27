@@ -41,18 +41,18 @@ const StreamDataModal: React.FC<StreamDataModalProps> = ({
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-      <div className="bg-gray-800 rounded-lg w-full max-w-6xl h-[80vh] flex flex-col">
+      <div className="bg-white rounded-lg w-full max-w-6xl h-[80vh] flex flex-col">
         {/* Header */}
-        <div className="flex items-center justify-between p-6 border-b border-gray-700">
+        <div className="flex items-center justify-between p-6 border-b border-gray-200">
           <div className="flex items-center space-x-3">
-            <h2 className="text-2xl font-bold text-white">Потоковые данные с биржи</h2>
+            <h2 className="text-2xl font-bold text-gray-900">Потоковые данные с биржи</h2>
             <div className="flex items-center space-x-2">
               {connectionStatus === 'connected' ? (
-                <Wifi className="w-5 h-5 text-green-400" />
+                <Wifi className="w-5 h-5 text-green-500" />
               ) : (
-                <WifiOff className="w-5 h-5 text-red-400" />
+                <WifiOff className="w-5 h-5 text-red-500" />
               )}
-              <span className="text-sm text-gray-400">
+              <span className="text-sm text-gray-600">
                 {connectionStatus === 'connected' ? 'Подключено' : 
                  connectionStatus === 'connecting' ? 'Подключение...' : 'Отключено'}
               </span>
@@ -61,7 +61,7 @@ const StreamDataModal: React.FC<StreamDataModalProps> = ({
           
           <button
             onClick={onClose}
-            className="text-gray-400 hover:text-white p-2"
+            className="text-gray-400 hover:text-gray-600 p-2"
           >
             <X className="w-6 h-6" />
           </button>
@@ -73,7 +73,7 @@ const StreamDataModal: React.FC<StreamDataModalProps> = ({
             <div className="flex items-center justify-center h-full">
               <div className="text-center">
                 <div className="animate-pulse rounded-full h-12 w-12 bg-blue-500 mx-auto mb-4"></div>
-                <p className="text-gray-400">Ожидание потоковых данных...</p>
+                <p className="text-gray-600">Ожидание потоковых данных...</p>
               </div>
             </div>
           ) : (
@@ -81,25 +81,25 @@ const StreamDataModal: React.FC<StreamDataModalProps> = ({
               {streamData.map((item, index) => (
                 <div 
                   key={`${item.symbol}-${index}`} 
-                  className="bg-gray-700 rounded-lg p-4 border border-gray-600 hover:border-gray-500 transition-colors"
+                  className="bg-white rounded-lg border border-gray-200 p-4 hover:shadow-md transition-shadow w-full"
                 >
                   <div className="flex items-center justify-between">
                     <div className="flex items-center space-x-4">
                       <div className={`w-4 h-4 rounded-full ${
-                        item.is_long ? 'bg-green-400' : 'bg-red-400'
+                        item.is_long ? 'bg-green-500' : 'bg-red-500'
                       }`}></div>
                       
                       <div>
-                        <span className="font-semibold text-white text-lg">{item.symbol}</span>
+                        <span className="font-semibold text-gray-900 text-lg">{item.symbol}</span>
                         <div className="flex items-center space-x-2 text-sm">
                           <span className={`px-2 py-1 rounded text-xs font-medium ${
-                            item.is_long ? 'bg-green-900 text-green-300' : 'bg-red-900 text-red-300'
+                            item.is_long ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
                           }`}>
                             {item.is_long ? 'LONG' : 'SHORT'}
                           </span>
                           {item.change_24h && (
                             <span className={`text-xs ${
-                              item.change_24h > 0 ? 'text-green-400' : 'text-red-400'
+                              item.change_24h > 0 ? 'text-green-600' : 'text-red-600'
                             }`}>
                               {item.change_24h > 0 ? '+' : ''}{item.change_24h.toFixed(2)}%
                             </span>
@@ -109,10 +109,10 @@ const StreamDataModal: React.FC<StreamDataModalProps> = ({
                     </div>
                     
                     <div className="text-right">
-                      <div className="text-xl font-bold text-white">
+                      <div className="text-xl font-bold text-gray-900">
                         ${item.price.toFixed(8)}
                       </div>
-                      <div className="text-sm text-gray-400">
+                      <div className="text-sm text-gray-600">
                         Vol: ${formatVolume(item.volume_usdt)}
                       </div>
                     </div>
@@ -131,8 +131,8 @@ const StreamDataModal: React.FC<StreamDataModalProps> = ({
         </div>
 
         {/* Footer */}
-        <div className="p-6 border-t border-gray-700 bg-gray-900">
-          <div className="flex justify-between items-center text-sm text-gray-400">
+        <div className="p-6 border-t border-gray-200 bg-gray-50">
+          <div className="flex justify-between items-center text-sm text-gray-600">
             <span>Обновлений: {streamData.length}</span>
             <span>Статус: {
               connectionStatus === 'connected' ? '🟢 Активно' : 
