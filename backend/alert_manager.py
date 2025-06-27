@@ -270,7 +270,7 @@ class AlertManager:
         return current_time >= candle_end_time
 
     async def _check_volume_alert(self, symbol: str, kline_data: Dict, is_closed: bool = False) -> Optional[Dict]:
-        """Проверка алерта по превышению объема с правильной логикой времени и смещения"""
+        """Проверка алерта по превышению объема"""
         try:
             # Проверяем, является ли свеча LONG
             is_long = float(kline_data['close']) > float(kline_data['open'])
@@ -286,19 +286,7 @@ class AlertManager:
             
             timestamp = int(kline_data['start'])
             
-            # Проверяем кулдаун для повторных сигналов с учетом смещения
-            if symbol in self.alert_cooldowns:
-                last_alert_time = self.alert_cooldowns[symbol]
-                current_time = datetime.now()
-                cooldown_period = self.settings['offset_minutes'] + self.settings['alert_grouping_minutes']
-                if (current_time - last_alert_time).total_seconds() < cooldown_period * 60:
-                    # Проверяем, больше ли текущий объем предыдущего
-                    if symbol in self.volume_alerts_cache:
-                        prev_volume = self.volume_alerts_cache[symbol].get('volume_usdt', 0)
-                        if current_volume_usdt < prev_volume:
-                            return None
-            
-            # Получаем исторические объемы с учетом смещения и типа
+            # Получаем исторические объемы
             historical_volumes = await self.db_manager.get_historical_long_volumes(
                 symbol, 
                 self.settings['analysis_hours'], 
@@ -307,11 +295,14 @@ class AlertManager:
             )
             
             if len(historical_volumes) < 10:
+                logger.debug(f"Недостаточно исторических данных для {symbol}: {len(historical_volumes)}")
                 return None
             
             # Рассчитываем средний объем
             average_volume = sum(historical_volumes) / len(historical_volumes)
             volume_ratio = current_volume_usdt / average_volume if average_volume > 0 else 0
+            
+            logger.debug(f"{symbol}: Текущий объем {current_volume_usdt:.0f}, средний {average_volume:.0f}, коэффициент {volume_ratio:.2f}")
             
             if volume_ratio >= self.settings['volume_multiplier']:
                 current_price = float(kline_data['close'])
@@ -415,6 +406,7 @@ class AlertManager:
                         'volume_usdt': current_volume_usdt
                     }
                     
+                    logger.info(f"Создан предварительный алерт для {symbol}: {volume_ratio:.2f}x")
                     return alert_data
                 else:
                     # Второй алерт (финальный - после закрытия свечи)
@@ -459,6 +451,7 @@ class AlertManager:
                         if final_is_long:
                             self.alert_cooldowns[symbol] = datetime.now()
                         
+                        logger.info(f"Обновлен финальный алерт для {symbol}: {'истинный' if final_is_long else 'ложный'}")
                         return alert_data
                     else:
                         # Создаем новый финальный алерт (если не было предварительного)
@@ -490,6 +483,7 @@ class AlertManager:
                         if final_is_long:
                             self.alert_cooldowns[symbol] = datetime.now()
                         
+                        logger.info(f"Создан новый финальный алерт для {symbol}: {'истинный' if final_is_long else 'ложный'}")
                         return alert_data
             
             return None
@@ -659,6 +653,7 @@ class AlertManager:
                             'alert_id': alert_data['id']
                         })
 
+                    logger.info(f"Алерт по последовательности для {symbol}: {self.consecutive_counters[symbol]} LONG свечей")
                     return alert_data
             else:
                 # При появлении SHORT свечи сбрасываем счетчик и закрываем существующий алерт
