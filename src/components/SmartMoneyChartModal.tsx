@@ -233,6 +233,12 @@ const SmartMoneyChartModal: React.FC<SmartMoneyChartModalProps> = ({ alert, onCl
       ]
     };
 
+    // Рассчитываем диапазоны для правильного масштабирования
+    const maxPrice = Math.max(...chartData.map(d => d.high));
+    const minPrice = Math.min(...chartData.map(d => d.low));
+    const priceRange = maxPrice - minPrice;
+    const maxVolume = Math.max(...chartData.map(d => d.volume_usdt));
+
     const options: ChartOptions = {
       responsive: true,
       maintainAspectRatio: false,
@@ -320,26 +326,12 @@ const SmartMoneyChartModal: React.FC<SmartMoneyChartModalProps> = ({ alert, onCl
           type: 'linear',
           display: true,
           position: 'right',
-          // Смещаем объем вниз, чтобы он не перекрывал свечи
-          min: function(context) {
-            const maxPrice = Math.max(...chartData.map(d => d.high));
-            const minPrice = Math.min(...chartData.map(d => d.low));
-            const priceRange = maxPrice - minPrice;
-            // Начинаем объем с уровня ниже минимальной цены
-            return -(priceRange * 0.3); // Смещение вниз на 30% от диапазона цен
-          },
-          max: function(context) {
-            const maxVolume = Math.max(...chartData.map(d => d.volume_usdt));
-            const maxPrice = Math.max(...chartData.map(d => d.high));
-            const minPrice = Math.min(...chartData.map(d => d.low));
-            const priceRange = maxPrice - minPrice;
-            // Максимум объема не должен превышать минимальную цену
-            return Math.min(maxVolume, minPrice - (priceRange * 0.1));
-          },
+          // Объем имеет свой собственный масштаб, основанный на максимальном объеме
+          min: 0,
+          max: maxVolume * 1.1, // Добавляем 10% сверху для лучшей визуализации
           ticks: {
             color: '#6B7280',
             callback: function(value) {
-              if (Number(value) < 0) return ''; // Скрываем отрицательные значения
               const num = Number(value);
               if (num >= 1000000) {
                 return '$' + (num / 1000000).toFixed(1) + 'M';
