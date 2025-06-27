@@ -5,6 +5,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from datetime import datetime, timedelta
 import os
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +77,7 @@ class DatabaseManager:
                 )
             """)
 
-            # Создаем обновленную таблицу алертов
+            # Создаем обновленную таблицу алертов с поддержкой JSONB для данных свечи
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS alerts (
                     id SERIAL PRIMARY KEY,
@@ -93,6 +94,8 @@ class DatabaseManager:
                     telegram_sent BOOLEAN DEFAULT FALSE,
                     alert_timestamp TIMESTAMP NOT NULL,
                     close_timestamp TIMESTAMP,
+                    candle_data JSONB,
+                    preliminary_alert JSONB,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -117,6 +120,11 @@ class DatabaseManager:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_alerts_type_created 
                 ON alerts(alert_type, created_at)
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_alerts_close_timestamp 
+                ON alerts(close_timestamp DESC NULLS LAST)
             """)
 
             cursor.close()
@@ -157,6 +165,8 @@ class DatabaseManager:
                 ADD COLUMN IF NOT EXISTS is_closed BOOLEAN DEFAULT FALSE,
                 ADD COLUMN IF NOT EXISTS alert_timestamp TIMESTAMP,
                 ADD COLUMN IF NOT EXISTS close_timestamp TIMESTAMP,
+                ADD COLUMN IF NOT EXISTS candle_data JSONB,
+                ADD COLUMN IF NOT EXISTS preliminary_alert JSONB,
                 ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             """)
 
@@ -310,12 +320,22 @@ class DatabaseManager:
         try:
             cursor = self.connection.cursor()
             
+            # Подготавливаем данные для сохранения
+            candle_data_json = None
+            if 'candle_data' in alert_data:
+                candle_data_json = json.dumps(alert_data['candle_data'])
+            
+            preliminary_alert_json = None
+            if 'preliminary_alert' in alert_data:
+                preliminary_alert_json = json.dumps(alert_data['preliminary_alert'], default=str)
+            
             cursor.execute("""
                 INSERT INTO alerts 
                 (symbol, alert_type, price, volume_ratio, consecutive_count,
                  current_volume_usdt, average_volume_usdt, is_true_signal, 
-                 is_closed, message, alert_timestamp, close_timestamp)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 is_closed, message, alert_timestamp, close_timestamp,
+                 candle_data, preliminary_alert)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """, (
                 alert_data['symbol'],
@@ -329,7 +349,9 @@ class DatabaseManager:
                 alert_data.get('is_closed', False),
                 alert_data.get('message', ''),
                 alert_data['timestamp'],
-                alert_data.get('close_timestamp')
+                alert_data.get('close_timestamp'),
+                candle_data_json,
+                preliminary_alert_json
             ))
 
             alert_id = cursor.fetchone()[0]
@@ -346,12 +368,16 @@ class DatabaseManager:
         try:
             cursor = self.connection.cursor()
             
+            candle_data_json = None
+            if 'candle_data' in alert_data:
+                candle_data_json = json.dumps(alert_data['candle_data'])
+            
             cursor.execute("""
                 UPDATE alerts 
                 SET price = %s, volume_ratio = %s, consecutive_count = %s,
                     current_volume_usdt = %s, average_volume_usdt = %s,
                     is_true_signal = %s, is_closed = %s, message = %s,
-                    close_timestamp = %s, updated_at = CURRENT_TIMESTAMP
+                    close_timestamp = %s, candle_data = %s, updated_at = CURRENT_TIMESTAMP
                 WHERE id = %s
             """, (
                 alert_data['price'],
@@ -363,6 +389,7 @@ class DatabaseManager:
                 alert_data.get('is_closed', False),
                 alert_data.get('message', ''),
                 alert_data.get('close_timestamp'),
+                candle_data_json,
                 alert_id
             ))
 
@@ -372,45 +399,65 @@ class DatabaseManager:
             logger.error(f"Ошибка обновления алерта: {e}")
 
     async def get_alerts_by_type(self, alert_type: str, limit: int = 50) -> List[Dict]:
-        """Получить алерты по типу"""
+        """Получить алерты по типу с сортировкой по времени закрытия"""
         try:
             cursor = self.connection.cursor(cursor_factory=RealDictCursor)
             cursor.execute("""
                 SELECT id, symbol, alert_type, price, volume_ratio, consecutive_count,
                        current_volume_usdt, average_volume_usdt, is_true_signal, 
                        is_closed, message, telegram_sent, alert_timestamp as timestamp,
-                       close_timestamp, created_at, updated_at
+                       close_timestamp, candle_data, preliminary_alert, created_at, updated_at
                 FROM alerts 
                 WHERE alert_type = %s
-                ORDER BY created_at DESC 
+                ORDER BY COALESCE(close_timestamp, alert_timestamp) DESC
                 LIMIT %s
             """, (alert_type, limit))
 
             result = cursor.fetchall()
             cursor.close()
 
-            return [dict(row) for row in result]
+            # Парсим JSON данные
+            alerts = []
+            for row in result:
+                alert = dict(row)
+                if alert['candle_data']:
+                    alert['candle_data'] = json.loads(alert['candle_data'])
+                if alert['preliminary_alert']:
+                    alert['preliminary_alert'] = json.loads(alert['preliminary_alert'])
+                alerts.append(alert)
+
+            return alerts
 
         except Exception as e:
             logger.error(f"Ошибка получения алертов по типу {alert_type}: {e}")
             return []
 
     async def get_all_alerts(self, limit: int = 100) -> Dict[str, List[Dict]]:
-        """Получить все алерты, разделенные по типам"""
+        """Получить все алерты, разделенные по типам с сортировкой по времени закрытия"""
         try:
             cursor = self.connection.cursor(cursor_factory=RealDictCursor)
             cursor.execute("""
                 SELECT id, symbol, alert_type, price, volume_ratio, consecutive_count,
                        current_volume_usdt, average_volume_usdt, is_true_signal, 
                        is_closed, message, telegram_sent, alert_timestamp as timestamp,
-                       close_timestamp, created_at, updated_at
+                       close_timestamp, candle_data, preliminary_alert, created_at, updated_at
                 FROM alerts 
-                ORDER BY created_at DESC 
+                ORDER BY COALESCE(close_timestamp, alert_timestamp) DESC
                 LIMIT %s
             """, (limit,))
 
-            all_alerts = [dict(row) for row in cursor.fetchall()]
+            all_alerts_raw = cursor.fetchall()
             cursor.close()
+
+            # Парсим JSON данные
+            all_alerts = []
+            for row in all_alerts_raw:
+                alert = dict(row)
+                if alert['candle_data']:
+                    alert['candle_data'] = json.loads(alert['candle_data'])
+                if alert['preliminary_alert']:
+                    alert['preliminary_alert'] = json.loads(alert['preliminary_alert'])
+                all_alerts.append(alert)
 
             # Разделяем по типам
             result = {

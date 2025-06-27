@@ -12,9 +12,15 @@ import {
   Clock,
   DollarSign,
   Trash2,
-  RefreshCw
+  RefreshCw,
+  Plus,
+  List,
+  Wifi,
+  WifiOff
 } from 'lucide-react';
 import ChartModal from './components/ChartModal';
+import WatchlistModal from './components/WatchlistModal';
+import StreamDataModal from './components/StreamDataModal';
 
 interface Alert {
   id: number;
@@ -31,6 +37,37 @@ interface Alert {
   close_timestamp?: string;
   group_id?: number;
   message?: string;
+  preliminary_alert?: Alert;
+  final_alert?: Alert;
+  candle_data?: {
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    volume: number;
+    alert_level?: number;
+  };
+}
+
+interface WatchlistItem {
+  id: number;
+  symbol: string;
+  is_active: boolean;
+  price_drop_percentage?: number;
+  current_price?: number;
+  historical_price?: number;
+  created_at: string;
+  updated_at: string;
+}
+
+interface StreamData {
+  symbol: string;
+  price: number;
+  volume: number;
+  volume_usdt: number;
+  is_long: boolean;
+  timestamp: string;
+  change_24h?: number;
 }
 
 interface Settings {
@@ -75,9 +112,13 @@ function App() {
   const [volumeAlerts, setVolumeAlerts] = useState<Alert[]>([]);
   const [consecutiveAlerts, setConsecutiveAlerts] = useState<Alert[]>([]);
   const [priorityAlerts, setPriorityAlerts] = useState<Alert[]>([]);
-  const [activeTab, setActiveTab] = useState<'volume' | 'consecutive' | 'priority'>('volume');
+  const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
+  const [streamData, setStreamData] = useState<StreamData[]>([]);
+  const [activeTab, setActiveTab] = useState<'volume' | 'consecutive' | 'priority' | 'watchlist' | 'stream'>('volume');
   const [showSettings, setShowSettings] = useState(false);
   const [showChart, setShowChart] = useState(false);
+  const [showWatchlist, setShowWatchlist] = useState(false);
+  const [showStream, setShowStream] = useState(false);
   const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
   const [stats, setStats] = useState<Stats>({
@@ -123,6 +164,7 @@ function App() {
     loadSettings();
     loadStats();
     loadAlerts();
+    loadWatchlist();
     connectWebSocket();
 
     const statsInterval = setInterval(loadStats, 30000);
@@ -177,27 +219,85 @@ function App() {
       case 'alert_updated':
         handleAlertUpdate(data.alert);
         break;
+      case 'kline_update':
+        handleStreamUpdate(data);
+        break;
       case 'stats_update':
         setStats(data.stats);
+        break;
+      case 'watchlist_updated':
+        loadWatchlist();
         break;
       default:
         break;
     }
   };
 
+  const handleStreamUpdate = (data: any) => {
+    const streamItem: StreamData = {
+      symbol: data.symbol,
+      price: parseFloat(data.data.close),
+      volume: parseFloat(data.data.volume),
+      volume_usdt: parseFloat(data.data.volume) * parseFloat(data.data.close),
+      is_long: parseFloat(data.data.close) > parseFloat(data.data.open),
+      timestamp: data.timestamp,
+      change_24h: data.change_24h
+    };
+
+    setStreamData(prev => {
+      const filtered = prev.filter(item => item.symbol !== data.symbol);
+      return [streamItem, ...filtered].slice(0, 100);
+    });
+  };
+
   const handleNewAlert = (alert: Alert) => {
-    setAlerts(prev => [alert, ...prev.slice(0, 99)]);
+    // Группируем алерты по символу и времени
+    const groupAlerts = (alerts: Alert[], newAlert: Alert) => {
+      const existingIndex = alerts.findIndex(a => 
+        a.symbol === newAlert.symbol && 
+        a.alert_type === newAlert.alert_type &&
+        Math.abs(new Date(a.timestamp).getTime() - new Date(newAlert.timestamp).getTime()) < 60000
+      );
+
+      if (existingIndex >= 0) {
+        const updated = [...alerts];
+        const existing = updated[existingIndex];
+        
+        if (!newAlert.is_closed && !existing.preliminary_alert) {
+          // Это предварительный алерт
+          updated[existingIndex] = {
+            ...existing,
+            preliminary_alert: newAlert
+          };
+        } else if (newAlert.is_closed) {
+          // Это финальный алерт
+          updated[existingIndex] = {
+            ...existing,
+            final_alert: newAlert,
+            is_true_signal: newAlert.is_true_signal,
+            close_timestamp: newAlert.close_timestamp || newAlert.timestamp,
+            candle_data: newAlert.candle_data
+          };
+        }
+        
+        return updated;
+      } else {
+        return [newAlert, ...alerts.slice(0, 99)];
+      }
+    };
+
+    setAlerts(prev => groupAlerts(prev, alert));
     
     // Распределяем по типам
     switch (alert.alert_type) {
       case 'volume_spike':
-        setVolumeAlerts(prev => [alert, ...prev.slice(0, 49)]);
+        setVolumeAlerts(prev => groupAlerts(prev, alert));
         break;
       case 'consecutive_long':
-        setConsecutiveAlerts(prev => [alert, ...prev.slice(0, 49)]);
+        setConsecutiveAlerts(prev => groupAlerts(prev, alert));
         break;
       case 'priority':
-        setPriorityAlerts(prev => [alert, ...prev.slice(0, 49)]);
+        setPriorityAlerts(prev => groupAlerts(prev, alert));
         break;
     }
   };
@@ -250,13 +350,34 @@ function App() {
       const response = await fetch('/api/alerts/all');
       if (response.ok) {
         const data = await response.json();
-        setAlerts(data.alerts || []);
-        setVolumeAlerts(data.volume_alerts || []);
-        setConsecutiveAlerts(data.consecutive_alerts || []);
-        setPriorityAlerts(data.priority_alerts || []);
+        
+        // Сортируем алерты по времени закрытия свечи (новые сверху)
+        const sortAlerts = (alerts: Alert[]) => 
+          alerts.sort((a, b) => {
+            const timeA = new Date(a.close_timestamp || a.timestamp).getTime();
+            const timeB = new Date(b.close_timestamp || b.timestamp).getTime();
+            return timeB - timeA;
+          });
+
+        setAlerts(sortAlerts(data.alerts || []));
+        setVolumeAlerts(sortAlerts(data.volume_alerts || []));
+        setConsecutiveAlerts(sortAlerts(data.consecutive_alerts || []));
+        setPriorityAlerts(sortAlerts(data.priority_alerts || []));
       }
     } catch (error) {
       console.error('Ошибка загрузки алертов:', error);
+    }
+  };
+
+  const loadWatchlist = async () => {
+    try {
+      const response = await fetch('/api/watchlist');
+      if (response.ok) {
+        const data = await response.json();
+        setWatchlist(data.pairs || []);
+      }
+    } catch (error) {
+      console.error('Ошибка загрузки watchlist:', error);
     }
   };
 
@@ -290,10 +411,10 @@ function App() {
       if (response.ok) {
         if (type) {
           switch (type) {
-            case 'volume':
+            case 'volume_spike':
               setVolumeAlerts([]);
               break;
-            case 'consecutive':
+            case 'consecutive_long':
               setConsecutiveAlerts([]);
               break;
             case 'priority':
@@ -326,12 +447,18 @@ function App() {
   const getAlertIcon = (alert: Alert) => {
     switch (alert.alert_type) {
       case 'volume_spike':
-        if (alert.is_closed) {
-          return alert.is_true_signal ? 
+        if (alert.final_alert) {
+          return alert.final_alert.is_true_signal ? 
             <Check className="w-5 h-5 text-green-400" /> : 
             <X className="w-5 h-5 text-red-400" />;
+        } else if (alert.preliminary_alert) {
+          return <Clock className="w-5 h-5 text-yellow-400" />;
         }
-        return <Activity className="w-5 h-5 text-yellow-400" />;
+        return alert.is_closed ? 
+          (alert.is_true_signal ? 
+            <Check className="w-5 h-5 text-green-400" /> : 
+            <X className="w-5 h-5 text-red-400" />) :
+          <Activity className="w-5 h-5 text-yellow-400" />;
       case 'consecutive_long':
         return <ArrowUp className="w-5 h-5 text-blue-400" />;
       case 'priority':
@@ -344,6 +471,12 @@ function App() {
   const getAlertTitle = (alert: Alert) => {
     switch (alert.alert_type) {
       case 'volume_spike':
+        if (alert.final_alert) {
+          const status = alert.final_alert.is_true_signal ? ' (Истинный)' : ' (Ложный)';
+          return `Превышение объема${status}`;
+        } else if (alert.preliminary_alert) {
+          return 'Превышение объема (Предварительный)';
+        }
         const status = alert.is_closed ? 
           (alert.is_true_signal ? ' (Истинный)' : ' (Ложный)') : 
           ' (В процессе)';
@@ -402,13 +535,48 @@ function App() {
         </button>
       </div>
 
+      {/* Предварительный алерт */}
+      {alert.preliminary_alert && (
+        <div className="mb-3 p-3 bg-yellow-900 bg-opacity-30 rounded border-l-4 border-yellow-400">
+          <div className="flex items-center space-x-2 mb-2">
+            <Clock className="w-4 h-4 text-yellow-400" />
+            <span className="text-sm font-medium text-yellow-400">Предварительный алерт</span>
+          </div>
+          <div className="grid grid-cols-2 gap-2 text-sm">
+            <div>
+              <span className="text-gray-400">Цена:</span>
+              <span className="ml-2 text-white">${alert.preliminary_alert.price.toFixed(8)}</span>
+            </div>
+            <div>
+              <span className="text-gray-400">Объем:</span>
+              <span className="ml-2 text-white">
+                ${formatVolume(alert.preliminary_alert.current_volume_usdt || 0)}
+              </span>
+            </div>
+            <div>
+              <span className="text-gray-400">Превышение:</span>
+              <span className="ml-2 text-white">{alert.preliminary_alert.volume_ratio}x</span>
+            </div>
+            <div>
+              <span className="text-gray-400">Время:</span>
+              <span className="ml-2 text-white">
+                {formatTime(alert.preliminary_alert.timestamp)}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Основной алерт */}
       <div className="grid grid-cols-2 gap-4 text-sm">
         <div>
           <span className="text-gray-400">Цена:</span>
-          <span className="ml-2 text-white">${alert.price.toFixed(8)}</span>
+          <span className="ml-2 text-white">
+            ${(alert.final_alert?.price || alert.price).toFixed(8)}
+          </span>
         </div>
         <div>
-          <span className="text-gray-400">Время:</span>
+          <span className="text-gray-400">Время закрытия:</span>
           <span className="ml-2 text-white">
             {formatTime(alert.close_timestamp || alert.timestamp)}
           </span>
@@ -419,12 +587,14 @@ function App() {
             <div>
               <span className="text-gray-400">Объем:</span>
               <span className="ml-2 text-white">
-                ${formatVolume(alert.current_volume_usdt || 0)}
+                ${formatVolume((alert.final_alert?.current_volume_usdt || alert.current_volume_usdt) || 0)}
               </span>
             </div>
             <div>
               <span className="text-gray-400">Превышение:</span>
-              <span className="ml-2 text-white">{alert.volume_ratio}x</span>
+              <span className="ml-2 text-white">
+                {alert.final_alert?.volume_ratio || alert.volume_ratio}x
+              </span>
             </div>
           </>
         )}
@@ -454,6 +624,41 @@ function App() {
         )}
       </div>
 
+      {/* Данные свечи */}
+      {alert.candle_data && (
+        <div className="mt-3 p-3 bg-gray-700 rounded">
+          <div className="text-sm font-medium text-gray-300 mb-2">Данные свечи (OHLCV):</div>
+          <div className="grid grid-cols-5 gap-2 text-xs">
+            <div>
+              <span className="text-gray-400">O:</span>
+              <span className="ml-1 text-white">{alert.candle_data.open.toFixed(8)}</span>
+            </div>
+            <div>
+              <span className="text-gray-400">H:</span>
+              <span className="ml-1 text-white">{alert.candle_data.high.toFixed(8)}</span>
+            </div>
+            <div>
+              <span className="text-gray-400">L:</span>
+              <span className="ml-1 text-white">{alert.candle_data.low.toFixed(8)}</span>
+            </div>
+            <div>
+              <span className="text-gray-400">C:</span>
+              <span className="ml-1 text-white">{alert.candle_data.close.toFixed(8)}</span>
+            </div>
+            <div>
+              <span className="text-gray-400">V:</span>
+              <span className="ml-1 text-white">{formatVolume(alert.candle_data.volume)}</span>
+            </div>
+          </div>
+          {alert.candle_data.alert_level && (
+            <div className="mt-2 text-xs">
+              <span className="text-gray-400">Уровень алерта:</span>
+              <span className="ml-2 text-yellow-400">${alert.candle_data.alert_level.toFixed(8)}</span>
+            </div>
+          )}
+        </div>
+      )}
+
       {alert.message && (
         <div className="mt-3 p-2 bg-gray-700 rounded text-sm text-gray-300">
           {alert.message}
@@ -470,6 +675,10 @@ function App() {
         return consecutiveAlerts.length;
       case 'priority':
         return priorityAlerts.length;
+      case 'watchlist':
+        return watchlist.length;
+      case 'stream':
+        return streamData.length;
       default:
         return 0;
     }
@@ -487,6 +696,113 @@ function App() {
         return [];
     }
   };
+
+  const renderWatchlistTab = () => (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center">
+        <h3 className="text-xl font-semibold">Список торговых пар</h3>
+        <button
+          onClick={() => setShowWatchlist(true)}
+          className="flex items-center space-x-2 bg-green-600 hover:bg-green-700 px-4 py-2 rounded-lg transition-colors"
+        >
+          <Plus className="w-4 h-4" />
+          <span>Управление</span>
+        </button>
+      </div>
+      
+      {watchlist.length === 0 ? (
+        <div className="text-center py-12 text-gray-400">
+          <List className="w-16 h-16 mx-auto mb-4 opacity-50" />
+          <p>Нет торговых пар в списке</p>
+        </div>
+      ) : (
+        <div className="grid gap-4">
+          {watchlist.map((item) => (
+            <div key={item.id} className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-3">
+                  <div className={`w-3 h-3 rounded-full ${item.is_active ? 'bg-green-400' : 'bg-red-400'}`}></div>
+                  <div>
+                    <h4 className="font-semibold text-white">{item.symbol}</h4>
+                    <p className="text-sm text-gray-400">
+                      {item.is_active ? 'Активна' : 'Неактивна'}
+                    </p>
+                  </div>
+                </div>
+                
+                <div className="text-right text-sm">
+                  {item.price_drop_percentage && (
+                    <div className="text-red-400">
+                      Падение: {item.price_drop_percentage.toFixed(2)}%
+                    </div>
+                  )}
+                  {item.current_price && (
+                    <div className="text-gray-400">
+                      Цена: ${item.current_price.toFixed(8)}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
+  const renderStreamTab = () => (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center">
+        <h3 className="text-xl font-semibold">Потоковые данные с биржи</h3>
+        <div className="flex items-center space-x-2">
+          {connectionStatus === 'connected' ? (
+            <Wifi className="w-5 h-5 text-green-400" />
+          ) : (
+            <WifiOff className="w-5 h-5 text-red-400" />
+          )}
+          <span className="text-sm">
+            {connectionStatus === 'connected' ? 'Подключено' : 'Отключено'}
+          </span>
+        </div>
+      </div>
+      
+      {streamData.length === 0 ? (
+        <div className="text-center py-12 text-gray-400">
+          <Activity className="w-16 h-16 mx-auto mb-4 opacity-50" />
+          <p>Ожидание потоковых данных...</p>
+        </div>
+      ) : (
+        <div className="grid gap-2">
+          {streamData.map((item, index) => (
+            <div key={`${item.symbol}-${index}`} className="bg-gray-800 rounded-lg p-3 border border-gray-700">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-3">
+                  <div className={`w-3 h-3 rounded-full ${item.is_long ? 'bg-green-400' : 'bg-red-400'}`}></div>
+                  <div>
+                    <span className="font-semibold text-white">{item.symbol}</span>
+                    <span className="ml-2 text-sm text-gray-400">
+                      {item.is_long ? 'LONG' : 'SHORT'}
+                    </span>
+                  </div>
+                </div>
+                
+                <div className="text-right text-sm">
+                  <div className="text-white">${item.price.toFixed(8)}</div>
+                  <div className="text-gray-400">
+                    Vol: ${formatVolume(item.volume_usdt)}
+                  </div>
+                </div>
+                
+                <div className="text-xs text-gray-500">
+                  {formatTime(item.timestamp)}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-blue-900 to-purple-900 text-white">
@@ -573,7 +889,9 @@ function App() {
             {[
               { key: 'volume', label: 'Алерты по объему', icon: Activity },
               { key: 'consecutive', label: 'LONG последовательности', icon: ArrowUp },
-              { key: 'priority', label: 'Приоритетные', icon: Star }
+              { key: 'priority', label: 'Приоритетные', icon: Star },
+              { key: 'watchlist', label: 'Торговые пары', icon: List },
+              { key: 'stream', label: 'Потоковые данные', icon: Wifi }
             ].map(({ key, label, icon: Icon }) => (
               <button
                 key={key}
@@ -593,18 +911,24 @@ function App() {
             ))}
           </div>
           
-          <button
-            onClick={() => clearAlerts(activeTab)}
-            className="flex items-center space-x-2 bg-red-600 hover:bg-red-700 px-4 py-2 rounded-lg transition-colors"
-          >
-            <Trash2 className="w-4 h-4" />
-            <span>Очистить</span>
-          </button>
+          {(activeTab === 'volume' || activeTab === 'consecutive' || activeTab === 'priority') && (
+            <button
+              onClick={() => clearAlerts(activeTab === 'volume' ? 'volume_spike' : activeTab === 'consecutive' ? 'consecutive_long' : 'priority')}
+              className="flex items-center space-x-2 bg-red-600 hover:bg-red-700 px-4 py-2 rounded-lg transition-colors"
+            >
+              <Trash2 className="w-4 h-4" />
+              <span>Очистить</span>
+            </button>
+          )}
         </div>
 
-        {/* Alerts */}
+        {/* Content */}
         <div className="space-y-4">
-          {getCurrentAlerts().length === 0 ? (
+          {activeTab === 'watchlist' ? (
+            renderWatchlistTab()
+          ) : activeTab === 'stream' ? (
+            renderStreamTab()
+          ) : getCurrentAlerts().length === 0 ? (
             <div className="text-center py-12 text-gray-400">
               <BarChart3 className="w-16 h-16 mx-auto mb-4 opacity-50" />
               <p>Нет алертов данного типа</p>
@@ -890,6 +1214,15 @@ function App() {
             setShowChart(false);
             setSelectedAlert(null);
           }}
+        />
+      )}
+
+      {/* Watchlist Modal */}
+      {showWatchlist && (
+        <WatchlistModal
+          watchlist={watchlist}
+          onClose={() => setShowWatchlist(false)}
+          onUpdate={loadWatchlist}
         />
       )}
     </div>

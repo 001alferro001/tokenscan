@@ -84,10 +84,11 @@ class BybitWebSocketClient:
                 
                 # Небольшая задержка между запросами
                 await asyncio.sleep(0.1)
-                
+                        
             except Exception as e:
                 logger.error(f"Ошибка загрузки исторических данных для {symbol}: {e}")
-        
+                continue
+
         logger.info("Исторические данные загружены")
 
     async def connect_websocket(self):
@@ -102,7 +103,7 @@ class BybitWebSocketClient:
                     "args": [f"kline.1.{pair}" for pair in self.trading_pairs]
                 }
                 
-                await websocket.sen(json.dumps(subscribe_message))
+                await websocket.send(json.dumps(subscribe_message))
                 logger.info(f"Подписка на {len(self.trading_pairs)} торговых пар")
                 
                 # Отправляем статус подключения
@@ -151,7 +152,7 @@ class BybitWebSocketClient:
                 # Обрабатываем через менеджер алертов
                 alerts = await self.alert_manager.process_kline_data(symbol, formatted_data)
                 
-                # Отправляем обновление данных клиентам
+                # Отправляем обновление данных клиентам (потоковые данные)
                 message = {
                     "type": "kline_update",
                     "symbol": symbol,

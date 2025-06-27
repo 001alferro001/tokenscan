@@ -38,7 +38,7 @@ class AlertManager:
         
         # Кэш для отслеживания состояния свечей и алертов
         self.candle_cache = {}  # symbol -> list of recent candles
-        self.volume_alerts_cache = {}  # symbol -> current minute volume alert
+        self.volume_alerts_cache = {}  # symbol -> {timestamp, preliminary_alert, alert_level}
         self.consecutive_counters = {}  # symbol -> consecutive long count
         self.priority_signals = {}  # symbol -> priority signal data
         
@@ -118,7 +118,7 @@ class AlertManager:
         return current_time >= candle_end_time
 
     async def _check_volume_alert(self, symbol: str, kline_data: Dict, is_closed: bool = False) -> Optional[Dict]:
-        """Проверка алерта по превышению объема"""
+        """Проверка алерта по превышению объема с улучшенной логикой"""
         try:
             # Проверяем, является ли свеча LONG
             is_long = float(kline_data['close']) > float(kline_data['open'])
@@ -148,52 +148,101 @@ class AlertManager:
             
             if volume_ratio >= self.settings['volume_multiplier']:
                 timestamp = int(kline_data['start'])
+                current_price = float(kline_data['close'])
                 
-                # Проверяем, есть ли уже алерт для этой минуты
+                # Создаем данные свечи для алерта
+                candle_data = {
+                    'open': float(kline_data['open']),
+                    'high': float(kline_data['high']),
+                    'low': float(kline_data['low']),
+                    'close': current_price,
+                    'volume': float(kline_data['volume'])
+                }
+                
                 if not is_closed:
-                    # Первый алерт (в процессе формирования)
+                    # Первый алерт (предварительный - в процессе формирования)
                     if symbol in self.volume_alerts_cache and self.volume_alerts_cache[symbol]['timestamp'] == timestamp:
-                        return None  # Уже есть алерт для этой минуты
+                        return None  # Уже есть предварительный алерт для этой минуты
+                    
+                    # Сохраняем уровень цены, на котором сработал алерт
+                    alert_level = current_price
+                    candle_data['alert_level'] = alert_level
                     
                     alert_data = {
                         'symbol': symbol,
                         'alert_type': AlertType.VOLUME_SPIKE.value,
-                        'price': float(kline_data['close']),
+                        'price': current_price,
                         'volume_ratio': round(volume_ratio, 2),
                         'current_volume_usdt': int(current_volume_usdt),
                         'average_volume_usdt': int(average_volume),
                         'timestamp': datetime.fromtimestamp(timestamp / 1000),
                         'is_closed': False,
                         'is_true_signal': None,
-                        'message': f"Объем превышен в {volume_ratio:.2f}x раз (в процессе)"
+                        'candle_data': candle_data,
+                        'message': f"Предварительный алерт: объем превышен в {volume_ratio:.2f}x раз"
                     }
                     
                     # Сохраняем в кэш
                     self.volume_alerts_cache[symbol] = {
                         'timestamp': timestamp,
-                        'alert_data': alert_data
+                        'preliminary_alert': alert_data,
+                        'alert_level': alert_level
                     }
                     
                     return alert_data
                 else:
-                    # Второй алерт (после закрытия свечи)
+                    # Второй алерт (финальный - после закрытия свечи)
                     if symbol in self.volume_alerts_cache and self.volume_alerts_cache[symbol]['timestamp'] == timestamp:
                         # Обновляем существующий алерт
-                        cached_alert = self.volume_alerts_cache[symbol]['alert_data']
+                        cached_data = self.volume_alerts_cache[symbol]
+                        preliminary_alert = cached_data['preliminary_alert']
+                        alert_level = cached_data.get('alert_level', current_price)
+                        
+                        # Определяем, истинный ли это сигнал (свеча закрылась в LONG)
+                        final_is_long = float(kline_data['close']) > float(kline_data['open'])
+                        
+                        # Обновляем данные свечи с уровнем алерта
+                        candle_data['alert_level'] = alert_level
                         
                         alert_data = {
-                            **cached_alert,
-                            'price': float(kline_data['close']),
+                            'symbol': symbol,
+                            'alert_type': AlertType.VOLUME_SPIKE.value,
+                            'price': current_price,
                             'volume_ratio': round(volume_ratio, 2),
                             'current_volume_usdt': int(current_volume_usdt),
+                            'average_volume_usdt': int(average_volume),
+                            'timestamp': datetime.fromtimestamp(timestamp / 1000),
                             'close_timestamp': datetime.fromtimestamp(int(kline_data['end']) / 1000),
                             'is_closed': True,
-                            'is_true_signal': is_long,
-                            'message': f"Объем превышен в {volume_ratio:.2f}x раз ({'истинный' if is_long else 'ложный'} сигнал)"
+                            'is_true_signal': final_is_long,
+                            'candle_data': candle_data,
+                            'preliminary_alert': preliminary_alert,
+                            'message': f"Финальный алерт: объем превышен в {volume_ratio:.2f}x раз ({'истинный' if final_is_long else 'ложный'} сигнал)"
                         }
                         
                         # Удаляем из кэша
                         del self.volume_alerts_cache[symbol]
+                        
+                        return alert_data
+                    else:
+                        # Создаем новый финальный алерт (если не было предварительного)
+                        final_is_long = float(kline_data['close']) > float(kline_data['open'])
+                        candle_data['alert_level'] = current_price
+                        
+                        alert_data = {
+                            'symbol': symbol,
+                            'alert_type': AlertType.VOLUME_SPIKE.value,
+                            'price': current_price,
+                            'volume_ratio': round(volume_ratio, 2),
+                            'current_volume_usdt': int(current_volume_usdt),
+                            'average_volume_usdt': int(average_volume),
+                            'timestamp': datetime.fromtimestamp(timestamp / 1000),
+                            'close_timestamp': datetime.fromtimestamp(int(kline_data['end']) / 1000),
+                            'is_closed': True,
+                            'is_true_signal': final_is_long,
+                            'candle_data': candle_data,
+                            'message': f"Объем превышен в {volume_ratio:.2f}x раз ({'истинный' if final_is_long else 'ложный'} сигнал)"
+                        }
                         
                         return alert_data
             
@@ -244,14 +293,23 @@ class AlertManager:
                 
                 # Проверяем, достигли ли нужного количества
                 if self.consecutive_counters[symbol] == self.settings['consecutive_long_count']:
+                    candle_data = {
+                        'open': float(kline_data['open']),
+                        'high': float(kline_data['high']),
+                        'low': float(kline_data['low']),
+                        'close': float(kline_data['close']),
+                        'volume': float(kline_data['volume'])
+                    }
+                    
                     alert_data = {
                         'symbol': symbol,
                         'alert_type': AlertType.CONSECUTIVE_LONG.value,
                         'price': float(kline_data['close']),
                         'consecutive_count': self.consecutive_counters[symbol],
-                        'timestamp': datetime.fromtimestamp(int(kline_data['end']) / 1000),
+                        'timestamp': datetime.fromtimestamp(int(kline_data['start']) / 1000),
                         'close_timestamp': datetime.fromtimestamp(int(kline_data['end']) / 1000),
                         'is_closed': True,
+                        'candle_data': candle_data,
                         'message': f"{self.consecutive_counters[symbol]} подряд идущих LONG свечей"
                     }
                     
@@ -294,6 +352,10 @@ class AlertManager:
                 recent_volume_alert = await self._check_recent_volume_alert(symbol, self.consecutive_counters[symbol])
                 
                 if volume_alert or recent_volume_alert:
+                    candle_data = consecutive_alert.get('candle_data', {})
+                    if volume_alert and volume_alert.get('candle_data'):
+                        candle_data.update(volume_alert['candle_data'])
+                    
                     priority_data = {
                         'symbol': symbol,
                         'alert_type': AlertType.PRIORITY.value,
@@ -302,6 +364,7 @@ class AlertManager:
                         'timestamp': consecutive_alert['timestamp'],
                         'close_timestamp': consecutive_alert['close_timestamp'],
                         'is_closed': True,
+                        'candle_data': candle_data,
                         'message': f"Приоритетный сигнал: {consecutive_alert['consecutive_count']} LONG свечей + всплеск объема"
                     }
                     
@@ -349,8 +412,8 @@ class AlertManager:
                     'alert': self._serialize_alert(alert_data)
                 })
             
-            # Отправляем в Telegram (только для новых алертов, не обновлений)
-            if self.telegram_bot and not alert_data.get('is_update', False):
+            # Отправляем в Telegram (только для финальных алертов)
+            if self.telegram_bot and alert_data.get('is_closed', False):
                 if alert_data['alert_type'] == AlertType.VOLUME_SPIKE.value:
                     await self.telegram_bot.send_volume_alert(alert_data)
                 elif alert_data['alert_type'] == AlertType.CONSECUTIVE_LONG.value:
@@ -371,6 +434,10 @@ class AlertManager:
         for key in ['timestamp', 'close_timestamp']:
             if key in serialized and isinstance(serialized[key], datetime):
                 serialized[key] = serialized[key].isoformat()
+        
+        # Сериализуем вложенные алерты
+        if 'preliminary_alert' in serialized and serialized['preliminary_alert']:
+            serialized['preliminary_alert'] = self._serialize_alert(serialized['preliminary_alert'])
         
         return serialized
 

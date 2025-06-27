@@ -35,6 +35,16 @@ interface Alert {
   price: number;
   timestamp: string;
   close_timestamp?: string;
+  preliminary_alert?: Alert;
+  final_alert?: Alert;
+  candle_data?: {
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    volume: number;
+    alert_level?: number;
+  };
 }
 
 interface ChartData {
@@ -89,7 +99,6 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
   };
 
   const downloadChart = () => {
-    // Простая реализация скачивания данных в CSV
     const csvContent = [
       'Timestamp,Open,High,Low,Close,Volume,Volume_USDT,Is_Long',
       ...chartData.map(d => 
@@ -110,14 +119,12 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
     if (chartData.length === 0) return null;
 
     const alertTime = new Date(alert.close_timestamp || alert.timestamp).getTime();
+    const preliminaryTime = alert.preliminary_alert ? new Date(alert.preliminary_alert.timestamp).getTime() : null;
 
-    // Подготавливаем данные для свечного графика
-    const candleData = chartData.map(d => ({
+    // Подготавливаем данные для свечного графика (как линейный для упрощения)
+    const priceData = chartData.map(d => ({
       x: d.timestamp,
-      o: d.open,
-      h: d.high,
-      l: d.low,
-      c: d.close
+      y: d.close
     }));
 
     // Данные объема
@@ -126,23 +133,54 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
       y: d.volume_usdt
     }));
 
-    // Отметка алерта
-    const alertPoint = {
+    // OHLC данные для отображения свечей
+    const candleData = chartData.map(d => ({
+      x: d.timestamp,
+      open: d.open,
+      high: d.high,
+      low: d.low,
+      close: d.close,
+      color: d.is_long ? 'rgba(34, 197, 94, 0.8)' : 'rgba(239, 68, 68, 0.8)'
+    }));
+
+    // Отметки алертов
+    const alertPoints = [];
+    
+    if (preliminaryTime) {
+      alertPoints.push({
+        x: preliminaryTime,
+        y: alert.preliminary_alert?.price || alert.price,
+        label: 'Предварительный'
+      });
+    }
+    
+    alertPoints.push({
       x: alertTime,
-      y: alert.price
-    };
+      y: alert.final_alert?.price || alert.price,
+      label: 'Финальный'
+    });
+
+    // Уровень алерта из данных свечи
+    let alertLevelData = [];
+    if (alert.candle_data?.alert_level) {
+      alertLevelData = [{
+        x: alertTime,
+        y: alert.candle_data.alert_level
+      }];
+    }
 
     const data = {
       datasets: [
         {
           label: 'Цена',
-          data: candleData,
+          data: priceData,
           type: 'line' as const,
           borderColor: 'rgb(59, 130, 246)',
           backgroundColor: 'rgba(59, 130, 246, 0.1)',
           borderWidth: 2,
           pointRadius: 0,
-          yAxisID: 'y'
+          yAxisID: 'y',
+          fill: false
         },
         {
           label: 'Объем (USDT)',
@@ -154,15 +192,25 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
           yAxisID: 'y1'
         },
         {
-          label: 'Алерт',
-          data: [alertPoint],
+          label: 'Алерты',
+          data: alertPoints,
           type: 'scatter' as const,
-          backgroundColor: 'rgb(255, 215, 0)',
-          borderColor: 'rgb(255, 215, 0)',
+          backgroundColor: alertPoints.map((_, i) => i === 0 ? 'rgb(255, 193, 7)' : 'rgb(255, 215, 0)'),
+          borderColor: alertPoints.map((_, i) => i === 0 ? 'rgb(255, 193, 7)' : 'rgb(255, 215, 0)'),
           pointRadius: 8,
           pointHoverRadius: 10,
           yAxisID: 'y'
-        }
+        },
+        ...(alertLevelData.length > 0 ? [{
+          label: 'Уровень алерта',
+          data: alertLevelData,
+          type: 'scatter' as const,
+          backgroundColor: 'rgb(168, 85, 247)',
+          borderColor: 'rgb(168, 85, 247)',
+          pointRadius: 6,
+          pointHoverRadius: 8,
+          yAxisID: 'y'
+        }] : [])
       ]
     };
 
@@ -176,7 +224,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
       plugins: {
         title: {
           display: true,
-          text: `${alert.symbol} - График за последний час`,
+          text: `${alert.symbol} - График с OHLCV данными`,
           color: 'white'
         },
         legend: {
@@ -194,9 +242,29 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
                 return `Цена: $${context.parsed.y.toFixed(8)}`;
               } else if (context.datasetIndex === 1) {
                 return `Объем: $${context.parsed.y.toLocaleString()}`;
+              } else if (context.datasetIndex === 2) {
+                const point = alertPoints[context.dataIndex];
+                return `${point.label} алерт: $${context.parsed.y.toFixed(8)}`;
               } else {
-                return `Алерт: $${context.parsed.y.toFixed(8)}`;
+                return `Уровень алерта: $${context.parsed.y.toFixed(8)}`;
               }
+            },
+            afterLabel: (context) => {
+              // Показываем OHLC данные для свечи
+              if (context.datasetIndex === 0) {
+                const candle = chartData.find(d => d.timestamp === context.parsed.x);
+                if (candle) {
+                  return [
+                    `Open: $${candle.open.toFixed(8)}`,
+                    `High: $${candle.high.toFixed(8)}`,
+                    `Low: $${candle.low.toFixed(8)}`,
+                    `Close: $${candle.close.toFixed(8)}`,
+                    `Volume: ${candle.volume.toFixed(2)}`,
+                    `Type: ${candle.is_long ? 'LONG' : 'SHORT'}`
+                  ];
+                }
+              }
+              return [];
             }
           }
         }
@@ -267,7 +335,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
           <div>
             <h2 className="text-2xl font-bold text-white">{alert.symbol}</h2>
             <p className="text-gray-400">
-              График за последний час • Алерт: {new Date(alert.close_timestamp || alert.timestamp).toLocaleString('ru-RU')}
+              График с OHLCV данными • Алерт: {new Date(alert.close_timestamp || alert.timestamp).toLocaleString('ru-RU')}
             </p>
           </div>
           
@@ -342,7 +410,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
             </div>
             <div>
               <span className="text-gray-400">Цена алерта:</span>
-              <span className="ml-2 text-white">${alert.price.toFixed(8)}</span>
+              <span className="ml-2 text-white">${(alert.final_alert?.price || alert.price).toFixed(8)}</span>
             </div>
             <div>
               <span className="text-gray-400">Время:</span>
@@ -355,6 +423,41 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
               <span className="ml-2 text-white">{chartData.length}</span>
             </div>
           </div>
+          
+          {/* OHLCV данные свечи алерта */}
+          {alert.candle_data && (
+            <div className="mt-4 p-4 bg-gray-800 rounded-lg">
+              <div className="text-sm font-medium text-gray-300 mb-2">Данные свечи алерта (OHLCV):</div>
+              <div className="grid grid-cols-5 gap-4 text-sm">
+                <div>
+                  <span className="text-gray-400">Open:</span>
+                  <div className="text-white font-mono">${alert.candle_data.open.toFixed(8)}</div>
+                </div>
+                <div>
+                  <span className="text-gray-400">High:</span>
+                  <div className="text-white font-mono">${alert.candle_data.high.toFixed(8)}</div>
+                </div>
+                <div>
+                  <span className="text-gray-400">Low:</span>
+                  <div className="text-white font-mono">${alert.candle_data.low.toFixed(8)}</div>
+                </div>
+                <div>
+                  <span className="text-gray-400">Close:</span>
+                  <div className="text-white font-mono">${alert.candle_data.close.toFixed(8)}</div>
+                </div>
+                <div>
+                  <span className="text-gray-400">Volume:</span>
+                  <div className="text-white font-mono">{alert.candle_data.volume.toFixed(2)}</div>
+                </div>
+              </div>
+              {alert.candle_data.alert_level && (
+                <div className="mt-2 text-sm">
+                  <span className="text-gray-400">Уровень первоначального алерта:</span>
+                  <span className="ml-2 text-yellow-400 font-mono">${alert.candle_data.alert_level.toFixed(8)}</span>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>
