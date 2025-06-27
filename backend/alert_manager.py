@@ -352,7 +352,7 @@ class AlertManager:
                             'volume_ratio': round(volume_ratio, 2),
                             'current_volume_usdt': int(current_volume_usdt),
                             'average_volume_usdt': int(average_volume),
-                            'timestamp': actual_time,
+                            'timestamp': actual_time.isoformat(),  # Конвертируем в строку
                             'is_closed': False,
                             'is_true_signal': None,
                             'has_imbalance': has_imbalance,
@@ -384,7 +384,7 @@ class AlertManager:
                         'volume_ratio': round(volume_ratio, 2),
                         'current_volume_usdt': int(current_volume_usdt),
                         'average_volume_usdt': int(average_volume),
-                        'timestamp': actual_time,
+                        'timestamp': actual_time.isoformat(),  # Конвертируем в строку
                         'is_closed': False,
                         'is_true_signal': None,
                         'has_imbalance': has_imbalance,
@@ -432,8 +432,8 @@ class AlertManager:
                             'volume_ratio': round(volume_ratio, 2),
                             'current_volume_usdt': int(current_volume_usdt),
                             'average_volume_usdt': int(average_volume),
-                            'timestamp': cached_data.get('original_timestamp', close_time),
-                            'close_timestamp': close_time,
+                            'timestamp': cached_data.get('original_timestamp', close_time.isoformat()),  # Конвертируем в строку
+                            'close_timestamp': close_time.isoformat(),  # Конвертируем в строку
                             'is_closed': True,
                             'is_true_signal': final_is_long,
                             'has_imbalance': has_imbalance,
@@ -464,8 +464,8 @@ class AlertManager:
                             'volume_ratio': round(volume_ratio, 2),
                             'current_volume_usdt': int(current_volume_usdt),
                             'average_volume_usdt': int(average_volume),
-                            'timestamp': close_time,
-                            'close_timestamp': close_time,
+                            'timestamp': close_time.isoformat(),  # Конвертируем в строку
+                            'close_timestamp': close_time.isoformat(),  # Конвертируем в строку
                             'is_closed': True,
                             'is_true_signal': final_is_long,
                             'has_imbalance': has_imbalance,
@@ -625,8 +625,8 @@ class AlertManager:
                         'alert_type': AlertType.CONSECUTIVE_LONG.value,
                         'price': float(kline_data['close']),
                         'consecutive_count': self.consecutive_counters[symbol],
-                        'timestamp': close_time,
-                        'close_timestamp': close_time,
+                        'timestamp': close_time.isoformat(),  # Конвертируем в строку
+                        'close_timestamp': close_time.isoformat(),  # Конвертируем в строку
                         'is_closed': True,
                         'has_imbalance': has_imbalance,
                         'imbalance_data': imbalance_data,
@@ -665,8 +665,8 @@ class AlertManager:
                         'alert_type': AlertType.CONSECUTIVE_LONG.value,
                         'price': float(kline_data['close']),
                         'consecutive_count': self.consecutive_counters[symbol],
-                        'timestamp': close_time,
-                        'close_timestamp': close_time,
+                        'timestamp': close_time.isoformat(),  # Конвертируем в строку
+                        'close_timestamp': close_time.isoformat(),  # Конвертируем в строку
                         'is_closed': True,
                         'has_imbalance': has_imbalance,
                         'imbalance_data': imbalance_data,
@@ -797,7 +797,7 @@ class AlertManager:
         """Сериализация алерта для JSON"""
         serialized = alert_data.copy()
         
-        # Преобразуем datetime в ISO строки
+        # Преобразуем datetime в ISO строки (если они еще не строки)
         for key in ['timestamp', 'close_timestamp']:
             if key in serialized and isinstance(serialized[key], datetime):
                 serialized[key] = serialized[key].isoformat()
