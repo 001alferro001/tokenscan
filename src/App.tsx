@@ -19,8 +19,6 @@ import SmartMoneyChartModal from './components/SmartMoneyChartModal';
 import WatchlistModal from './components/WatchlistModal';
 import StreamDataModal from './components/StreamDataModal';
 import SettingsModal from './components/SettingsModal';
-import { TimeZoneProvider } from './contexts/TimeZoneContext';
-import { useTimeSync } from './hooks/useTimeSync';
 
 interface Alert {
   id: number;
@@ -84,6 +82,7 @@ interface TimeSync {
   exchange_time: string;
   local_time: string;
   sync_age_seconds?: number;
+  serverTime?: number;
 }
 
 interface Settings {
@@ -119,7 +118,7 @@ interface Settings {
   time_sync?: TimeSync;
 }
 
-const AppContent: React.FC = () => {
+const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'volume' | 'consecutive' | 'priority' | 'watchlist' | 'stream' | 'smart_money'>('volume');
   const [volumeAlerts, setVolumeAlerts] = useState<Alert[]>([]);
   const [consecutiveAlerts, setConsecutiveAlerts] = useState<Alert[]>([]);
@@ -153,9 +152,6 @@ const AppContent: React.FC = () => {
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const dataRefreshIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const activityTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-
-  // Используем хук синхронизации времени
-  useTimeSync();
 
   useEffect(() => {
     loadInitialData();
@@ -631,14 +627,29 @@ const AppContent: React.FC = () => {
     setSettings(newSettings);
   };
 
+  // Функция для правильного форматирования времени
   const formatTime = (timestamp: string) => {
-    return new Date(timestamp).toLocaleString('ru-RU', {
-      day: '2-digit',
-      month: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit'
-    });
+    try {
+      const date = new Date(timestamp);
+      if (isNaN(date.getTime())) {
+        console.error('Некорректная временная метка:', timestamp);
+        return 'Некорректное время';
+      }
+      
+      // Используем локальное время (Москва UTC+3)
+      return date.toLocaleString('ru-RU', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+      });
+    } catch (error) {
+      console.error('Ошибка форматирования времени:', error, timestamp);
+      return 'Ошибка времени';
+    }
   };
 
   const formatVolume = (volume: number) => {
@@ -1291,14 +1302,6 @@ const AppContent: React.FC = () => {
         />
       )}
     </div>
-  );
-};
-
-const App: React.FC = () => {
-  return (
-    <TimeZoneProvider>
-      <AppContent />
-    </TimeZoneProvider>
   );
 };
 
