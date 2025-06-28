@@ -190,6 +190,7 @@ class AlertManager:
         # Кэш для отслеживания состояния алертов - УПРОЩАЕМ
         self.alert_cooldowns = {}  # symbol -> last alert timestamp
         self.processed_candles = {}  # symbol -> set of processed timestamps
+        self.consecutive_counters = {}  # symbol -> consecutive long count
         
         logger.info("AlertManager инициализирован с исправленной логикой алертов")
 
@@ -447,55 +448,55 @@ class AlertManager:
     async def _check_consecutive_long_alert(self, symbol: str, kline_data: Dict) -> Optional[Dict]:
         """Проверка алерта по подряд идущим LONG свечам"""
         try:
-            # Получаем последние свечи
-            recent_candles = await self.db_manager.get_recent_candles(symbol, self.settings['consecutive_long_count'] + 5)
+            # Инициализируем счетчик если его нет
+            if symbol not in self.consecutive_counters:
+                self.consecutive_counters[symbol] = 0
             
-            if len(recent_candles) < self.settings['consecutive_long_count']:
-                return None
+            # Проверяем, является ли текущая свеча LONG
+            is_long = float(kline_data['close']) > float(kline_data['open'])
             
-            # Считаем последовательные LONG свечи с конца (только закрытые)
-            consecutive_count = 0
-            for candle in reversed(recent_candles):
-                if candle['is_long'] and candle['is_closed']:
-                    consecutive_count += 1
-                else:
-                    break
-            
-            # Проверяем, достигнуто ли нужное количество
-            if consecutive_count >= self.settings['consecutive_long_count']:
-                current_price = float(kline_data['close'])
-                timestamp = int(kline_data['start'])
-                close_time = self._get_candle_close_time(timestamp)
+            if is_long:
+                # Увеличиваем счетчик
+                self.consecutive_counters[symbol] += 1
                 
-                # Создаем данные свечи
-                candle_data = {
-                    'open': float(kline_data['open']),
-                    'high': float(kline_data['high']),
-                    'low': float(kline_data['low']),
-                    'close': current_price,
-                    'volume': float(kline_data['volume'])
-                }
-                
-                # Анализируем имбаланс
-                imbalance_data = await self._analyze_imbalance(symbol)
-                has_imbalance = imbalance_data is not None
-                
-                alert_data = {
-                    'symbol': symbol,
-                    'alert_type': AlertType.CONSECUTIVE_LONG.value,
-                    'price': current_price,
-                    'consecutive_count': consecutive_count,
-                    'timestamp': close_time,
-                    'close_timestamp': close_time,
-                    'is_closed': True,
-                    'has_imbalance': has_imbalance,
-                    'imbalance_data': imbalance_data,
-                    'candle_data': candle_data,
-                    'message': f"{consecutive_count} подряд идущих LONG свечей (закрытых)"
-                }
-                
-                logger.info(f"Алерт по последовательности для {symbol}: {consecutive_count} LONG свечей")
-                return alert_data
+                # Проверяем, достигнуто ли нужное количество
+                if self.consecutive_counters[symbol] >= self.settings['consecutive_long_count']:
+                    current_price = float(kline_data['close'])
+                    timestamp = int(kline_data['start'])
+                    close_time = self._get_candle_close_time(timestamp)
+                    
+                    # Создаем данные свечи
+                    candle_data = {
+                        'open': float(kline_data['open']),
+                        'high': float(kline_data['high']),
+                        'low': float(kline_data['low']),
+                        'close': current_price,
+                        'volume': float(kline_data['volume'])
+                    }
+                    
+                    # Анализируем имбаланс
+                    imbalance_data = await self._analyze_imbalance(symbol)
+                    has_imbalance = imbalance_data is not None
+                    
+                    alert_data = {
+                        'symbol': symbol,
+                        'alert_type': AlertType.CONSECUTIVE_LONG.value,
+                        'price': current_price,
+                        'consecutive_count': self.consecutive_counters[symbol],
+                        'timestamp': close_time,
+                        'close_timestamp': close_time,
+                        'is_closed': True,
+                        'has_imbalance': has_imbalance,
+                        'imbalance_data': imbalance_data,
+                        'candle_data': candle_data,
+                        'message': f"{self.consecutive_counters[symbol]} подряд идущих LONG свечей (закрытых)"
+                    }
+                    
+                    logger.info(f"Алерт по последовательности для {symbol}: {self.consecutive_counters[symbol]} LONG свечей")
+                    return alert_data
+            else:
+                # Сбрасываем счетчик при SHORT свече
+                self.consecutive_counters[symbol] = 0
             
             return None
 
@@ -630,9 +631,6 @@ class AlertManager:
     async def cleanup_old_data(self):
         """Очистка старых данных"""
         try:
-            # Очищаем кэши
-            cutoff_time = self._get_current_time() - timedelta(minutes=5)
-            
             # Очищаем кулдауны (старше часа)
             cooldown_cutoff = self._get_current_time() - timedelta(hours=1)
             for symbol in list(self.alert_cooldowns.keys()):
