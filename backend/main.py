@@ -224,9 +224,12 @@ async def get_stats():
 async def get_time_info():
     """Получить информацию о времени"""
     try:
+        current_time_ms = int(datetime.utcnow().timestamp() * 1000)
         return {
             "is_synced": False,
             "local_time": datetime.now().isoformat(),
+            "server_time": current_time_ms,
+            "exchange_time": current_time_ms,  # Для совместимости
             "status": "Time sync temporarily disabled"
         }
     except Exception as e:

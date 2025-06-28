@@ -17,6 +17,10 @@ import SmartMoneyChartModal from './components/SmartMoneyChartModal';
 import WatchlistModal from './components/WatchlistModal';
 import StreamDataModal from './components/StreamDataModal';
 import SettingsModal from './components/SettingsModal';
+import TimeZoneToggle from './components/TimeZoneToggle';
+import { TimeZoneProvider, useTimeZone } from './contexts/TimeZoneContext';
+import { useTimeSync } from './hooks/useTimeSync';
+import { formatTime, getTimezoneInfo } from './utils/timeUtils';
 
 interface Alert {
   id: number;
@@ -115,7 +119,7 @@ interface Settings {
   time_sync?: TimeSync;
 }
 
-const App: React.FC = () => {
+const AppContent: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'volume' | 'consecutive' | 'priority' | 'watchlist' | 'stream' | 'smart_money'>('volume');
   const [volumeAlerts, setVolumeAlerts] = useState<Alert[]>([]);
   const [consecutiveAlerts, setConsecutiveAlerts] = useState<Alert[]>([]);
@@ -136,6 +140,12 @@ const App: React.FC = () => {
   const [lastDataUpdate, setLastDataUpdate] = useState<Date | null>(null);
   const [reconnectAttempts, setReconnectAttempts] = useState(0);
   const [wsStats, setWsStats] = useState({ messagesReceived: 0, lastMessage: null as Date | null });
+  
+  // Используем контекст часового пояса
+  const { timeZone, isTimeSynced } = useTimeZone();
+  
+  // Используем хук синхронизации времени
+  useTimeSync();
   
   // Refs для WebSocket и интервалов
   const wsRef = useRef<WebSocket | null>(null);
@@ -184,7 +194,6 @@ const App: React.FC = () => {
   }, []);
 
   const updateCurrentTime = () => {
-    // Всегда используем локальное время
     setCurrentTime(new Date());
   };
 
@@ -578,16 +587,6 @@ const App: React.FC = () => {
     setSettings(newSettings);
   };
 
-  const formatTime = (timestamp: string) => {
-    return new Date(timestamp).toLocaleString('ru-RU', {
-      day: '2-digit',
-      month: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit'
-    });
-  };
-
   const formatVolume = (volume: number) => {
     if (volume >= 1000000) {
       return `$${(volume / 1000000).toFixed(1)}M`;
@@ -612,22 +611,15 @@ const App: React.FC = () => {
   };
 
   const getTimeSyncStatus = () => {
-    if (!timeSync) return { color: 'text-gray-500', text: 'Нет данных', icon: '⚪' };
-    
-    if (!timeSync.is_synced) {
-      return { color: 'text-yellow-500', text: 'Отключена', icon: '🟡' };
+    if (!isTimeSynced) {
+      return { color: 'text-yellow-500', text: 'Не синхронизировано', icon: '🟡' };
     }
     
     return { color: 'text-green-500', text: 'Синхронизировано', icon: '🟢' };
   };
 
   const formatLocalTime = (date: Date) => {
-    return date.toLocaleTimeString('ru-RU', { 
-      hour: '2-digit', 
-      minute: '2-digit', 
-      second: '2-digit',
-      hour12: false 
-    });
+    return formatTime(date.getTime(), timeZone, { includeDate: false, includeSeconds: true });
   };
 
   const formatLocalDate = (date: Date) => {
@@ -638,18 +630,7 @@ const App: React.FC = () => {
     });
   };
 
-  const getTimezoneInfo = () => {
-    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    const offset = new Date().getTimezoneOffset();
-    const offsetHours = Math.abs(Math.floor(offset / 60));
-    const offsetMinutes = Math.abs(offset % 60);
-    const offsetSign = offset <= 0 ? '+' : '-';
-    
-    return {
-      timezone,
-      offsetString: `UTC${offsetSign}${offsetHours.toString().padStart(2, '0')}:${offsetMinutes.toString().padStart(2, '0')}`
-    };
-  };
+  const timezoneInfo = getTimezoneInfo();
 
   const getConnectionStatusIcon = () => {
     switch (connectionStatus) {
@@ -736,9 +717,9 @@ const App: React.FC = () => {
 
       <div className="mt-3 pt-3 border-t border-gray-200">
         <div className="text-xs text-gray-500">
-          <div>Время закрытия: {formatTime(alert.close_timestamp || alert.timestamp)}</div>
+          <div>Время закрытия: {formatTime(alert.close_timestamp || alert.timestamp, timeZone)}</div>
           {alert.preliminary_alert && (
-            <div>Предварительный: {formatTime(alert.preliminary_alert.timestamp)}</div>
+            <div>Предварительный: {formatTime(alert.preliminary_alert.timestamp, timeZone)}</div>
           )}
         </div>
       </div>
@@ -795,7 +776,7 @@ const App: React.FC = () => {
         
         <div>
           <span className="text-gray-600">Время:</span>
-          <div className="text-gray-900">{formatTime(alert.timestamp)}</div>
+          <div className="text-gray-900">{formatTime(alert.timestamp, timeZone)}</div>
         </div>
       </div>
 
@@ -844,7 +825,7 @@ const App: React.FC = () => {
       )}
 
       <div className="mt-3 pt-3 border-t border-gray-200 text-xs text-gray-500">
-        Обновлено: {formatTime(item.updated_at)}
+        Обновлено: {formatTime(item.updated_at, timeZone)}
       </div>
     </div>
   );
@@ -861,7 +842,6 @@ const App: React.FC = () => {
   }
 
   const timeSyncStatus = getTimeSyncStatus();
-  const timezoneInfo = getTimezoneInfo();
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -888,7 +868,7 @@ const App: React.FC = () => {
             </div>
             
             <div className="flex items-center space-x-6">
-              {/* Динамические часы в локальном часовом поясе */}
+              {/* Динамические часы в выбранном часовом поясе */}
               <div className="flex items-center space-x-3 bg-gray-100 rounded-lg px-4 py-2">
                 <Clock className="w-5 h-5 text-gray-600" />
                 <div className="text-center">
@@ -901,16 +881,18 @@ const App: React.FC = () => {
                 </div>
                 <div className="text-xs text-gray-500 text-center">
                   <div className={timeSyncStatus.color}>
-                    {timeSyncStatus.icon} {timezoneInfo.offsetString}
+                    {timeSyncStatus.icon} {timeZone === 'UTC' ? 'UTC' : timezoneInfo.offsetString}
                   </div>
                   <div className="text-xs">
-                    {timezoneInfo.timezone.split('/').pop()}
+                    {timeZone === 'UTC' ? 'UTC' : timezoneInfo.name}
                   </div>
                   <div className="text-xs">
                     Синх: {timeSyncStatus.text}
                   </div>
                 </div>
               </div>
+              
+              <TimeZoneToggle />
               
               <button
                 onClick={() => setShowSettings(true)}
@@ -1144,7 +1126,7 @@ const App: React.FC = () => {
                     
                     <div className="flex items-center space-x-2">
                       <div className="text-right text-sm text-gray-500">
-                        <div>{formatTime(item.timestamp)}</div>
+                        <div>{formatTime(item.timestamp, timeZone)}</div>
                         <div className="text-xs">
                           {formatVolume(item.volume)} {item.symbol.replace('USDT', '')}
                         </div>
@@ -1205,6 +1187,14 @@ const App: React.FC = () => {
         />
       )}
     </div>
+  );
+};
+
+const App: React.FC = () => {
+  return (
+    <TimeZoneProvider>
+      <AppContent />
+    </TimeZoneProvider>
   );
 };
 

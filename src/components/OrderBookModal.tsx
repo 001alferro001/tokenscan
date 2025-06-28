@@ -1,5 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { X, Move } from 'lucide-react';
+import { useTimeZone } from '../contexts/TimeZoneContext';
+import { formatTime } from '../utils/timeUtils';
 
 interface OrderBookModalProps {
   orderBook: {
@@ -22,6 +24,8 @@ const OrderBookModal: React.FC<OrderBookModalProps> = ({
   const [isDragging, setIsDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   const modalRef = useRef<HTMLDivElement>(null);
+  
+  const { timeZone } = useTimeZone();
 
   const handleMouseDown = (e: React.MouseEvent) => {
     if (modalRef.current) {
@@ -185,8 +189,9 @@ const OrderBookModal: React.FC<OrderBookModalProps> = ({
         {/* Footer */}
         <div className="p-4 border-t border-gray-200 bg-gray-50 rounded-b-lg">
           <div className="text-xs text-gray-500 text-center">
-            <div>Снимок: {new Date(orderBook.timestamp).toLocaleString('ru-RU')}</div>
+            <div>Снимок: {formatTime(orderBook.timestamp, timeZone)}</div>
             <div className="mt-1">Объемы показаны в USDT • Перетаскивайте окно за заголовок</div>
+            <div className="mt-1">Часовой пояс: {timeZone === 'UTC' ? 'UTC' : 'Локальное время'}</div>
           </div>
         </div>
       </div>

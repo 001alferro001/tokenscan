@@ -1,5 +1,8 @@
 import React from 'react';
 import { X, Wifi, WifiOff, ExternalLink } from 'lucide-react';
+import TimeZoneToggle from './TimeZoneToggle';
+import { useTimeZone } from '../contexts/TimeZoneContext';
+import { formatTime } from '../utils/timeUtils';
 
 interface StreamData {
   symbol: string;
@@ -22,13 +25,7 @@ const StreamDataModal: React.FC<StreamDataModalProps> = ({
   connectionStatus, 
   onClose 
 }) => {
-  const formatTime = (timestamp: string) => {
-    return new Date(timestamp).toLocaleString('ru-RU', {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit'
-    });
-  };
+  const { timeZone } = useTimeZone();
 
   const formatVolume = (volume: number) => {
     if (volume >= 1000000) {
@@ -65,12 +62,15 @@ const StreamDataModal: React.FC<StreamDataModalProps> = ({
             </div>
           </div>
           
-          <button
-            onClick={onClose}
-            className="text-gray-400 hover:text-gray-600 p-2"
-          >
-            <X className="w-6 h-6" />
-          </button>
+          <div className="flex items-center space-x-3">
+            <TimeZoneToggle />
+            <button
+              onClick={onClose}
+              className="text-gray-400 hover:text-gray-600 p-2"
+            >
+              <X className="w-6 h-6" />
+            </button>
+          </div>
         </div>
 
         {/* Stream Data */}
@@ -125,7 +125,7 @@ const StreamDataModal: React.FC<StreamDataModalProps> = ({
                     
                     <div className="flex items-center space-x-2">
                       <div className="text-right text-sm text-gray-500">
-                        <div>{formatTime(item.timestamp)}</div>
+                        <div>{formatTime(item.timestamp, timeZone, { includeDate: false, includeSeconds: true })}</div>
                         <div className="text-xs">
                           {formatVolume(item.volume)} {item.symbol.replace('USDT', '')}
                         </div>
@@ -154,6 +154,7 @@ const StreamDataModal: React.FC<StreamDataModalProps> = ({
               connectionStatus === 'connected' ? '🟢 Активно' : 
               connectionStatus === 'connecting' ? '🟡 Подключение' : '🔴 Отключено'
             }</span>
+            <span>Часовой пояс: {timeZone === 'UTC' ? 'UTC' : 'Локальное'}</span>
           </div>
         </div>
       </div>
