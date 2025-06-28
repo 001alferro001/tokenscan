@@ -28,12 +28,15 @@ class BybitWebSocketClient:
         # Статистика для отладки
         self.messages_received = 0
         self.last_stats_log = datetime.utcnow()
+        
+        # Кэш для отслеживания обработанных свечей
+        self.processed_candles = {}  # symbol -> set of timestamps
 
     async def start(self):
         """Запуск WebSocket соединения"""
         self.is_running = True
         
-        # Сначала загружаем исторические данные с улучшенной проверкой целостности
+        # Сначала загружаем исторические данные
         await self.load_historical_data_with_integrity_check()
         
         # Затем подключаемся к WebSocket для real-time данных
@@ -55,19 +58,17 @@ class BybitWebSocketClient:
             await self.websocket.close()
 
     async def load_historical_data_with_integrity_check(self):
-        """Загрузка исторических данных с улучшенной проверкой целостности"""
+        """Загрузка исторических данных с проверкой целостности"""
         logger.info("Проверка целостности исторических данных...")
         
         # Получаем период хранения из настроек
         retention_hours = self.alert_manager.settings.get('data_retention_hours', 2)
-        
-        # Добавляем буфер для анализа (дополнительный час для расчета средних объемов)
         analysis_hours = self.alert_manager.settings.get('analysis_hours', 1)
         total_hours_needed = retention_hours + analysis_hours + 1  # +1 час буфера
         
         for symbol in self.trading_pairs:
             try:
-                # Проверяем целостность данных с учетом буфера
+                # Проверяем целостность данных
                 integrity_info = await self.alert_manager.db_manager.check_data_integrity(
                     symbol, total_hours_needed
                 )
@@ -79,13 +80,6 @@ class BybitWebSocketClient:
                 if integrity_info['integrity_percentage'] < 95 or integrity_info['missing_count'] > 0:
                     logger.info(f"Загрузка недостающих данных для {symbol}...")
                     await self.load_missing_data(symbol, integrity_info['missing_periods'], total_hours_needed)
-                    
-                    # Повторная проверка после загрузки
-                    integrity_info_after = await self.alert_manager.db_manager.check_data_integrity(
-                        symbol, total_hours_needed
-                    )
-                    logger.info(f"{symbol}: После загрузки {integrity_info_after['total_existing']}/{integrity_info_after['total_expected']} свечей "
-                               f"({integrity_info_after['integrity_percentage']:.1f}% целостность)")
                 else:
                     logger.info(f"Данные для {symbol} актуальны")
                 
@@ -99,11 +93,11 @@ class BybitWebSocketClient:
         logger.info("Проверка целостности данных завершена")
 
     async def load_missing_data(self, symbol: str, missing_periods: List[int], retention_hours: int):
-        """Загрузка недостающих исторических данных с улучшенной логикой"""
+        """Загрузка недостающих исторических данных"""
         try:
             if not missing_periods:
                 # Загружаем весь период с запасом
-                limit = min(retention_hours * 60 + 60, 1000)  # +60 минут запаса, но не более 1000
+                limit = min(retention_hours * 60 + 60, 1000)
                 
                 # Используем биржевое время для точности
                 if self.alert_manager.time_sync:
@@ -128,15 +122,13 @@ class BybitWebSocketClient:
                 
                 if data.get('retCode') == 0:
                     klines = data['result']['list']
-                    
-                    # Bybit возвращает данные в обратном порядке (новые сверху)
-                    klines.reverse()
+                    klines.reverse()  # Bybit возвращает данные в обратном порядке
                     
                     saved_count = 0
                     for kline in klines:
                         kline_data = {
                             'start': int(kline[0]),
-                            'end': int(kline[0]) + 60000,  # +1 минута
+                            'end': int(kline[0]) + 60000,
                             'open': kline[1],
                             'high': kline[2],
                             'low': kline[3],
@@ -144,15 +136,15 @@ class BybitWebSocketClient:
                             'volume': kline[5]
                         }
                         
-                        # Сохраняем в базу данных
-                        await self.alert_manager.db_manager.save_kline_data(symbol, kline_data)
+                        # Сохраняем как закрытую свечу
+                        await self.alert_manager.db_manager.save_kline_data(symbol, kline_data, is_closed=True)
                         saved_count += 1
                     
                     logger.info(f"Загружено {saved_count} свечей для {symbol}")
                 else:
                     logger.error(f"Ошибка API при загрузке данных для {symbol}: {data.get('retMsg')}")
             else:
-                # Загружаем только недостающие периоды (оптимизированная версия)
+                # Загружаем только недостающие периоды
                 await self._load_specific_missing_periods(symbol, missing_periods)
                     
         except Exception as e:
@@ -166,7 +158,7 @@ class BybitWebSocketClient:
             
             for group in groups:
                 start_time = group[0]
-                end_time = group[-1] + 60000  # Конец последней свечи в группе
+                end_time = group[-1] + 60000
                 
                 url = f"{self.rest_url}/v5/market/kline"
                 params = {
@@ -182,8 +174,6 @@ class BybitWebSocketClient:
                 
                 if data.get('retCode') == 0:
                     klines = data['result']['list']
-                    
-                    # Bybit возвращает данные в обратном порядке
                     klines.reverse()
                     
                     for kline in klines:
@@ -197,11 +187,10 @@ class BybitWebSocketClient:
                             'volume': kline[5]
                         }
                         
-                        await self.alert_manager.db_manager.save_kline_data(symbol, kline_data)
+                        await self.alert_manager.db_manager.save_kline_data(symbol, kline_data, is_closed=True)
                 else:
                     logger.error(f"Ошибка API при загрузке группы для {symbol}: {data.get('retMsg')}")
                 
-                # Задержка между запросами групп
                 await asyncio.sleep(0.2)
                 
         except Exception as e:
@@ -217,7 +206,6 @@ class BybitWebSocketClient:
         current_group = [periods[0]]
         
         for i in range(1, len(periods)):
-            # Если периоды идут подряд (разница 60000 мс = 1 минута)
             if periods[i] - periods[i-1] == 60000:
                 current_group.append(periods[i])
             else:
@@ -228,15 +216,15 @@ class BybitWebSocketClient:
         return groups
 
     async def connect_websocket(self):
-        """Подключение к WebSocket с улучшенной обработкой"""
+        """Подключение к WebSocket"""
         try:
             logger.info(f"Подключение к WebSocket: {self.ws_url}")
             
             async with websockets.connect(
                 self.ws_url,
-                ping_interval=30,  # Ping каждые 30 секунд
-                ping_timeout=10,   # Таймаут ping 10 секунд
-                close_timeout=10   # Таймаут закрытия 10 секунд
+                ping_interval=30,
+                ping_timeout=10,
+                close_timeout=10
             ) as websocket:
                 self.websocket = websocket
                 self.last_message_time = datetime.utcnow()
@@ -293,16 +281,14 @@ class BybitWebSocketClient:
         """Мониторинг состояния WebSocket соединения"""
         while self.is_running:
             try:
-                await asyncio.sleep(60)  # Проверяем каждую минуту
+                await asyncio.sleep(60)
                 
                 if self.last_message_time:
                     time_since_last_message = (datetime.utcnow() - self.last_message_time).total_seconds()
                     
-                    # Если нет сообщений более 2 минут, это проблема
                     if time_since_last_message > 120:
                         logger.warning(f"Нет сообщений от WebSocket уже {time_since_last_message:.0f} секунд")
                         
-                        # Отправляем статус проблемы
                         await self.connection_manager.broadcast_json({
                             "type": "connection_status",
                             "status": "disconnected",
@@ -345,26 +331,39 @@ class BybitWebSocketClient:
                     'volume': kline_data['volume']
                 }
                 
-                # Сохраняем в базу данных
-                await self.alert_manager.db_manager.save_kline_data(symbol, formatted_data)
+                # Проверяем, не обрабатывали ли мы уже эту свечу
+                timestamp = int(kline_data['start'])
+                if symbol not in self.processed_candles:
+                    self.processed_candles[symbol] = set()
                 
-                # Обрабатываем через менеджер алертов
-                alerts = await self.alert_manager.process_kline_data(symbol, formatted_data)
+                # Определяем, закрылась ли свеча
+                is_closed = kline_data.get('confirm', False)
+                
+                # Если свеча закрылась и мы её ещё не обрабатывали
+                if is_closed and timestamp not in self.processed_candles[symbol]:
+                    # Обрабатываем через менеджер алертов
+                    alerts = await self.alert_manager.process_kline_data(symbol, formatted_data)
+                    
+                    # Помечаем свечу как обработанную
+                    self.processed_candles[symbol].add(timestamp)
+                    
+                    # Очищаем старые записи (оставляем только последние 100)
+                    if len(self.processed_candles[symbol]) > 100:
+                        sorted_timestamps = sorted(self.processed_candles[symbol])
+                        self.processed_candles[symbol] = set(sorted_timestamps[-100:])
+                    
+                    logger.debug(f"Обработана закрытая свеча {symbol} в {timestamp}")
                 
                 # Отправляем обновление данных клиентам (потоковые данные)
-                message = {
+                stream_item = {
                     "type": "kline_update",
                     "symbol": symbol,
                     "data": formatted_data,
                     "timestamp": datetime.utcnow().isoformat(),
-                    "is_closed": kline_data.get('confirm', False)  # Bybit отправляет confirm=true для закрытых свечей
+                    "is_closed": is_closed
                 }
                 
-                # Добавляем алерты, если они есть
-                if alerts:
-                    message["alerts"] = alerts
-                
-                await self.connection_manager.broadcast_json(message)
+                await self.connection_manager.broadcast_json(stream_item)
                 
         except Exception as e:
             logger.error(f"Ошибка обработки kline данных: {e}")

@@ -161,7 +161,7 @@ class AlertManager:
         self.db_manager = db_manager
         self.telegram_bot = telegram_bot
         self.connection_manager = connection_manager
-        self.time_sync = time_sync  # Добавляем синхронизацию времени
+        self.time_sync = time_sync
         self.imbalance_analyzer = ImbalanceAnalyzer()
         
         # Настройки из переменных окружения
@@ -187,12 +187,10 @@ class AlertManager:
             'breaker_block_enabled': True
         }
         
-        # Кэш для отслеживания состояния свечей и алертов
-        self.candle_cache = {}  # symbol -> list of recent candles
+        # Кэш для отслеживания состояния алертов
         self.volume_alerts_cache = {}  # symbol -> {timestamp, alert_id, alert_level}
         self.consecutive_counters = {}  # symbol -> consecutive long count
         self.consecutive_alert_ids = {}  # symbol -> ID текущего алерта по последовательности
-        self.priority_signals = {}  # symbol -> priority signal data
         self.alert_cooldowns = {}  # symbol -> last alert timestamp
         
         logger.info("AlertManager инициализирован с анализом имбаланса и синхронизацией времени")
@@ -201,7 +199,7 @@ class AlertManager:
         """Получить текущее время (биржевое, если доступно)"""
         if self.time_sync:
             return self.time_sync.get_exchange_time()
-        return datetime.utcnow()  # Используем UTC вместо локального времени
+        return datetime.utcnow()
 
     def _is_candle_closed(self, kline_data: Dict) -> bool:
         """Проверка, закрылась ли свеча (используя биржевое время)"""
@@ -218,19 +216,15 @@ class AlertManager:
         alerts = []
         
         try:
-            # Сохраняем данные свечи в кэш
-            await self._update_candle_cache(symbol, kline_data)
+            # Определяем, закрылась ли свеча
+            is_closed = self._is_candle_closed(kline_data)
             
-            # Проверяем алерты по объему (в процессе формирования свечи)
-            if self.settings['volume_alerts_enabled']:
-                volume_alert = await self._check_volume_alert(symbol, kline_data, is_closed=False)
-                if volume_alert:
-                    alerts.append(volume_alert)
+            # Сохраняем данные в базу
+            await self.db_manager.save_kline_data(symbol, kline_data, is_closed)
             
-            # Если свеча закрылась, обрабатываем закрытие
-            if self._is_candle_closed(kline_data):
-                closed_alerts = await self._process_candle_close(symbol, kline_data)
-                alerts.extend(closed_alerts)
+            # Обрабатываем алерты только для закрытых свечей
+            if is_closed:
+                alerts = await self._process_closed_candle(symbol, kline_data)
             
             # Отправляем алерты
             for alert in alerts:
@@ -241,44 +235,35 @@ class AlertManager:
         
         return alerts
 
-    async def _update_candle_cache(self, symbol: str, kline_data: Dict):
-        """Обновление кэша свечей"""
-        if symbol not in self.candle_cache:
-            self.candle_cache[symbol] = []
+    async def _process_closed_candle(self, symbol: str, kline_data: Dict) -> List[Dict]:
+        """Обработка закрытой свечи - генерация алертов"""
+        alerts = []
         
-        # Добавляем или обновляем текущую свечу
-        timestamp = int(kline_data['start'])
+        try:
+            # Проверяем алерт по объему
+            if self.settings['volume_alerts_enabled']:
+                volume_alert = await self._check_volume_alert(symbol, kline_data)
+                if volume_alert:
+                    alerts.append(volume_alert)
+            
+            # Проверяем последовательные LONG свечи
+            if self.settings['consecutive_alerts_enabled']:
+                consecutive_alert = await self._check_consecutive_long_alert(symbol, kline_data)
+                if consecutive_alert:
+                    alerts.append(consecutive_alert)
+            
+            # Проверяем приоритетные сигналы
+            if self.settings['priority_alerts_enabled']:
+                priority_alert = await self._check_priority_signal(symbol, alerts)
+                if priority_alert:
+                    alerts.append(priority_alert)
+                    
+        except Exception as e:
+            logger.error(f"Ошибка обработки закрытой свечи для {symbol}: {e}")
         
-        # Проверяем, есть ли уже свеча с таким временем
-        existing_index = None
-        for i, candle in enumerate(self.candle_cache[symbol]):
-            if candle['timestamp'] == timestamp:
-                existing_index = i
-                break
-        
-        candle_info = {
-            'timestamp': timestamp,
-            'open': float(kline_data['open']),
-            'high': float(kline_data['high']),
-            'low': float(kline_data['low']),
-            'close': float(kline_data['close']),
-            'volume': float(kline_data['volume']),
-            'volume_usdt': float(kline_data['volume']) * float(kline_data['close']),
-            'is_long': float(kline_data['close']) > float(kline_data['open']),
-            'is_closed': self._is_candle_closed(kline_data)
-        }
-        
-        if existing_index is not None:
-            self.candle_cache[symbol][existing_index] = candle_info
-        else:
-            self.candle_cache[symbol].append(candle_info)
-        
-        # Ограничиваем размер кэша
-        max_cache_size = 120  # 2 часа данных
-        if len(self.candle_cache[symbol]) > max_cache_size:
-            self.candle_cache[symbol] = self.candle_cache[symbol][-max_cache_size:]
+        return alerts
 
-    async def _check_volume_alert(self, symbol: str, kline_data: Dict, is_closed: bool = False) -> Optional[Dict]:
+    async def _check_volume_alert(self, symbol: str, kline_data: Dict) -> Optional[Dict]:
         """Проверка алерта по превышению объема"""
         try:
             # Проверяем, является ли свеча LONG
@@ -301,11 +286,7 @@ class AlertManager:
                 current_time = self._get_current_time()
                 cooldown_period = self.settings['alert_grouping_minutes']
                 if (current_time - last_alert_time).total_seconds() < cooldown_period * 60:
-                    # Проверяем, больше ли текущий объем предыдущего
-                    if symbol in self.volume_alerts_cache:
-                        prev_volume = self.volume_alerts_cache[symbol].get('volume_usdt', 0)
-                        if current_volume_usdt < prev_volume:
-                            return None
+                    return None
             
             # Получаем исторические объемы
             historical_volumes = await self.db_manager.get_historical_long_volumes(
@@ -327,6 +308,7 @@ class AlertManager:
             
             if volume_ratio >= self.settings['volume_multiplier']:
                 current_price = float(kline_data['close'])
+                close_time = self._get_current_time()
                 
                 # Создаем данные свечи для алерта
                 candle_data = {
@@ -334,13 +316,14 @@ class AlertManager:
                     'high': float(kline_data['high']),
                     'low': float(kline_data['low']),
                     'close': current_price,
-                    'volume': float(kline_data['volume'])
+                    'volume': float(kline_data['volume']),
+                    'alert_level': current_price
                 }
                 
                 # Анализируем имбаланс
                 imbalance_data = None
                 has_imbalance = False
-                if self.settings.get('imbalance_enabled', False) and symbol in self.candle_cache:
+                if self.settings.get('imbalance_enabled', False):
                     imbalance_data = await self._analyze_imbalance(symbol)
                     has_imbalance = imbalance_data is not None
                 
@@ -349,180 +332,29 @@ class AlertManager:
                 if self.settings.get('orderbook_snapshot_on_alert', False):
                     order_book_snapshot = await self._get_order_book_snapshot(symbol)
                 
-                if not is_closed:
-                    # Первый алерт (предварительный - в процессе формирования)
-                    actual_time = self._get_current_time()  # Используем биржевое время
-                    
-                    # Проверяем, нет ли уже предварительного алерта для этой минуты
-                    if symbol in self.volume_alerts_cache and self.volume_alerts_cache[symbol]['timestamp'] == timestamp:
-                        # Обновляем существующий предварительный алерт, если объем больше
-                        cached_volume = self.volume_alerts_cache[symbol].get('volume_usdt', 0)
-                        if current_volume_usdt <= cached_volume:
-                            return None
-                        
-                        # Обновляем существующий алерт в базе данных
-                        alert_id = self.volume_alerts_cache[symbol]['alert_id']
-                        alert_level = self.volume_alerts_cache[symbol]['alert_level']
-                        candle_data['alert_level'] = alert_level
-                        
-                        alert_data = {
-                            'id': alert_id,
-                            'symbol': symbol,
-                            'alert_type': AlertType.VOLUME_SPIKE.value,
-                            'price': current_price,
-                            'volume_ratio': round(volume_ratio, 2),
-                            'current_volume_usdt': int(current_volume_usdt),
-                            'average_volume_usdt': int(average_volume),
-                            'timestamp': actual_time,  # Оставляем как datetime объект для базы данных
-                            'is_closed': False,
-                            'is_true_signal': None,
-                            'has_imbalance': has_imbalance,
-                            'imbalance_data': imbalance_data,
-                            'candle_data': candle_data,
-                            'order_book_snapshot': order_book_snapshot,
-                            'message': f"Предварительный алерт: объем превышен в {volume_ratio:.2f}x раз"
-                        }
-                        
-                        # Обновляем в базе данных
-                        await self.db_manager.update_alert(alert_id, alert_data)
-                        
-                        # Обновляем кэш
-                        self.volume_alerts_cache[symbol].update({
-                            'volume_usdt': current_volume_usdt,
-                            'alert_level': alert_level
-                        })
-                        
-                        # Конвертируем datetime в строку для отправки
-                        alert_data['timestamp'] = actual_time.isoformat()
-                        
-                        return alert_data
-                    
-                    # Создаем новый предварительный алерт
-                    alert_level = current_price
-                    candle_data['alert_level'] = alert_level
-                    
-                    alert_data = {
-                        'symbol': symbol,
-                        'alert_type': AlertType.VOLUME_SPIKE.value,
-                        'price': current_price,
-                        'volume_ratio': round(volume_ratio, 2),
-                        'current_volume_usdt': int(current_volume_usdt),
-                        'average_volume_usdt': int(average_volume),
-                        'timestamp': actual_time,  # Оставляем как datetime объект для базы данных
-                        'is_closed': False,
-                        'is_true_signal': None,
-                        'has_imbalance': has_imbalance,
-                        'imbalance_data': imbalance_data,
-                        'candle_data': candle_data,
-                        'order_book_snapshot': order_book_snapshot,
-                        'message': f"Предварительный алерт: объем превышен в {volume_ratio:.2f}x раз"
-                    }
-                    
-                    # Сохраняем в базу данных и получаем ID
-                    alert_id = await self.db_manager.save_alert(alert_data)
-                    alert_data['id'] = alert_id
-                    
-                    # Сохраняем в кэш
-                    self.volume_alerts_cache[symbol] = {
-                        'timestamp': timestamp,
-                        'alert_id': alert_id,
-                        'alert_level': alert_level,
-                        'volume_usdt': current_volume_usdt
-                    }
-                    
-                    # Конвертируем datetime в строку для отправки
-                    alert_data['timestamp'] = actual_time.isoformat()
-                    
-                    logger.info(f"Создан предварительный алерт для {symbol}: {volume_ratio:.2f}x")
-                    return alert_data
-                else:
-                    # Второй алерт (финальный - после закрытия свечи)
-                    if self.time_sync:
-                        close_time = self.time_sync.get_candle_close_time(timestamp)
-                    else:
-                        close_time = datetime.utcfromtimestamp((timestamp + 60000) / 1000)
-                    
-                    # Определяем, истинный ли это сигнал (свеча закрылась в LONG)
-                    final_is_long = float(kline_data['close']) > float(kline_data['open'])
-                    
-                    if symbol in self.volume_alerts_cache and self.volume_alerts_cache[symbol]['timestamp'] == timestamp:
-                        # Обновляем существующий алерт
-                        cached_data = self.volume_alerts_cache[symbol]
-                        alert_id = cached_data['alert_id']
-                        alert_level = cached_data.get('alert_level', current_price)
-                        
-                        # Обновляем данные свечи с уровнем алерта
-                        candle_data['alert_level'] = alert_level
-                        
-                        alert_data = {
-                            'id': alert_id,
-                            'symbol': symbol,
-                            'alert_type': AlertType.VOLUME_SPIKE.value,
-                            'price': current_price,
-                            'volume_ratio': round(volume_ratio, 2),
-                            'current_volume_usdt': int(current_volume_usdt),
-                            'average_volume_usdt': int(average_volume),
-                            'timestamp': cached_data.get('original_timestamp', close_time),  # Оставляем как datetime объект
-                            'close_timestamp': close_time,  # Оставляем как datetime объект
-                            'is_closed': True,
-                            'is_true_signal': final_is_long,
-                            'has_imbalance': has_imbalance,
-                            'imbalance_data': imbalance_data,
-                            'candle_data': candle_data,
-                            'order_book_snapshot': order_book_snapshot,
-                            'message': f"Финальный алерт: объем превышен в {volume_ratio:.2f}x раз ({'истинный' if final_is_long else 'ложный'} сигнал)"
-                        }
-                        
-                        # Обновляем в базе данных
-                        await self.db_manager.update_alert(alert_id, alert_data)
-                        
-                        # Удаляем из кэша и обновляем кулдаун только для истинных сигналов
-                        del self.volume_alerts_cache[symbol]
-                        if final_is_long:
-                            self.alert_cooldowns[symbol] = self._get_current_time()
-                        
-                        # Конвертируем datetime в строки для отправки
-                        alert_data['timestamp'] = alert_data['timestamp'].isoformat() if isinstance(alert_data['timestamp'], datetime) else alert_data['timestamp']
-                        alert_data['close_timestamp'] = close_time.isoformat()
-                        
-                        logger.info(f"Обновлен финальный алерт для {symbol}: {'истинный' if final_is_long else 'ложный'}")
-                        return alert_data
-                    else:
-                        # Создаем новый финальный алерт (если не было предварительного)
-                        candle_data['alert_level'] = current_price
-                        
-                        alert_data = {
-                            'symbol': symbol,
-                            'alert_type': AlertType.VOLUME_SPIKE.value,
-                            'price': current_price,
-                            'volume_ratio': round(volume_ratio, 2),
-                            'current_volume_usdt': int(current_volume_usdt),
-                            'average_volume_usdt': int(average_volume),
-                            'timestamp': close_time,  # Оставляем как datetime объект
-                            'close_timestamp': close_time,  # Оставляем как datetime объект
-                            'is_closed': True,
-                            'is_true_signal': final_is_long,
-                            'has_imbalance': has_imbalance,
-                            'imbalance_data': imbalance_data,
-                            'candle_data': candle_data,
-                            'order_book_snapshot': order_book_snapshot,
-                            'message': f"Объем превышен в {volume_ratio:.2f}x раз ({'истинный' if final_is_long else 'ложный'} сигнал)"
-                        }
-                        
-                        # Сохраняем в базу данных
-                        alert_id = await self.db_manager.save_alert(alert_data)
-                        alert_data['id'] = alert_id
-                        
-                        # Обновляем кулдаун только для истинных сигналов
-                        if final_is_long:
-                            self.alert_cooldowns[symbol] = self._get_current_time()
-                        
-                        # Конвертируем datetime в строки для отправки
-                        alert_data['timestamp'] = close_time.isoformat()
-                        alert_data['close_timestamp'] = close_time.isoformat()
-                        
-                        logger.info(f"Создан новый финальный алерт для {symbol}: {'истинный' if final_is_long else 'ложный'}")
-                        return alert_data
+                alert_data = {
+                    'symbol': symbol,
+                    'alert_type': AlertType.VOLUME_SPIKE.value,
+                    'price': current_price,
+                    'volume_ratio': round(volume_ratio, 2),
+                    'current_volume_usdt': int(current_volume_usdt),
+                    'average_volume_usdt': int(average_volume),
+                    'timestamp': close_time,
+                    'close_timestamp': close_time,
+                    'is_closed': True,
+                    'is_true_signal': True,  # Закрытая LONG свеча = истинный сигнал
+                    'has_imbalance': has_imbalance,
+                    'imbalance_data': imbalance_data,
+                    'candle_data': candle_data,
+                    'order_book_snapshot': order_book_snapshot,
+                    'message': f"Объем превышен в {volume_ratio:.2f}x раз (истинный сигнал)"
+                }
+                
+                # Обновляем кулдаун
+                self.alert_cooldowns[symbol] = self._get_current_time()
+                
+                logger.info(f"Создан алерт по объему для {symbol}: {volume_ratio:.2f}x")
+                return alert_data
             
             return None
             
@@ -533,10 +365,11 @@ class AlertManager:
     async def _analyze_imbalance(self, symbol: str) -> Optional[Dict]:
         """Анализ имбаланса для символа"""
         try:
-            if symbol not in self.candle_cache or len(self.candle_cache[symbol]) < 15:
-                return None
+            # Получаем последние свечи для анализа
+            candles = await self.db_manager.get_recent_candles(symbol, 20)
             
-            candles = self.candle_cache[symbol]
+            if len(candles) < 15:
+                return None
             
             # Проверяем Fair Value Gap
             if self.settings.get('fair_value_gap_enabled', True):
@@ -584,7 +417,7 @@ class AlertManager:
                             return {
                                 'bids': [[float(bid[0]), float(bid[1])] for bid in result.get('b', [])],
                                 'asks': [[float(ask[0]), float(ask[1])] for ask in result.get('a', [])],
-                                'timestamp': self._get_current_time().isoformat()  # Используем биржевое время
+                                'timestamp': self._get_current_time().isoformat()
                             }
             
             return None
@@ -593,136 +426,58 @@ class AlertManager:
             logger.error(f"Ошибка получения стакана для {symbol}: {e}")
             return None
 
-    async def _process_candle_close(self, symbol: str, kline_data: Dict) -> List[Dict]:
-        """Обработка закрытия свечи - ВСЕ АЛЕРТЫ ТОЛЬКО ПО ЗАКРЫТЫМ СВЕЧАМ"""
-        alerts = []
-        
-        try:
-            # Проверяем алерт по объему при закрытии
-            if self.settings['volume_alerts_enabled']:
-                volume_alert = await self._check_volume_alert(symbol, kline_data, is_closed=True)
-                if volume_alert:
-                    alerts.append(volume_alert)
-            
-            # Проверяем последовательные LONG свечи - ТОЛЬКО ПО ЗАКРЫТЫМ СВЕЧАМ
-            if self.settings['consecutive_alerts_enabled']:
-                consecutive_alert = await self._check_consecutive_long_alert(symbol, kline_data)
-                if consecutive_alert:
-                    alerts.append(consecutive_alert)
-            
-            # Проверяем приоритетные сигналы
-            if self.settings['priority_alerts_enabled']:
-                priority_alert = await self._check_priority_signal(symbol, alerts)
-                if priority_alert:
-                    alerts.append(priority_alert)
-                    
-        except Exception as e:
-            logger.error(f"Ошибка обработки закрытия свечи для {symbol}: {e}")
-        
-        return alerts
-
     async def _check_consecutive_long_alert(self, symbol: str, kline_data: Dict) -> Optional[Dict]:
-        """Проверка алерта по подряд идущим LONG свечам - ТОЛЬКО ПО ЗАКРЫТЫМ СВЕЧАМ"""
+        """Проверка алерта по подряд идущим LONG свечам"""
         try:
-            # Проверяем только закрытые свечи
-            is_long = float(kline_data['close']) > float(kline_data['open'])
-
-            # Инициализируем счетчик и ID алерта, если их нет
-            if symbol not in self.consecutive_counters:
-                self.consecutive_counters[symbol] = 0
-                self.consecutive_alert_ids[symbol] = None
-
-            # Время закрытия свечи (используем биржевое время)
-            timestamp = int(kline_data['start'])
-            if self.time_sync:
-                close_time = self.time_sync.get_candle_close_time(timestamp)
-            else:
-                close_time = datetime.utcfromtimestamp((timestamp + 60000) / 1000)
-
-            # Данные свечи
-            candle_data = {
-                'open': float(kline_data['open']),
-                'high': float(kline_data['high']),
-                'low': float(kline_data['low']),
-                'close': float(kline_data['close']),
-                'volume': float(kline_data['volume'])
-            }
-
-            # Анализируем имбаланс
-            imbalance_data = None
-            has_imbalance = False
-            if self.settings.get('imbalance_enabled', False):
+            # Получаем последние свечи
+            recent_candles = await self.db_manager.get_recent_candles(symbol, self.settings['consecutive_long_count'] + 5)
+            
+            if len(recent_candles) < self.settings['consecutive_long_count']:
+                return None
+            
+            # Считаем последовательные LONG свечи с конца
+            consecutive_count = 0
+            for candle in reversed(recent_candles):
+                if candle['is_long'] and candle['is_closed']:
+                    consecutive_count += 1
+                else:
+                    break
+            
+            # Проверяем, достигнуто ли нужное количество
+            if consecutive_count >= self.settings['consecutive_long_count']:
+                close_time = self._get_current_time()
+                current_price = float(kline_data['close'])
+                
+                # Создаем данные свечи
+                candle_data = {
+                    'open': float(kline_data['open']),
+                    'high': float(kline_data['high']),
+                    'low': float(kline_data['low']),
+                    'close': current_price,
+                    'volume': float(kline_data['volume'])
+                }
+                
+                # Анализируем имбаланс
                 imbalance_data = await self._analyze_imbalance(symbol)
                 has_imbalance = imbalance_data is not None
-
-            if is_long:
-                # Увеличиваем счетчик LONG свечей
-                self.consecutive_counters[symbol] += 1
-
-                # Проверяем, достигнуто ли нужное количество свечей
-                if self.consecutive_counters[symbol] >= self.settings['consecutive_long_count']:
-                    alert_data = {
-                        'symbol': symbol,
-                        'alert_type': AlertType.CONSECUTIVE_LONG.value,
-                        'price': float(kline_data['close']),
-                        'consecutive_count': self.consecutive_counters[symbol],
-                        'timestamp': close_time,  # Оставляем как datetime объект для базы данных
-                        'close_timestamp': close_time,  # Оставляем как datetime объект для базы данных
-                        'is_closed': True,
-                        'has_imbalance': has_imbalance,
-                        'imbalance_data': imbalance_data,
-                        'candle_data': candle_data,
-                        'message': f"{self.consecutive_counters[symbol]} подряд идущих LONG свечей (закрытых)"
-                    }
-
-                    # Если уже есть активный алерт, обновляем его
-                    if self.consecutive_alert_ids[symbol] is not None:
-                        alert_data['id'] = self.consecutive_alert_ids[symbol]
-                        await self.db_manager.update_alert(self.consecutive_alert_ids[symbol], alert_data)
-                    else:
-                        # Создаем новый алерт
-                        alert_id = await self.db_manager.save_alert(alert_data)
-                        alert_data['id'] = alert_id
-                        self.consecutive_alert_ids[symbol] = alert_id
-
-                    # Отправляем обновление в интерфейс
-                    if self.connection_manager:
-                        await self.connection_manager.broadcast_json({
-                            'type': 'consecutive_update',
-                            'symbol': symbol,
-                            'count': self.consecutive_counters[symbol],
-                            'alert_id': alert_data['id']
-                        })
-
-                    # Конвертируем datetime в строки для отправки
-                    alert_data['timestamp'] = close_time.isoformat()
-                    alert_data['close_timestamp'] = close_time.isoformat()
-
-                    logger.info(f"Алерт по последовательности для {symbol}: {self.consecutive_counters[symbol]} LONG свечей")
-                    return alert_data
-            else:
-                # При появлении SHORT свечи сбрасываем счетчик и закрываем существующий алерт
-                if self.consecutive_counters[symbol] >= self.settings['consecutive_long_count'] and self.consecutive_alert_ids[symbol] is not None:
-                    # Закрываем существующий алерт
-                    await self.db_manager.update_alert(self.consecutive_alert_ids[symbol], {
-                        'id': self.consecutive_alert_ids[symbol],
-                        'symbol': symbol,
-                        'alert_type': AlertType.CONSECUTIVE_LONG.value,
-                        'price': float(kline_data['close']),
-                        'consecutive_count': self.consecutive_counters[symbol],
-                        'timestamp': close_time,  # Оставляем как datetime объект
-                        'close_timestamp': close_time,  # Оставляем как datetime объект
-                        'is_closed': True,
-                        'has_imbalance': has_imbalance,
-                        'imbalance_data': imbalance_data,
-                        'candle_data': candle_data,
-                        'message': "Последовательность LONG свечей прервана SHORT свечой"
-                    })
-
-                # Сбрасываем счетчик и ID алерта
-                self.consecutive_counters[symbol] = 0
-                self.consecutive_alert_ids[symbol] = None
-
+                
+                alert_data = {
+                    'symbol': symbol,
+                    'alert_type': AlertType.CONSECUTIVE_LONG.value,
+                    'price': current_price,
+                    'consecutive_count': consecutive_count,
+                    'timestamp': close_time,
+                    'close_timestamp': close_time,
+                    'is_closed': True,
+                    'has_imbalance': has_imbalance,
+                    'imbalance_data': imbalance_data,
+                    'candle_data': candle_data,
+                    'message': f"{consecutive_count} подряд идущих LONG свечей (закрытых)"
+                }
+                
+                logger.info(f"Алерт по последовательности для {symbol}: {consecutive_count} LONG свечей")
+                return alert_data
+            
             return None
 
         except Exception as e:
@@ -743,9 +498,8 @@ class AlertManager:
                     consecutive_alert = alert
             
             # Также проверяем, был ли объемный алерт в рамках текущей последовательности
-            if consecutive_alert and symbol in self.consecutive_counters:
-                # Проверяем, был ли объемный всплеск в последние N свечей
-                recent_volume_alert = await self._check_recent_volume_alert(symbol, self.consecutive_counters[symbol])
+            if consecutive_alert:
+                recent_volume_alert = await self._check_recent_volume_alert(symbol, consecutive_alert['consecutive_count'])
                 
                 if volume_alert or recent_volume_alert:
                     candle_data = consecutive_alert.get('candle_data', {})
@@ -767,8 +521,8 @@ class AlertManager:
                         'alert_type': AlertType.PRIORITY.value,
                         'price': consecutive_alert['price'],
                         'consecutive_count': consecutive_alert['consecutive_count'],
-                        'timestamp': consecutive_alert['timestamp'],  # Уже в строковом формате
-                        'close_timestamp': consecutive_alert['close_timestamp'],  # Уже в строковом формате
+                        'timestamp': consecutive_alert['timestamp'],
+                        'close_timestamp': consecutive_alert['close_timestamp'],
                         'is_closed': True,
                         'has_imbalance': has_imbalance,
                         'imbalance_data': imbalance_data,
@@ -809,39 +563,19 @@ class AlertManager:
     async def _send_alert(self, alert_data: Dict):
         """Отправка алерта"""
         try:
-            # Если у алерта есть ID, обновляем существующий, иначе создаем новый
-            if 'id' in alert_data:
-                # Создаем копию для базы данных с datetime объектами
-                db_alert_data = alert_data.copy()
-                # Конвертируем строки обратно в datetime для базы данных
-                if isinstance(db_alert_data.get('timestamp'), str):
-                    db_alert_data['timestamp'] = datetime.fromisoformat(db_alert_data['timestamp'].replace('Z', '+00:00'))
-                if isinstance(db_alert_data.get('close_timestamp'), str):
-                    db_alert_data['close_timestamp'] = datetime.fromisoformat(db_alert_data['close_timestamp'].replace('Z', '+00:00'))
-                
-                await self.db_manager.update_alert(alert_data['id'], db_alert_data)
-            else:
-                # Создаем копию для базы данных с datetime объектами
-                db_alert_data = alert_data.copy()
-                # Конвертируем строки обратно в datetime для базы данных
-                if isinstance(db_alert_data.get('timestamp'), str):
-                    db_alert_data['timestamp'] = datetime.fromisoformat(db_alert_data['timestamp'].replace('Z', '+00:00'))
-                if isinstance(db_alert_data.get('close_timestamp'), str):
-                    db_alert_data['close_timestamp'] = datetime.fromisoformat(db_alert_data['close_timestamp'].replace('Z', '+00:00'))
-                
-                alert_id = await self.db_manager.save_alert(db_alert_data)
-                alert_data['id'] = alert_id
+            # Сохраняем в базу данных
+            alert_id = await self.db_manager.save_alert(alert_data)
+            alert_data['id'] = alert_id
 
-            # Отправляем в WebSocket (с строковыми timestamp)
+            # Отправляем в WebSocket
             if self.connection_manager:
-                event_type = 'alert_updated' if 'id' in alert_data else 'new_alert'
                 await self.connection_manager.broadcast_json({
-                    'type': event_type,
+                    'type': 'new_alert',
                     'alert': self._serialize_alert(alert_data)
                 })
 
-            # Отправляем в Telegram (только для финальных алертов)
-            if self.telegram_bot and alert_data.get('is_closed', False):
+            # Отправляем в Telegram
+            if self.telegram_bot:
                 if alert_data['alert_type'] == AlertType.VOLUME_SPIKE.value:
                     await self.telegram_bot.send_volume_alert(alert_data)
                 elif alert_data['alert_type'] == AlertType.CONSECUTIVE_LONG.value:
@@ -858,14 +592,10 @@ class AlertManager:
         """Сериализация алерта для JSON"""
         serialized = alert_data.copy()
         
-        # Убеждаемся, что все datetime уже в строковом формате
+        # Конвертируем datetime в строки
         for key in ['timestamp', 'close_timestamp']:
             if key in serialized and isinstance(serialized[key], datetime):
                 serialized[key] = serialized[key].isoformat()
-        
-        # Сериализуем вложенные алерты
-        if 'preliminary_alert' in serialized and serialized['preliminary_alert']:
-            serialized['preliminary_alert'] = self._serialize_alert(serialized['preliminary_alert'])
         
         return serialized
 
@@ -881,27 +611,8 @@ class AlertManager:
     async def cleanup_old_data(self):
         """Очистка старых данных"""
         try:
-            # Очищаем кэш свечей
-            cutoff_time = self._get_current_time() - timedelta(hours=self.settings['data_retention_hours'])
-            cutoff_timestamp = int(cutoff_time.timestamp() * 1000)
-            
-            for symbol in list(self.candle_cache.keys()):
-                if symbol in self.candle_cache:
-                    self.candle_cache[symbol] = [
-                        candle for candle in self.candle_cache[symbol]
-                        if candle['timestamp'] >= cutoff_timestamp
-                    ]
-                    
-                    if not self.candle_cache[symbol]:
-                        del self.candle_cache[symbol]
-            
-            # Очищаем кэш объемных алертов (старше 5 минут)
-            alert_cutoff = self._get_current_time() - timedelta(minutes=5)
-            alert_cutoff_timestamp = int(alert_cutoff.timestamp() * 1000)
-            
-            for symbol in list(self.volume_alerts_cache.keys()):
-                if self.volume_alerts_cache[symbol]['timestamp'] < alert_cutoff_timestamp:
-                    del self.volume_alerts_cache[symbol]
+            # Очищаем кэши
+            cutoff_time = self._get_current_time() - timedelta(minutes=5)
             
             # Очищаем кулдауны (старше часа)
             cooldown_cutoff = self._get_current_time() - timedelta(hours=1)
