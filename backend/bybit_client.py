@@ -204,9 +204,10 @@ class BybitWebSocketClient:
             return False
 
     async def connect_websocket(self):
-        """Подключение к WebSocket"""
+        """Подключение к WebSocket с подпиской на ВСЕ торговые пары"""
         try:
             logger.info(f"Подключение к WebSocket: {self.ws_url}")
+            logger.info(f"Подписка на {len(self.trading_pairs)} торговых пар: {self.trading_pairs[:10]}...")  # Показываем первые 10
             
             async with websockets.connect(
                 self.ws_url,
@@ -217,14 +218,24 @@ class BybitWebSocketClient:
                 self.websocket = websocket
                 self.last_message_time = datetime.utcnow()
                 
-                # Подписываемся на kline данные для всех торговых пар
-                subscribe_message = {
-                    "op": "subscribe",
-                    "args": [f"kline.1.{pair}" for pair in self.trading_pairs]
-                }
+                # Подписываемся на kline данные для ВСЕХ торговых пар
+                # Разбиваем на группы по 50 пар для избежания ограничений WebSocket
+                batch_size = 50
+                for i in range(0, len(self.trading_pairs), batch_size):
+                    batch = self.trading_pairs[i:i + batch_size]
+                    subscribe_message = {
+                        "op": "subscribe",
+                        "args": [f"kline.1.{pair}" for pair in batch]
+                    }
+                    
+                    await websocket.send(json.dumps(subscribe_message))
+                    logger.info(f"Подписка на пакет {i//batch_size + 1}: {len(batch)} пар")
+                    
+                    # Небольшая задержка между пакетами
+                    if i + batch_size < len(self.trading_pairs):
+                        await asyncio.sleep(0.5)
                 
-                await websocket.send(json.dumps(subscribe_message))
-                logger.info(f"Подписка на {len(self.trading_pairs)} торговых пар")
+                logger.info(f"Подписка завершена на {len(self.trading_pairs)} торговых пар")
                 
                 # Отправляем статус подключения
                 await self.connection_manager.broadcast_json({
@@ -294,7 +305,7 @@ class BybitWebSocketClient:
             # Обрабатываем системные сообщения
             if 'success' in data:
                 if data['success']:
-                    logger.info("Успешная подписка на WebSocket")
+                    logger.debug("Успешная подписка на WebSocket пакет")
                 else:
                     logger.error(f"Ошибка подписки WebSocket: {data}")
                 return
@@ -307,6 +318,11 @@ class BybitWebSocketClient:
             if data.get('topic', '').startswith('kline.1.'):
                 kline_data = data['data'][0]
                 symbol = data['topic'].split('.')[-1]
+                
+                # Проверяем, что символ в нашем списке
+                if symbol not in self.trading_pairs:
+                    logger.debug(f"Получены данные для символа {symbol}, которого нет в watchlist")
+                    return
                 
                 # Биржа передает UNIX время в миллисекундах
                 start_time_unix = int(kline_data['start'])

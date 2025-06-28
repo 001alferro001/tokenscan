@@ -142,6 +142,7 @@ const App: React.FC = () => {
   const timeIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const syncIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const dataRefreshIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     loadInitialData();
@@ -155,7 +156,12 @@ const App: React.FC = () => {
     
     // Загружаем информацию о синхронизации времени каждые 30 секунд
     syncIntervalRef.current = setInterval(loadTimeSync, 30000);
-    loadTimeSync(); // Первоначальная загрузка
+    loadTimeSync();
+    
+    // Периодически обновляем данные (каждые 30 секунд)
+    dataRefreshIntervalRef.current = setInterval(() => {
+      refreshData();
+    }, 30000);
     
     // Cleanup function
     return () => {
@@ -164,6 +170,9 @@ const App: React.FC = () => {
       }
       if (syncIntervalRef.current) {
         clearInterval(syncIntervalRef.current);
+      }
+      if (dataRefreshIntervalRef.current) {
+        clearInterval(dataRefreshIntervalRef.current);
       }
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
@@ -188,6 +197,51 @@ const App: React.FC = () => {
       }
     } catch (error) {
       console.error('Ошибка загрузки информации о времени:', error);
+    }
+  };
+
+  const refreshData = async () => {
+    try {
+      // Обновляем алерты
+      const alertsResponse = await fetch('/api/alerts/all');
+      if (alertsResponse.ok) {
+        const alertsData = await alertsResponse.json();
+        
+        // Обновляем алерты с сортировкой
+        setVolumeAlerts((alertsData.volume_alerts || []).sort((a: Alert, b: Alert) => 
+          new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
+        ));
+        setConsecutiveAlerts((alertsData.consecutive_alerts || []).sort((a: Alert, b: Alert) => 
+          new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
+        ));
+        setPriorityAlerts((alertsData.priority_alerts || []).sort((a: Alert, b: Alert) => 
+          new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
+        ));
+        
+        console.log('Данные обновлены:', {
+          volume: alertsData.volume_alerts?.length || 0,
+          consecutive: alertsData.consecutive_alerts?.length || 0,
+          priority: alertsData.priority_alerts?.length || 0
+        });
+      }
+
+      // Обновляем watchlist
+      const watchlistResponse = await fetch('/api/watchlist');
+      if (watchlistResponse.ok) {
+        const watchlistData = await watchlistResponse.json();
+        const sortedWatchlist = (watchlistData.pairs || []).sort((a: WatchlistItem, b: WatchlistItem) => {
+          if (a.price_drop_percentage && b.price_drop_percentage) {
+            if (a.price_drop_percentage !== b.price_drop_percentage) {
+              return b.price_drop_percentage - a.price_drop_percentage;
+            }
+          }
+          return a.symbol.localeCompare(b.symbol);
+        });
+        setWatchlist(sortedWatchlist);
+      }
+
+    } catch (error) {
+      console.error('Ошибка обновления данных:', error);
     }
   };
 
@@ -424,7 +478,7 @@ const App: React.FC = () => {
         break;
 
       case 'kline_update':
-        // Обновляем потоковые данные
+        // Обновляем потоковые данные для ВСЕХ символов
         const streamItem: StreamData = {
           symbol: data.symbol,
           price: parseFloat(data.data.close),
@@ -438,7 +492,7 @@ const App: React.FC = () => {
         setStreamData(prev => {
           // Обновляем или добавляем данные для символа
           const filtered = prev.filter(item => item.symbol !== data.symbol);
-          const newData = [streamItem, ...filtered].slice(0, 500); // Увеличиваем лимит до 500
+          const newData = [streamItem, ...filtered].slice(0, 1000); // Увеличиваем лимит до 1000
           return newData;
         });
         break;
@@ -448,7 +502,8 @@ const App: React.FC = () => {
         break;
 
       case 'watchlist_updated':
-        loadWatchlist();
+        // Обновляем watchlist при изменениях
+        refreshData();
         break;
 
       case 'consecutive_update':
@@ -1055,7 +1110,7 @@ const App: React.FC = () => {
             </div>
             
             <div className="space-y-4">
-              {streamData.slice(0, 50).map((item, index) => (
+              {streamData.slice(0, 100).map((item, index) => (
                 <div key={`${item.symbol}-${index}`} className="bg-white rounded-lg shadow-md border border-gray-200 p-4 w-full">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center space-x-4">
