@@ -57,6 +57,7 @@ interface StreamData {
   volume_usdt: number;
   is_long: boolean;
   timestamp: string;
+  is_closed?: boolean;
 }
 
 interface SmartMoneyAlert {
@@ -134,6 +135,7 @@ const App: React.FC = () => {
   const [timeSync, setTimeSync] = useState<TimeSync | null>(null);
   const [lastDataUpdate, setLastDataUpdate] = useState<Date | null>(null);
   const [reconnectAttempts, setReconnectAttempts] = useState(0);
+  const [wsStats, setWsStats] = useState({ messagesReceived: 0, lastMessage: null as Date | null });
   
   // Refs для WebSocket и интервалов
   const wsRef = useRef<WebSocket | null>(null);
@@ -312,6 +314,10 @@ const App: React.FC = () => {
       try {
         const data = JSON.parse(event.data);
         setLastDataUpdate(new Date());
+        setWsStats(prev => ({
+          messagesReceived: prev.messagesReceived + 1,
+          lastMessage: new Date()
+        }));
         handleWebSocketMessage(data);
       } catch (error) {
         console.error('Ошибка парсинга WebSocket сообщения:', error);
@@ -428,12 +434,15 @@ const App: React.FC = () => {
           volume: parseFloat(data.data.volume),
           volume_usdt: parseFloat(data.data.volume) * parseFloat(data.data.close),
           is_long: parseFloat(data.data.close) > parseFloat(data.data.open),
-          timestamp: data.timestamp
+          timestamp: data.timestamp,
+          is_closed: data.is_closed || false
         };
         
         setStreamData(prev => {
+          // Обновляем или добавляем данные для символа
           const filtered = prev.filter(item => item.symbol !== data.symbol);
-          return [streamItem, ...filtered].slice(0, 100);
+          const newData = [streamItem, ...filtered].slice(0, 500); // Увеличиваем лимит до 500
+          return newData;
         });
         break;
 
@@ -824,6 +833,9 @@ const App: React.FC = () => {
                     • Данные: {formatLocalTime(lastDataUpdate)}
                   </span>
                 )}
+                <span className="text-xs text-gray-400">
+                  • Сообщений: {wsStats.messagesReceived}
+                </span>
               </div>
             </div>
             
@@ -1044,7 +1056,7 @@ const App: React.FC = () => {
               <h2 className="text-2xl font-bold text-gray-900">Потоковые данные</h2>
               <div className="flex items-center space-x-4">
                 <span className="text-sm text-gray-600">
-                  Обновлений: {streamData.length}
+                  Обновлений: {streamData.length} / Пар в watchlist: {watchlist.length}
                 </span>
                 <button
                   onClick={() => connectWebSocket()}
@@ -1057,12 +1069,15 @@ const App: React.FC = () => {
             </div>
             
             <div className="space-y-4">
-              {streamData.slice(0, 20).map((item, index) => (
+              {streamData.slice(0, 50).map((item, index) => (
                 <div key={`${item.symbol}-${index}`} className="bg-white rounded-lg shadow-md border border-gray-200 p-4 w-full">
                   <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center space-x-3">
                       <div className={`w-3 h-3 rounded-full ${item.is_long ? 'bg-green-500' : 'bg-red-500'}`}></div>
                       <span className="font-bold text-lg text-gray-900">{item.symbol}</span>
+                      {item.is_closed && (
+                        <span className="px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded-full">Закрыта</span>
+                      )}
                     </div>
                     
                     <button

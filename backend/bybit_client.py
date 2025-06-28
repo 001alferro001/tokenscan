@@ -15,6 +15,8 @@ class BybitWebSocketClient:
         self.connection_manager = connection_manager
         self.websocket = None
         self.is_running = False
+        self.ping_task = None
+        self.last_message_time = None
         
         # Bybit WebSocket URLs
         self.ws_url = "wss://stream.bybit.com/v5/public/linear"
@@ -22,6 +24,10 @@ class BybitWebSocketClient:
         
         # Настраиваемый интервал обновления
         self.update_interval = alert_manager.settings.get('update_interval_seconds', 1)
+        
+        # Статистика для отладки
+        self.messages_received = 0
+        self.last_stats_log = datetime.utcnow()
 
     async def start(self):
         """Запуск WebSocket соединения"""
@@ -43,6 +49,8 @@ class BybitWebSocketClient:
     async def stop(self):
         """Остановка WebSocket соединения"""
         self.is_running = False
+        if self.ping_task:
+            self.ping_task.cancel()
         if self.websocket:
             await self.websocket.close()
 
@@ -220,10 +228,18 @@ class BybitWebSocketClient:
         return groups
 
     async def connect_websocket(self):
-        """Подключение к WebSocket"""
+        """Подключение к WebSocket с улучшенной обработкой"""
         try:
-            async with websockets.connect(self.ws_url) as websocket:
+            logger.info(f"Подключение к WebSocket: {self.ws_url}")
+            
+            async with websockets.connect(
+                self.ws_url,
+                ping_interval=30,  # Ping каждые 30 секунд
+                ping_timeout=10,   # Таймаут ping 10 секунд
+                close_timeout=10   # Таймаут закрытия 10 секунд
+            ) as websocket:
                 self.websocket = websocket
+                self.last_message_time = datetime.utcnow()
                 
                 # Подписываемся на kline данные для всех торговых пар
                 subscribe_message = {
@@ -232,15 +248,19 @@ class BybitWebSocketClient:
                 }
                 
                 await websocket.send(json.dumps(subscribe_message))
-                logger.info(f"Подписка на {len(self.trading_pairs)} торговых пар с интервалом {self.update_interval}с")
+                logger.info(f"Подписка на {len(self.trading_pairs)} торговых пар")
                 
                 # Отправляем статус подключения
                 await self.connection_manager.broadcast_json({
                     "type": "connection_status",
                     "status": "connected",
                     "pairs_count": len(self.trading_pairs),
-                    "update_interval": self.update_interval
+                    "update_interval": self.update_interval,
+                    "timestamp": datetime.utcnow().isoformat()
                 })
+                
+                # Запускаем задачу мониторинга соединения
+                self.ping_task = asyncio.create_task(self._monitor_connection())
                 
                 # Обработка входящих сообщений
                 async for message in websocket:
@@ -248,12 +268,16 @@ class BybitWebSocketClient:
                         break
                         
                     try:
+                        self.last_message_time = datetime.utcnow()
+                        self.messages_received += 1
+                        
                         data = json.loads(message)
                         await self.handle_message(data)
                         
-                        # Добавляем задержку согласно настройкам
-                        if self.update_interval > 1:
-                            await asyncio.sleep(self.update_interval - 1)
+                        # Логируем статистику каждые 5 минут
+                        if (datetime.utcnow() - self.last_stats_log).total_seconds() > 300:
+                            logger.info(f"WebSocket статистика: {self.messages_received} сообщений получено")
+                            self.last_stats_log = datetime.utcnow()
                             
                     except Exception as e:
                         logger.error(f"Ошибка обработки сообщения: {e}")
@@ -261,10 +285,51 @@ class BybitWebSocketClient:
         except Exception as e:
             logger.error(f"Ошибка WebSocket соединения: {e}")
             raise
+        finally:
+            if self.ping_task:
+                self.ping_task.cancel()
+
+    async def _monitor_connection(self):
+        """Мониторинг состояния WebSocket соединения"""
+        while self.is_running:
+            try:
+                await asyncio.sleep(60)  # Проверяем каждую минуту
+                
+                if self.last_message_time:
+                    time_since_last_message = (datetime.utcnow() - self.last_message_time).total_seconds()
+                    
+                    # Если нет сообщений более 2 минут, это проблема
+                    if time_since_last_message > 120:
+                        logger.warning(f"Нет сообщений от WebSocket уже {time_since_last_message:.0f} секунд")
+                        
+                        # Отправляем статус проблемы
+                        await self.connection_manager.broadcast_json({
+                            "type": "connection_status",
+                            "status": "disconnected",
+                            "reason": "No messages received",
+                            "timestamp": datetime.utcnow().isoformat()
+                        })
+                        break
+                        
+            except Exception as e:
+                logger.error(f"Ошибка мониторинга соединения: {e}")
 
     async def handle_message(self, data: Dict):
         """Обработка входящих WebSocket сообщений"""
         try:
+            # Обрабатываем системные сообщения
+            if 'success' in data:
+                if data['success']:
+                    logger.info("Успешная подписка на WebSocket")
+                else:
+                    logger.error(f"Ошибка подписки WebSocket: {data}")
+                return
+                
+            if 'op' in data:
+                logger.debug(f"Системное сообщение WebSocket: {data}")
+                return
+            
+            # Обрабатываем данные свечей
             if data.get('topic', '').startswith('kline.1.'):
                 kline_data = data['data'][0]
                 symbol = data['topic'].split('.')[-1]
@@ -291,10 +356,11 @@ class BybitWebSocketClient:
                     "type": "kline_update",
                     "symbol": symbol,
                     "data": formatted_data,
-                    "timestamp": datetime.utcnow().isoformat()  # Используем UTC время
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "is_closed": kline_data.get('confirm', False)  # Bybit отправляет confirm=true для закрытых свечей
                 }
                 
-                # Добавляем алерты, если они есть (уже сериализованные)
+                # Добавляем алерты, если они есть
                 if alerts:
                     message["alerts"] = alerts
                 
