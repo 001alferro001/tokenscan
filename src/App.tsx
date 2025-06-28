@@ -140,6 +140,11 @@ const AppContent: React.FC = () => {
   const [lastDataUpdate, setLastDataUpdate] = useState<Date | null>(null);
   const [reconnectAttempts, setReconnectAttempts] = useState(0);
   const [dataActivity, setDataActivity] = useState<'active' | 'idle' | 'error'>('idle');
+  const [connectionInfo, setConnectionInfo] = useState<{
+    subscribedCount: number;
+    failedCount: number;
+    subscribedPairs: string[];
+  }>({ subscribedCount: 0, failedCount: 0, subscribedPairs: [] });
   
   // Refs для WebSocket и интервалов
   const wsRef = useRef<WebSocket | null>(null);
@@ -371,7 +376,7 @@ const AppContent: React.FC = () => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}/ws`;
     
-    console.log('Подключение к WebSocket:', wsUrl);
+    console.log('🔗 Подключение к WebSocket:', wsUrl);
     setConnectionStatus('connecting');
     
     const ws = new WebSocket(wsUrl);
@@ -381,7 +386,7 @@ const AppContent: React.FC = () => {
       setConnectionStatus('connected');
       setReconnectAttempts(0);
       updateDataActivity('active');
-      console.log('WebSocket подключен');
+      console.log('✅ WebSocket подключен');
       
       // Отправляем ping для поддержания соединения
       const pingInterval = setInterval(() => {
@@ -406,14 +411,14 @@ const AppContent: React.FC = () => {
     };
 
     ws.onclose = (event) => {
-      console.log('WebSocket отключен:', event.code, event.reason);
+      console.log('❌ WebSocket отключен:', event.code, event.reason);
       setConnectionStatus('disconnected');
       updateDataActivity('error');
       
       // Автоматическое переподключение с экспоненциальной задержкой
       if (wsRef.current === ws) { // Проверяем, что это текущее соединение
         const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000); // Максимум 30 секунд
-        console.log(`Переподключение через ${delay}мс (попытка ${reconnectAttempts + 1})`);
+        console.log(`🔄 Переподключение через ${delay}мс (попытка ${reconnectAttempts + 1})`);
         
         reconnectTimeoutRef.current = setTimeout(() => {
           setReconnectAttempts(prev => prev + 1);
@@ -423,7 +428,7 @@ const AppContent: React.FC = () => {
     };
 
     ws.onerror = (error) => {
-      console.error('WebSocket ошибка:', error);
+      console.error('❌ WebSocket ошибка:', error);
       setConnectionStatus('disconnected');
       updateDataActivity('error');
     };
@@ -531,7 +536,22 @@ const AppContent: React.FC = () => {
 
       case 'connection_status':
         setConnectionStatus(data.status === 'connected' ? 'connected' : 'disconnected');
-        console.log('Статус подключения:', data.status, 'Подписано пар:', data.subscribed_count || data.pairs_count);
+        
+        // Обновляем информацию о подключении
+        if (data.subscribed_count !== undefined) {
+          setConnectionInfo({
+            subscribedCount: data.subscribed_count || 0,
+            failedCount: data.failed_count || 0,
+            subscribedPairs: data.subscribed_pairs || []
+          });
+        }
+        
+        console.log('📊 Статус подключения:', {
+          status: data.status,
+          subscribedCount: data.subscribed_count,
+          failedCount: data.failed_count,
+          totalPairs: data.pairs_count
+        });
         break;
 
       case 'watchlist_updated':
@@ -556,7 +576,7 @@ const AppContent: React.FC = () => {
         break;
 
       default:
-        console.log('Неизвестный тип сообщения WebSocket:', data.type);
+        console.log('❓ Неизвестный тип сообщения WebSocket:', data.type);
     }
   };
 
@@ -648,7 +668,7 @@ const AppContent: React.FC = () => {
     if (!timeSync) return { color: 'text-gray-500', text: 'Нет данных', icon: '⚪' };
     
     if (!timeSync.is_synced) {
-      return { color: 'text-yellow-500', text: 'Отключена', icon: '🟡' };
+      return { color: 'text-yellow-500', text: 'Не синхронизировано', icon: '🟡' };
     }
     
     return { color: 'text-green-500', text: 'Синхронизировано', icon: '🟢' };
@@ -700,7 +720,7 @@ const AppContent: React.FC = () => {
   const getConnectionStatusText = () => {
     switch (connectionStatus) {
       case 'connected':
-        return 'Подключено';
+        return `Подключено (${connectionInfo.subscribedCount}/${watchlist.length})`;
       case 'connecting':
         return 'Подключение...';
       case 'disconnected':
@@ -945,6 +965,11 @@ const AppContent: React.FC = () => {
                     • {formatLocalTime(lastDataUpdate)}
                   </span>
                 )}
+                {connectionInfo.subscribedCount > 0 && (
+                  <span className="text-xs text-gray-400">
+                    • Подписано: {connectionInfo.subscribedCount}
+                  </span>
+                )}
               </div>
             </div>
             
@@ -1158,7 +1183,7 @@ const AppContent: React.FC = () => {
               <h2 className="text-2xl font-bold text-gray-900">Потоковые данные</h2>
               <div className="flex items-center space-x-4">
                 <span className="text-sm text-gray-600">
-                  Обновлений: {streamData.length} / Пар в watchlist: {watchlist.length}
+                  Обновлений: {streamData.length} / Пар в watchlist: {watchlist.length} / Подписано: {connectionInfo.subscribedCount}
                 </span>
                 <button
                   onClick={() => connectWebSocket()}
