@@ -15,7 +15,9 @@ import {
   Zap,
   CheckCircle,
   AlertCircle,
-  XCircle
+  XCircle,
+  Database,
+  Info
 } from 'lucide-react';
 import ChartModal from './components/ChartModal';
 import SmartMoneyChartModal from './components/SmartMoneyChartModal';
@@ -53,6 +55,23 @@ interface WatchlistItem {
   historical_price?: number;
   created_at: string;
   updated_at: string;
+  data_info?: {
+    total_candles: number;
+    expected_candles: number;
+    closed_candles: number;
+    integrity_percentage: number;
+    quality: string;
+    quality_text: string;
+    first_candle_time?: string;
+    last_candle_time?: string;
+    missing_ranges: Array<{
+      start_unix: number;
+      end_unix: number;
+      duration_minutes: number;
+    }>;
+    missing_count: number;
+    has_gaps: boolean;
+  };
 }
 
 interface StreamData {
@@ -803,6 +822,64 @@ const App: React.FC = () => {
     }
   };
 
+  const getDataQualityIcon = (quality: string) => {
+    switch (quality) {
+      case 'excellent':
+        return <CheckCircle className="w-4 h-4 text-green-500" />;
+      case 'good':
+        return <CheckCircle className="w-4 h-4 text-blue-500" />;
+      case 'fair':
+        return <AlertCircle className="w-4 h-4 text-yellow-500" />;
+      case 'poor':
+        return <AlertCircle className="w-4 h-4 text-orange-500" />;
+      case 'critical':
+        return <XCircle className="w-4 h-4 text-red-500" />;
+      default:
+        return <Database className="w-4 h-4 text-gray-400" />;
+    }
+  };
+
+  const getDataQualityColor = (quality: string) => {
+    switch (quality) {
+      case 'excellent':
+        return 'text-green-600';
+      case 'good':
+        return 'text-blue-600';
+      case 'fair':
+        return 'text-yellow-600';
+      case 'poor':
+        return 'text-orange-600';
+      case 'critical':
+        return 'text-red-600';
+      default:
+        return 'text-gray-600';
+    }
+  };
+
+  const formatMissingRanges = (ranges: Array<{start_unix: number, end_unix: number, duration_minutes: number}>) => {
+    if (!ranges || ranges.length === 0) return 'Нет пропусков';
+    
+    if (ranges.length === 1) {
+      const range = ranges[0];
+      const startTime = new Date(range.start_unix).toLocaleString('ru-RU', {
+        day: '2-digit',
+        month: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+      const endTime = new Date(range.end_unix).toLocaleString('ru-RU', {
+        day: '2-digit',
+        month: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+      return `${startTime} - ${endTime} (${range.duration_minutes}мин)`;
+    }
+    
+    const totalMinutes = ranges.reduce((sum, range) => sum + range.duration_minutes, 0);
+    return `${ranges.length} пропусков (${totalMinutes}мин)`;
+  };
+
   const renderAlertCard = (alert: Alert) => (
     <div 
       key={alert.id} 
@@ -948,6 +1025,15 @@ const App: React.FC = () => {
           ) : (
             <XCircle className="w-4 h-4 text-red-500" title="Подписка неактивна" />
           )}
+          {/* Показываем качество данных */}
+          {item.data_info && (
+            <div className="flex items-center space-x-1" title={`Качество данных: ${item.data_info.quality_text}`}>
+              {getDataQualityIcon(item.data_info.quality)}
+              <span className={`text-xs ${getDataQualityColor(item.data_info.quality)}`}>
+                {item.data_info.integrity_percentage}%
+              </span>
+            </div>
+          )}
         </div>
         
         <button
@@ -960,7 +1046,7 @@ const App: React.FC = () => {
       </div>
 
       {item.price_drop_percentage && (
-        <div className="grid grid-cols-2 gap-4 text-sm">
+        <div className="grid grid-cols-2 gap-4 text-sm mb-3">
           <div>
             <span className="text-gray-600">Падение цены:</span>
             <div className="font-semibold text-red-600">{item.price_drop_percentage.toFixed(2)}%</div>
@@ -970,6 +1056,43 @@ const App: React.FC = () => {
             <div>
               <span className="text-gray-600">Текущая цена:</span>
               <div className="font-mono text-gray-900">${item.current_price.toFixed(8)}</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Информация о данных */}
+      {item.data_info && (
+        <div className="mt-3 pt-3 border-t border-gray-200">
+          <div className="grid grid-cols-2 gap-4 text-xs">
+            <div>
+              <span className="text-gray-600">Свечей загружено:</span>
+              <div className={`font-semibold ${getDataQualityColor(item.data_info.quality)}`}>
+                {item.data_info.total_candles}/{item.data_info.expected_candles}
+              </div>
+            </div>
+            <div>
+              <span className="text-gray-600">Закрытых свечей:</span>
+              <div className="text-gray-900">{item.data_info.closed_candles}</div>
+            </div>
+          </div>
+          
+          {item.data_info.first_candle_time && item.data_info.last_candle_time && (
+            <div className="mt-2 text-xs text-gray-500">
+              <div>Первая: {formatTime(item.data_info.first_candle_time)}</div>
+              <div>Последняя: {formatTime(item.data_info.last_candle_time)}</div>
+            </div>
+          )}
+          
+          {item.data_info.has_gaps && (
+            <div className="mt-2 p-2 bg-yellow-50 rounded text-xs">
+              <div className="flex items-center space-x-1 text-yellow-700">
+                <Info className="w-3 h-3" />
+                <span className="font-medium">Пропуски данных:</span>
+              </div>
+              <div className="text-yellow-600 mt-1">
+                {formatMissingRanges(item.data_info.missing_ranges)}
+              </div>
             </div>
           )}
         </div>
