@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from datetime import datetime, timedelta
@@ -289,8 +289,169 @@ class DatabaseManager:
         except:
             return ""
 
+    # 🆕 НОВЫЕ методы для интеллектуальной проверки целостности данных
+    async def get_missing_data_summary(self, symbols: List[str], hours: int) -> Dict:
+        """Получить сводку по недостающим данным для всех символов"""
+        try:
+            cursor = self.connection.cursor()
+            
+            # Определяем временные границы в UNIX формате
+            current_time_unix = int(datetime.utcnow().timestamp() * 1000)
+            current_minute_unix = (current_time_unix // 60000) * 60000
+            end_time_unix = current_minute_unix
+            start_time_unix = end_time_unix - (hours * 60 * 60 * 1000)
+            
+            # Исключаем последние 3 минуты для стабильности
+            cutoff_time_unix = end_time_unix - (3 * 60 * 1000)
+            
+            # Генерируем ожидаемые временные метки
+            expected_count = (cutoff_time_unix - start_time_unix) // 60000
+            
+            symbols_details = []
+            symbols_with_good_data = 0
+            symbols_need_loading = 0
+            quality_distribution = {'excellent': 0, 'good': 0, 'fair': 0, 'poor': 0, 'critical': 0}
+            
+            for symbol in symbols:
+                # Получаем существующие данные для символа
+                cursor.execute("""
+                    SELECT COUNT(*) FROM kline_data 
+                    WHERE symbol = %s AND open_time_unix >= %s AND open_time_unix < %s
+                """, (symbol, start_time_unix, cutoff_time_unix))
+                
+                existing_count = cursor.fetchone()[0]
+                integrity_percentage = (existing_count / expected_count * 100) if expected_count > 0 else 100
+                
+                # Определяем качество данных
+                if integrity_percentage >= 95:
+                    quality = 'excellent'
+                    needs_loading = False
+                    symbols_with_good_data += 1
+                elif integrity_percentage >= 85:
+                    quality = 'good'
+                    needs_loading = False
+                    symbols_with_good_data += 1
+                elif integrity_percentage >= 70:
+                    quality = 'fair'
+                    needs_loading = True
+                    symbols_need_loading += 1
+                elif integrity_percentage >= 50:
+                    quality = 'poor'
+                    needs_loading = True
+                    symbols_need_loading += 1
+                else:
+                    quality = 'critical'
+                    needs_loading = True
+                    symbols_need_loading += 1
+                
+                quality_distribution[quality] += 1
+                
+                symbols_details.append({
+                    'symbol': symbol,
+                    'existing_count': existing_count,
+                    'expected_count': expected_count,
+                    'integrity_percentage': integrity_percentage,
+                    'quality': quality,
+                    'needs_loading': needs_loading
+                })
+            
+            cursor.close()
+            
+            return {
+                'total_symbols': len(symbols),
+                'symbols_with_good_data': symbols_with_good_data,
+                'symbols_need_loading': symbols_need_loading,
+                'quality_distribution': quality_distribution,
+                'symbols_details': symbols_details,
+                'expected_candles_per_symbol': expected_count,
+                'time_range': {
+                    'start_unix': start_time_unix,
+                    'end_unix': cutoff_time_unix,
+                    'hours': hours
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Ошибка получения сводки по недостающим данным: {e}")
+            return {
+                'total_symbols': len(symbols),
+                'symbols_with_good_data': 0,
+                'symbols_need_loading': len(symbols),
+                'quality_distribution': {'critical': len(symbols)},
+                'symbols_details': [],
+                'expected_candles_per_symbol': 0
+            }
+
+    async def optimize_missing_data_loading(self, symbol: str, hours: int) -> List[Dict]:
+        """Оптимизированный план загрузки недостающих данных для символа"""
+        try:
+            cursor = self.connection.cursor()
+            
+            # Определяем временные границы
+            current_time_unix = int(datetime.utcnow().timestamp() * 1000)
+            current_minute_unix = (current_time_unix // 60000) * 60000
+            end_time_unix = current_minute_unix
+            start_time_unix = end_time_unix - (hours * 60 * 60 * 1000)
+            cutoff_time_unix = end_time_unix - (3 * 60 * 1000)
+            
+            # Получаем существующие временные метки
+            cursor.execute("""
+                SELECT open_time_unix FROM kline_data 
+                WHERE symbol = %s AND open_time_unix >= %s AND open_time_unix < %s
+                ORDER BY open_time_unix
+            """, (symbol, start_time_unix, cutoff_time_unix))
+            
+            existing_times = set(row[0] for row in cursor.fetchall())
+            cursor.close()
+            
+            # Генерируем ожидаемые временные метки
+            expected_times = []
+            current_time_ms = start_time_unix
+            while current_time_ms < cutoff_time_unix:
+                expected_times.append(current_time_ms)
+                current_time_ms += 60000
+            
+            # Находим недостающие периоды
+            missing_times = [t for t in expected_times if t not in existing_times]
+            
+            if not missing_times:
+                return []
+            
+            # Группируем недостающие времена в непрерывные периоды
+            loading_periods = []
+            if missing_times:
+                period_start = missing_times[0]
+                period_end = missing_times[0] + 60000
+                
+                for i in range(1, len(missing_times)):
+                    if missing_times[i] == missing_times[i-1] + 60000:
+                        # Продолжаем текущий период
+                        period_end = missing_times[i] + 60000
+                    else:
+                        # Завершаем текущий период и начинаем новый
+                        loading_periods.append({
+                            'start_unix': period_start,
+                            'end_unix': period_end,
+                            'duration_minutes': (period_end - period_start) // 60000
+                        })
+                        period_start = missing_times[i]
+                        period_end = missing_times[i] + 60000
+                
+                # Добавляем последний период
+                loading_periods.append({
+                    'start_unix': period_start,
+                    'end_unix': period_end,
+                    'duration_minutes': (period_end - period_start) // 60000
+                })
+            
+            return loading_periods
+            
+        except Exception as e:
+            logger.error(f"Ошибка оптимизации плана загрузки для {symbol}: {e}")
+            return []
+
     async def check_data_integrity(self, symbol: str, hours: int) -> Dict:
-        """УЛУЧШЕННАЯ проверка целостности исторических данных с детальным анализом"""
+        """Проверка целостности исторических данных с UNIX временем"""
         try:
             cursor = self.connection.cursor()
             
@@ -309,19 +470,6 @@ class DatabaseManager:
             """, (symbol, start_time_unix, end_time_unix))
             
             existing_times = [row[0] for row in cursor.fetchall()]
-            
-            # Получаем статистику по данным
-            cursor.execute("""
-                SELECT 
-                    COUNT(*) as total_count,
-                    MIN(open_time_unix) as min_time,
-                    MAX(open_time_unix) as max_time,
-                    COUNT(DISTINCT DATE_TRUNC('hour', TO_TIMESTAMP(open_time_unix/1000))) as hours_with_data
-                FROM kline_data 
-                WHERE symbol = %s AND open_time_unix >= %s AND open_time_unix < %s
-            """, (symbol, start_time_unix, end_time_unix))
-            
-            stats = cursor.fetchone()
             cursor.close()
             
             # Генерируем ожидаемые временные метки (каждую минуту с нулями)
@@ -334,206 +482,30 @@ class DatabaseManager:
             # Находим недостающие периоды
             missing_times = [t for t in expected_times if t not in existing_times]
             
-            # Исключаем самые последние 2-3 минуты (могут еще не прийти)
+            # Исключаем самые последние 2-3 минуты
             cutoff_time_unix = end_time_unix - (3 * 60 * 1000)
             missing_times = [t for t in missing_times if t < cutoff_time_unix]
             
             total_expected = len([t for t in expected_times if t < cutoff_time_unix])
             total_existing = len([t for t in existing_times if t < cutoff_time_unix])
             
-            # Анализируем пропуски по периодам
-            missing_periods = self._analyze_missing_periods(missing_times)
-            
-            integrity_percentage = (total_existing / total_expected) * 100 if total_expected > 0 else 100
-            
-            result = {
-                'symbol': symbol,
+            return {
                 'total_expected': total_expected,
                 'total_existing': total_existing,
                 'missing_count': len(missing_times),
-                'missing_periods': missing_periods,
-                'integrity_percentage': integrity_percentage,
-                'hours_requested': hours,
-                'time_range': {
-                    'start_unix': start_time_unix,
-                    'end_unix': end_time_unix,
-                    'start_readable': self._unix_to_readable(start_time_unix),
-                    'end_readable': self._unix_to_readable(end_time_unix)
-                },
-                'stats': {
-                    'total_count': stats[0] if stats else 0,
-                    'min_time': stats[1] if stats and stats[1] else None,
-                    'max_time': stats[2] if stats and stats[2] else None,
-                    'hours_with_data': stats[3] if stats else 0
-                },
-                'needs_loading': integrity_percentage < 95 or total_existing < 60,
-                'quality_assessment': self._assess_data_quality(integrity_percentage, total_existing, hours)
+                'missing_periods': missing_times,
+                'integrity_percentage': (total_existing / total_expected) * 100 if total_expected > 0 else 100
             }
-            
-            return result
             
         except Exception as e:
             logger.error(f"Ошибка проверки целостности данных для {symbol}: {e}")
             return {
-                'symbol': symbol,
                 'total_expected': 0,
                 'total_existing': 0,
                 'missing_count': 0,
                 'missing_periods': [],
-                'integrity_percentage': 0,
-                'needs_loading': True,
-                'quality_assessment': 'error',
-                'error': str(e)
+                'integrity_percentage': 0
             }
-
-    def _analyze_missing_periods(self, missing_times: List[int]) -> List[Dict]:
-        """Анализ недостающих периодов для оптимизации загрузки"""
-        if not missing_times:
-            return []
-        
-        periods = []
-        current_start = missing_times[0]
-        current_end = missing_times[0]
-        
-        for i in range(1, len(missing_times)):
-            # Если следующая временная метка идет подряд (разница 1 минута)
-            if missing_times[i] - current_end == 60000:
-                current_end = missing_times[i]
-            else:
-                # Завершаем текущий период и начинаем новый
-                periods.append({
-                    'start_unix': current_start,
-                    'end_unix': current_end + 60000,  # +1 минута для включения конца
-                    'start_readable': self._unix_to_readable(current_start),
-                    'end_readable': self._unix_to_readable(current_end),
-                    'duration_minutes': (current_end - current_start) // 60000 + 1
-                })
-                current_start = missing_times[i]
-                current_end = missing_times[i]
-        
-        # Добавляем последний период
-        periods.append({
-            'start_unix': current_start,
-            'end_unix': current_end + 60000,
-            'start_readable': self._unix_to_readable(current_start),
-            'end_readable': self._unix_to_readable(current_end),
-            'duration_minutes': (current_end - current_start) // 60000 + 1
-        })
-        
-        return periods
-
-    def _assess_data_quality(self, integrity_percentage: float, total_existing: int, hours_requested: int) -> str:
-        """Оценка качества данных"""
-        if integrity_percentage >= 98:
-            return 'excellent'
-        elif integrity_percentage >= 90:
-            return 'good'
-        elif integrity_percentage >= 70:
-            return 'fair'
-        elif integrity_percentage >= 50:
-            return 'poor'
-        else:
-            return 'critical'
-
-    async def get_missing_data_summary(self, symbols: List[str], hours: int) -> Dict:
-        """Получение сводки по недостающим данным для всех символов"""
-        try:
-            summary = {
-                'total_symbols': len(symbols),
-                'symbols_with_good_data': 0,
-                'symbols_need_loading': 0,
-                'total_missing_periods': 0,
-                'quality_distribution': {
-                    'excellent': 0,
-                    'good': 0,
-                    'fair': 0,
-                    'poor': 0,
-                    'critical': 0
-                },
-                'symbols_details': []
-            }
-            
-            for symbol in symbols:
-                integrity_info = await self.check_data_integrity(symbol, hours)
-                
-                summary['symbols_details'].append({
-                    'symbol': symbol,
-                    'integrity_percentage': integrity_info['integrity_percentage'],
-                    'missing_count': integrity_info['missing_count'],
-                    'needs_loading': integrity_info['needs_loading'],
-                    'quality': integrity_info['quality_assessment']
-                })
-                
-                if integrity_info['needs_loading']:
-                    summary['symbols_need_loading'] += 1
-                else:
-                    summary['symbols_with_good_data'] += 1
-                
-                summary['total_missing_periods'] += len(integrity_info.get('missing_periods', []))
-                
-                quality = integrity_info['quality_assessment']
-                if quality in summary['quality_distribution']:
-                    summary['quality_distribution'][quality] += 1
-            
-            return summary
-            
-        except Exception as e:
-            logger.error(f"Ошибка получения сводки недостающих данных: {e}")
-            return {
-                'total_symbols': len(symbols),
-                'symbols_with_good_data': 0,
-                'symbols_need_loading': len(symbols),
-                'error': str(e)
-            }
-
-    async def optimize_missing_data_loading(self, symbol: str, hours: int) -> List[Dict]:
-        """Оптимизированный план загрузки недостающих данных"""
-        try:
-            integrity_info = await self.check_data_integrity(symbol, hours)
-            
-            if not integrity_info['needs_loading']:
-                return []
-            
-            missing_periods = integrity_info.get('missing_periods', [])
-            
-            # Объединяем близкие периоды для эффективной загрузки
-            optimized_periods = []
-            
-            if not missing_periods:
-                # Если нет детальной информации о периодах, загружаем весь диапазон
-                current_time_unix = int(datetime.utcnow().timestamp() * 1000)
-                end_time_unix = (current_time_unix // 60000) * 60000
-                start_time_unix = end_time_unix - (hours * 60 * 60 * 1000)
-                
-                optimized_periods.append({
-                    'start_unix': start_time_unix,
-                    'end_unix': end_time_unix,
-                    'duration_minutes': hours * 60,
-                    'reason': 'full_reload'
-                })
-            else:
-                # Объединяем периоды, которые близко расположены
-                for period in missing_periods:
-                    if not optimized_periods:
-                        optimized_periods.append(period)
-                        continue
-                    
-                    last_period = optimized_periods[-1]
-                    gap_minutes = (period['start_unix'] - last_period['end_unix']) // 60000
-                    
-                    # Если разрыв меньше 30 минут, объединяем периоды
-                    if gap_minutes <= 30:
-                        last_period['end_unix'] = period['end_unix']
-                        last_period['duration_minutes'] = (last_period['end_unix'] - last_period['start_unix']) // 60000
-                        last_period['reason'] = 'merged'
-                    else:
-                        optimized_periods.append(period)
-            
-            return optimized_periods
-            
-        except Exception as e:
-            logger.error(f"Ошибка оптимизации загрузки данных для {symbol}: {e}")
-            return []
 
     async def get_watchlist(self) -> List[str]:
         """Получить список активных торговых пар"""
@@ -725,38 +697,20 @@ class DatabaseManager:
         try:
             cursor = self.connection.cursor()
             
-            # ИСПРАВЛЯЕМ: Правильно обрабатываем временные метки
-            current_time_unix = int(datetime.utcnow().timestamp() * 1000)
-            
             # Преобразуем datetime в UNIX время
-            if isinstance(alert_data['timestamp'], datetime):
-                alert_timestamp_unix = int(alert_data['timestamp'].timestamp() * 1000)
-            else:
-                # Если уже строка, парсим её
-                try:
-                    dt = datetime.fromisoformat(str(alert_data['timestamp']).replace('Z', '+00:00'))
-                    alert_timestamp_unix = int(dt.timestamp() * 1000)
-                except:
-                    alert_timestamp_unix = current_time_unix
-            
+            alert_timestamp_unix = int(alert_data['timestamp'].timestamp() * 1000) if isinstance(alert_data['timestamp'], datetime) else int(alert_data['timestamp'])
             close_timestamp_unix = None
             if alert_data.get('close_timestamp'):
                 if isinstance(alert_data['close_timestamp'], datetime):
                     close_timestamp_unix = int(alert_data['close_timestamp'].timestamp() * 1000)
                 else:
-                    try:
-                        dt = datetime.fromisoformat(str(alert_data['close_timestamp']).replace('Z', '+00:00'))
-                        close_timestamp_unix = int(dt.timestamp() * 1000)
-                    except:
-                        close_timestamp_unix = alert_timestamp_unix
+                    close_timestamp_unix = int(alert_data['close_timestamp'])
             
             # Создаем читаемые временные метки
             alert_timestamp_readable = self._unix_to_readable(alert_timestamp_unix)
             close_timestamp_readable = self._unix_to_readable(close_timestamp_unix) if close_timestamp_unix else None
+            current_time_unix = int(datetime.utcnow().timestamp() * 1000)
             created_at_readable = self._unix_to_readable(current_time_unix)
-            
-            # Логируем для отладки
-            logger.info(f"💾 Сохранение алерта {alert_data['symbol']}: alert_timestamp_unix={alert_timestamp_unix}, close_timestamp_unix={close_timestamp_unix}")
             
             # Подготавливаем JSON данные (исправляем проблему с парсингом)
             candle_data_json = None
@@ -823,18 +777,17 @@ class DatabaseManager:
                 preliminary_alert_json,
                 imbalance_data_json,
                 order_book_snapshot_json,
-                datetime.utcfromtimestamp(alert_timestamp_unix / 1000),
-                datetime.utcfromtimestamp(close_timestamp_unix / 1000) if close_timestamp_unix else None
+                alert_data['timestamp'] if isinstance(alert_data['timestamp'], datetime) else datetime.utcfromtimestamp(alert_timestamp_unix / 1000),
+                alert_data.get('close_timestamp') if isinstance(alert_data.get('close_timestamp'), datetime) else (datetime.utcfromtimestamp(close_timestamp_unix / 1000) if close_timestamp_unix else None)
             ))
 
             alert_id = cursor.fetchone()[0]
             cursor.close()
             
-            logger.info(f"✅ Алерт сохранен в БД с ID {alert_id}")
             return alert_id
 
         except Exception as e:
-            logger.error(f"❌ Ошибка сохранения алерта: {e}")
+            logger.error(f"Ошибка сохранения алерта: {e}")
             return None
 
     async def update_alert(self, alert_id: int, alert_data: Dict):
@@ -1100,9 +1053,18 @@ class DatabaseManager:
             # Определяем временные границы в UNIX формате
             if alert_time:
                 try:
-                    alert_dt = datetime.fromisoformat(alert_time.replace('Z', '+00:00'))
+                    # Пробуем разные форматы времени
+                    if alert_time.endswith('Z'):
+                        alert_dt = datetime.fromisoformat(alert_time.replace('Z', '+00:00'))
+                    elif '+' in alert_time or alert_time.endswith('UTC'):
+                        alert_dt = datetime.fromisoformat(alert_time.replace('UTC', '').strip())
+                    else:
+                        alert_dt = datetime.fromisoformat(alert_time)
+                    
                     end_time_unix = int(alert_dt.timestamp() * 1000)
-                except:
+                    logger.debug(f"Парсинг времени алерта: {alert_time} -> {end_time_unix}")
+                except Exception as e:
+                    logger.warning(f"Ошибка парсинга времени алерта '{alert_time}': {e}, используем текущее время")
                     end_time_unix = int(datetime.utcnow().timestamp() * 1000)
             else:
                 end_time_unix = int(datetime.utcnow().timestamp() * 1000)
@@ -1136,7 +1098,7 @@ class DatabaseManager:
                     'is_long': row['is_long']
                 })
 
-            logger.info(f"Получено {len(chart_data)} свечей для {symbol} за период {hours}ч")
+            logger.info(f"Получено {len(chart_data)} свечей для {symbol} за период {hours}ч (время алерта: {alert_time})")
             return chart_data
 
         except Exception as e:

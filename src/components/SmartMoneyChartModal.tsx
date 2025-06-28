@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, ExternalLink, Download, Info } from 'lucide-react';
+import { X, ExternalLink, Download, Clock, Globe, Info } from 'lucide-react';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -17,9 +17,6 @@ import { Chart } from 'react-chartjs-2';
 import 'chartjs-adapter-date-fns';
 import annotationPlugin from 'chartjs-plugin-annotation';
 import { CandlestickController, CandlestickElement } from 'chartjs-chart-financial';
-import TimeZoneToggle from './TimeZoneToggle';
-import { useTimeZone } from '../contexts/TimeZoneContext';
-import { formatTime, normalizeTimestamp, formatChartTime } from '../utils/timeUtils';
 
 ChartJS.register(
   CategoryScale,
@@ -69,9 +66,8 @@ const SmartMoneyChartModal: React.FC<SmartMoneyChartModalProps> = ({ alert, onCl
   const [chartData, setChartData] = useState<ChartData[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [timeZone, setTimeZone] = useState<'UTC' | 'local'>('local');
   const [showTimestampInfo, setShowTimestampInfo] = useState(false);
-  
-  const { timeZone } = useTimeZone();
 
   useEffect(() => {
     loadChartData();
@@ -82,13 +78,16 @@ const SmartMoneyChartModal: React.FC<SmartMoneyChartModalProps> = ({ alert, onCl
       setLoading(true);
       setError(null);
 
-      const response = await fetch(`/api/chart-data/${alert.symbol}?hours=1&alert_time=${alert.timestamp}`);
+      // Используем время алерта для загрузки данных (увеличиваем период до 2 часов)
+      const alertTime = alert.timestamp;
+      const response = await fetch(`/api/chart-data/${alert.symbol}?hours=2&alert_time=${alertTime}`);
       
       if (!response.ok) {
         throw new Error('Ошибка загрузки данных графика');
       }
 
       const data = await response.json();
+      console.log(`Загружено ${data.chart_data?.length || 0} свечей для ${alert.symbol}`);
       setChartData(data.chart_data || []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Неизвестная ошибка');
@@ -120,10 +119,60 @@ const SmartMoneyChartModal: React.FC<SmartMoneyChartModalProps> = ({ alert, onCl
     window.URL.revokeObjectURL(url);
   };
 
+  const formatTime = (timestamp: number | string, useUTC: boolean = false) => {
+    try {
+      const date = new Date(timestamp);
+      if (isNaN(date.getTime())) {
+        console.error('Некорректная временная метка:', timestamp);
+        return 'Некорректное время';
+      }
+      
+      const options: Intl.DateTimeFormatOptions = {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+      };
+
+      if (useUTC) {
+        options.timeZone = 'UTC';
+        return date.toLocaleString('ru-RU', options) + ' UTC';
+      } else {
+        return date.toLocaleString('ru-RU', options);
+      }
+    } catch (error) {
+      console.error('Ошибка форматирования времени:', error, timestamp);
+      return 'Ошибка времени';
+    }
+  };
+
+  const getTimezoneOffset = () => {
+    const offset = new Date().getTimezoneOffset();
+    const hours = Math.abs(Math.floor(offset / 60));
+    const minutes = Math.abs(offset % 60);
+    const sign = offset <= 0 ? '+' : '-';
+    return `UTC${sign}${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+  };
+
   const getChartConfig = () => {
     if (chartData.length === 0) return null;
 
-    const alertTime = normalizeTimestamp(alert.timestamp);
+    // Правильно обрабатываем время алерта
+    let alertTime: number;
+    try {
+      alertTime = new Date(alert.timestamp).getTime();
+      if (isNaN(alertTime)) {
+        // Если timestamp некорректный, используем текущее время
+        alertTime = Date.now();
+        console.warn('Некорректный timestamp алерта, используется текущее время');
+      }
+    } catch (error) {
+      alertTime = Date.now();
+      console.error('Ошибка парсинга времени алерта:', error);
+    }
 
     // Создаем свечные данные
     const candleData = chartData.map(d => ({
@@ -255,7 +304,7 @@ const SmartMoneyChartModal: React.FC<SmartMoneyChartModalProps> = ({ alert, onCl
       plugins: {
         title: {
           display: true,
-          text: `${alert.symbol} - Smart Money: ${alert.type.replace('_', ' ').toUpperCase()} - ${timeZone === 'UTC' ? 'UTC' : 'Локальное время'}`,
+          text: `${alert.symbol} - Smart Money: ${alert.type.replace('_', ' ').toUpperCase()} - ${timeZone === 'UTC' ? 'UTC' : `Локальное время (${getTimezoneOffset()})`}`,
           color: '#374151'
         },
         legend: {
@@ -266,7 +315,7 @@ const SmartMoneyChartModal: React.FC<SmartMoneyChartModalProps> = ({ alert, onCl
         tooltip: {
           callbacks: {
             title: (context) => {
-              return formatTime(context[0].parsed.x, timeZone);
+              return formatTime(context[0].parsed.x, timeZone === 'UTC');
             },
             label: (context) => {
               if (context.datasetIndex === 0) {
@@ -311,7 +360,19 @@ const SmartMoneyChartModal: React.FC<SmartMoneyChartModalProps> = ({ alert, onCl
           ticks: {
             color: '#6B7280',
             callback: function(value, index, values) {
-              return formatChartTime(Number(value), timeZone);
+              const date = new Date(value);
+              if (timeZone === 'UTC') {
+                return date.toLocaleTimeString('ru-RU', { 
+                  timeZone: 'UTC',
+                  hour: '2-digit', 
+                  minute: '2-digit' 
+                });
+              } else {
+                return date.toLocaleTimeString('ru-RU', { 
+                  hour: '2-digit', 
+                  minute: '2-digit' 
+                });
+              }
             }
           },
           grid: {
@@ -371,7 +432,7 @@ const SmartMoneyChartModal: React.FC<SmartMoneyChartModalProps> = ({ alert, onCl
           <div>
             <h2 className="text-2xl font-bold text-gray-900">{alert.symbol}</h2>
             <p className="text-gray-600">
-              Smart Money: {alert.type.replace('_', ' ').toUpperCase()} • {formatTime(alert.timestamp, timeZone)}
+              Smart Money: {alert.type.replace('_', ' ').toUpperCase()} • {formatTime(alert.timestamp, timeZone === 'UTC')}
             </p>
             <div className="flex items-center space-x-4 mt-2">
               <span className={`px-3 py-1 rounded-full text-sm font-medium ${
@@ -387,7 +448,30 @@ const SmartMoneyChartModal: React.FC<SmartMoneyChartModalProps> = ({ alert, onCl
           
           <div className="flex items-center space-x-3">
             {/* Переключатель часового пояса */}
-            <TimeZoneToggle />
+            <div className="flex items-center space-x-2 bg-gray-100 rounded-lg p-2">
+              <Clock className="w-4 h-4 text-gray-600" />
+              <button
+                onClick={() => setTimeZone('UTC')}
+                className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+                  timeZone === 'UTC' 
+                    ? 'bg-blue-600 text-white' 
+                    : 'bg-white text-gray-700 hover:bg-gray-50'
+                }`}
+              >
+                UTC
+              </button>
+              <button
+                onClick={() => setTimeZone('local')}
+                className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+                  timeZone === 'local' 
+                    ? 'bg-blue-600 text-white' 
+                    : 'bg-white text-gray-700 hover:bg-gray-50'
+                }`}
+              >
+                <Globe className="w-3 h-3 inline mr-1" />
+                Локальное
+              </button>
+            </div>
 
             {/* Информация о timestamp */}
             <button
