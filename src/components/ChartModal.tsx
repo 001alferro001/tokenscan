@@ -97,7 +97,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
       setLoading(true);
       setError(null);
 
-      // Используем время алерта для загрузки данных
+      // Используем время алерта для загрузки данных (увеличиваем период до 2 часов)
       const alertTime = alert.close_timestamp || alert.timestamp;
       const response = await fetch(`/api/chart-data/${alert.symbol}?hours=2&alert_time=${alertTime}`);
       
@@ -138,6 +138,19 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
     window.URL.revokeObjectURL(url);
   };
 
+  const formatUTCTime = (timestamp: number | string) => {
+    const date = new Date(timestamp);
+    return date.toLocaleString('ru-RU', {
+      timeZone: 'UTC',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    }) + ' UTC';
+  };
+
   const getChartConfig = () => {
     if (chartData.length === 0) return null;
 
@@ -156,7 +169,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
       c: d.close
     }));
 
-    // Данные объема
+    // Данные объема с повышенной прозрачностью
     const volumeData = chartData.map(d => ({
       x: d.timestamp,
       y: d.volume_usdt
@@ -281,8 +294,9 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
           label: 'Объем (USDT)',
           data: volumeData,
           type: 'bar' as const,
-          backgroundColor: chartData.map(d => d.is_long ? 'rgba(34, 197, 94, 0.6)' : 'rgba(239, 68, 68, 0.6)'),
-          borderColor: chartData.map(d => d.is_long ? 'rgb(34, 197, 94)' : 'rgb(239, 68, 68)'),
+          // Увеличиваем прозрачность для лучшей видимости свечей
+          backgroundColor: chartData.map(d => d.is_long ? 'rgba(34, 197, 94, 0.3)' : 'rgba(239, 68, 68, 0.3)'),
+          borderColor: chartData.map(d => d.is_long ? 'rgba(34, 197, 94, 0.6)' : 'rgba(239, 68, 68, 0.6)'),
           borderWidth: 1,
           yAxisID: 'y1'
         },
@@ -336,16 +350,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
         tooltip: {
           callbacks: {
             title: (context) => {
-              const date = new Date(context[0].parsed.x);
-              return date.toLocaleString('ru-RU', {
-                timeZone: 'UTC',
-                year: 'numeric',
-                month: '2-digit',
-                day: '2-digit',
-                hour: '2-digit',
-                minute: '2-digit',
-                second: '2-digit'
-              }) + ' UTC';
+              return formatUTCTime(context[0].parsed.x);
             },
             label: (context) => {
               if (context.datasetIndex === 0) {
@@ -445,15 +450,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
           <div>
             <h2 className="text-2xl font-bold text-gray-900">{alert.symbol}</h2>
             <p className="text-gray-600">
-              График с данными • Алерт: {new Date(alert.close_timestamp || alert.timestamp).toLocaleString('ru-RU', {
-                timeZone: 'UTC',
-                year: 'numeric',
-                month: '2-digit',
-                day: '2-digit',
-                hour: '2-digit',
-                minute: '2-digit',
-                second: '2-digit'
-              })} UTC
+              График с данными • Алерт: {formatUTCTime(alert.close_timestamp || alert.timestamp)}
             </p>
             {alert.has_imbalance && (
               <div className="flex items-center space-x-2 mt-2">
@@ -553,15 +550,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
             <div>
               <span className="text-gray-600">Время (UTC):</span>
               <span className="ml-2 text-gray-900">
-                {new Date(alert.close_timestamp || alert.timestamp).toLocaleString('ru-RU', {
-                  timeZone: 'UTC',
-                  year: 'numeric',
-                  month: '2-digit',
-                  day: '2-digit',
-                  hour: '2-digit',
-                  minute: '2-digit',
-                  second: '2-digit'
-                })}
+                {formatUTCTime(alert.close_timestamp || alert.timestamp)}
               </span>
             </div>
             <div>
