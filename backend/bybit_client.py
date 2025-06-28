@@ -237,10 +237,10 @@ class BybitWebSocketClient:
                     "type": "kline_update",
                     "symbol": symbol,
                     "data": formatted_data,
-                    "timestamp": datetime.now().isoformat()
+                    "timestamp": datetime.utcnow().isoformat()  # Используем UTC время
                 }
                 
-                # Добавляем алерты, если они есть
+                # Добавляем алерты, если они есть (уже сериализованные)
                 if alerts:
                     message["alerts"] = alerts
                 

@@ -201,15 +201,15 @@ class AlertManager:
         """Получить текущее время (биржевое, если доступно)"""
         if self.time_sync:
             return self.time_sync.get_exchange_time()
-        return datetime.now()
+        return datetime.utcnow()  # Используем UTC вместо локального времени
 
     def _is_candle_closed(self, kline_data: Dict) -> bool:
         """Проверка, закрылась ли свеча (используя биржевое время)"""
         if self.time_sync:
             return self.time_sync.is_candle_closed(kline_data)
         
-        # Fallback на локальное время
-        current_time = datetime.now().timestamp() * 1000
+        # Fallback на UTC время
+        current_time = datetime.utcnow().timestamp() * 1000
         candle_end_time = int(kline_data['end'])
         return current_time >= candle_end_time
 
@@ -295,6 +295,18 @@ class AlertManager:
             
             timestamp = int(kline_data['start'])
             
+            # Проверяем кулдаун для повторных сигналов
+            if symbol in self.alert_cooldowns:
+                last_alert_time = self.alert_cooldowns[symbol]
+                current_time = self._get_current_time()
+                cooldown_period = self.settings['alert_grouping_minutes']
+                if (current_time - last_alert_time).total_seconds() < cooldown_period * 60:
+                    # Проверяем, больше ли текущий объем предыдущего
+                    if symbol in self.volume_alerts_cache:
+                        prev_volume = self.volume_alerts_cache[symbol].get('volume_usdt', 0)
+                        if current_volume_usdt < prev_volume:
+                            return None
+            
             # Получаем исторические объемы
             historical_volumes = await self.db_manager.get_historical_long_volumes(
                 symbol, 
@@ -361,7 +373,7 @@ class AlertManager:
                             'volume_ratio': round(volume_ratio, 2),
                             'current_volume_usdt': int(current_volume_usdt),
                             'average_volume_usdt': int(average_volume),
-                            'timestamp': actual_time.isoformat(),  # Конвертируем в строку
+                            'timestamp': actual_time,  # Оставляем как datetime объект для базы данных
                             'is_closed': False,
                             'is_true_signal': None,
                             'has_imbalance': has_imbalance,
@@ -380,6 +392,9 @@ class AlertManager:
                             'alert_level': alert_level
                         })
                         
+                        # Конвертируем datetime в строку для отправки
+                        alert_data['timestamp'] = actual_time.isoformat()
+                        
                         return alert_data
                     
                     # Создаем новый предварительный алерт
@@ -393,7 +408,7 @@ class AlertManager:
                         'volume_ratio': round(volume_ratio, 2),
                         'current_volume_usdt': int(current_volume_usdt),
                         'average_volume_usdt': int(average_volume),
-                        'timestamp': actual_time.isoformat(),  # Конвертируем в строку
+                        'timestamp': actual_time,  # Оставляем как datetime объект для базы данных
                         'is_closed': False,
                         'is_true_signal': None,
                         'has_imbalance': has_imbalance,
@@ -415,6 +430,9 @@ class AlertManager:
                         'volume_usdt': current_volume_usdt
                     }
                     
+                    # Конвертируем datetime в строку для отправки
+                    alert_data['timestamp'] = actual_time.isoformat()
+                    
                     logger.info(f"Создан предварительный алерт для {symbol}: {volume_ratio:.2f}x")
                     return alert_data
                 else:
@@ -422,7 +440,7 @@ class AlertManager:
                     if self.time_sync:
                         close_time = self.time_sync.get_candle_close_time(timestamp)
                     else:
-                        close_time = datetime.fromtimestamp((timestamp + 60000) / 1000)
+                        close_time = datetime.utcfromtimestamp((timestamp + 60000) / 1000)
                     
                     # Определяем, истинный ли это сигнал (свеча закрылась в LONG)
                     final_is_long = float(kline_data['close']) > float(kline_data['open'])
@@ -444,8 +462,8 @@ class AlertManager:
                             'volume_ratio': round(volume_ratio, 2),
                             'current_volume_usdt': int(current_volume_usdt),
                             'average_volume_usdt': int(average_volume),
-                            'timestamp': cached_data.get('original_timestamp', close_time.isoformat()),  # Конвертируем в строку
-                            'close_timestamp': close_time.isoformat(),  # Конвертируем в строку
+                            'timestamp': cached_data.get('original_timestamp', close_time),  # Оставляем как datetime объект
+                            'close_timestamp': close_time,  # Оставляем как datetime объект
                             'is_closed': True,
                             'is_true_signal': final_is_long,
                             'has_imbalance': has_imbalance,
@@ -463,6 +481,10 @@ class AlertManager:
                         if final_is_long:
                             self.alert_cooldowns[symbol] = self._get_current_time()
                         
+                        # Конвертируем datetime в строки для отправки
+                        alert_data['timestamp'] = alert_data['timestamp'].isoformat() if isinstance(alert_data['timestamp'], datetime) else alert_data['timestamp']
+                        alert_data['close_timestamp'] = close_time.isoformat()
+                        
                         logger.info(f"Обновлен финальный алерт для {symbol}: {'истинный' if final_is_long else 'ложный'}")
                         return alert_data
                     else:
@@ -476,8 +498,8 @@ class AlertManager:
                             'volume_ratio': round(volume_ratio, 2),
                             'current_volume_usdt': int(current_volume_usdt),
                             'average_volume_usdt': int(average_volume),
-                            'timestamp': close_time.isoformat(),  # Конвертируем в строку
-                            'close_timestamp': close_time.isoformat(),  # Конвертируем в строку
+                            'timestamp': close_time,  # Оставляем как datetime объект
+                            'close_timestamp': close_time,  # Оставляем как datetime объект
                             'is_closed': True,
                             'is_true_signal': final_is_long,
                             'has_imbalance': has_imbalance,
@@ -494,6 +516,10 @@ class AlertManager:
                         # Обновляем кулдаун только для истинных сигналов
                         if final_is_long:
                             self.alert_cooldowns[symbol] = self._get_current_time()
+                        
+                        # Конвертируем datetime в строки для отправки
+                        alert_data['timestamp'] = close_time.isoformat()
+                        alert_data['close_timestamp'] = close_time.isoformat()
                         
                         logger.info(f"Создан новый финальный алерт для {symbol}: {'истинный' if final_is_long else 'ложный'}")
                         return alert_data
@@ -611,7 +637,7 @@ class AlertManager:
             if self.time_sync:
                 close_time = self.time_sync.get_candle_close_time(timestamp)
             else:
-                close_time = datetime.fromtimestamp((timestamp + 60000) / 1000)
+                close_time = datetime.utcfromtimestamp((timestamp + 60000) / 1000)
 
             # Данные свечи
             candle_data = {
@@ -640,8 +666,8 @@ class AlertManager:
                         'alert_type': AlertType.CONSECUTIVE_LONG.value,
                         'price': float(kline_data['close']),
                         'consecutive_count': self.consecutive_counters[symbol],
-                        'timestamp': close_time.isoformat(),  # Конвертируем в строку
-                        'close_timestamp': close_time.isoformat(),  # Конвертируем в строку
+                        'timestamp': close_time,  # Оставляем как datetime объект для базы данных
+                        'close_timestamp': close_time,  # Оставляем как datetime объект для базы данных
                         'is_closed': True,
                         'has_imbalance': has_imbalance,
                         'imbalance_data': imbalance_data,
@@ -668,6 +694,10 @@ class AlertManager:
                             'alert_id': alert_data['id']
                         })
 
+                    # Конвертируем datetime в строки для отправки
+                    alert_data['timestamp'] = close_time.isoformat()
+                    alert_data['close_timestamp'] = close_time.isoformat()
+
                     logger.info(f"Алерт по последовательности для {symbol}: {self.consecutive_counters[symbol]} LONG свечей")
                     return alert_data
             else:
@@ -680,13 +710,13 @@ class AlertManager:
                         'alert_type': AlertType.CONSECUTIVE_LONG.value,
                         'price': float(kline_data['close']),
                         'consecutive_count': self.consecutive_counters[symbol],
-                        'timestamp': close_time.isoformat(),  # Конвертируем в строку
-                        'close_timestamp': close_time.isoformat(),  # Конвертируем в строку
+                        'timestamp': close_time,  # Оставляем как datetime объект
+                        'close_timestamp': close_time,  # Оставляем как datetime объект
                         'is_closed': True,
                         'has_imbalance': has_imbalance,
                         'imbalance_data': imbalance_data,
                         'candle_data': candle_data,
-                        'message': "Последовательность LONG свечей прервана SHORT свечей"
+                        'message': "Последовательность LONG свечей прервана SHORT свечой"
                     })
 
                 # Сбрасываем счетчик и ID алерта
@@ -737,8 +767,8 @@ class AlertManager:
                         'alert_type': AlertType.PRIORITY.value,
                         'price': consecutive_alert['price'],
                         'consecutive_count': consecutive_alert['consecutive_count'],
-                        'timestamp': consecutive_alert['timestamp'],
-                        'close_timestamp': consecutive_alert['close_timestamp'],
+                        'timestamp': consecutive_alert['timestamp'],  # Уже в строковом формате
+                        'close_timestamp': consecutive_alert['close_timestamp'],  # Уже в строковом формате
                         'is_closed': True,
                         'has_imbalance': has_imbalance,
                         'imbalance_data': imbalance_data,
@@ -781,12 +811,28 @@ class AlertManager:
         try:
             # Если у алерта есть ID, обновляем существующий, иначе создаем новый
             if 'id' in alert_data:
-                await self.db_manager.update_alert(alert_data['id'], alert_data)
+                # Создаем копию для базы данных с datetime объектами
+                db_alert_data = alert_data.copy()
+                # Конвертируем строки обратно в datetime для базы данных
+                if isinstance(db_alert_data.get('timestamp'), str):
+                    db_alert_data['timestamp'] = datetime.fromisoformat(db_alert_data['timestamp'].replace('Z', '+00:00'))
+                if isinstance(db_alert_data.get('close_timestamp'), str):
+                    db_alert_data['close_timestamp'] = datetime.fromisoformat(db_alert_data['close_timestamp'].replace('Z', '+00:00'))
+                
+                await self.db_manager.update_alert(alert_data['id'], db_alert_data)
             else:
-                alert_id = await self.db_manager.save_alert(alert_data)
+                # Создаем копию для базы данных с datetime объектами
+                db_alert_data = alert_data.copy()
+                # Конвертируем строки обратно в datetime для базы данных
+                if isinstance(db_alert_data.get('timestamp'), str):
+                    db_alert_data['timestamp'] = datetime.fromisoformat(db_alert_data['timestamp'].replace('Z', '+00:00'))
+                if isinstance(db_alert_data.get('close_timestamp'), str):
+                    db_alert_data['close_timestamp'] = datetime.fromisoformat(db_alert_data['close_timestamp'].replace('Z', '+00:00'))
+                
+                alert_id = await self.db_manager.save_alert(db_alert_data)
                 alert_data['id'] = alert_id
 
-            # Отправляем в WebSocket
+            # Отправляем в WebSocket (с строковыми timestamp)
             if self.connection_manager:
                 event_type = 'alert_updated' if 'id' in alert_data else 'new_alert'
                 await self.connection_manager.broadcast_json({
@@ -812,7 +858,7 @@ class AlertManager:
         """Сериализация алерта для JSON"""
         serialized = alert_data.copy()
         
-        # Преобразуем datetime в ISO строки (если они еще не строки)
+        # Убеждаемся, что все datetime уже в строковом формате
         for key in ['timestamp', 'close_timestamp']:
             if key in serialized and isinstance(serialized[key], datetime):
                 serialized[key] = serialized[key].isoformat()
