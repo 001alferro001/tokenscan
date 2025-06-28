@@ -175,15 +175,8 @@ const App: React.FC = () => {
   }, []);
 
   const updateCurrentTime = () => {
-    if (timeSync && timeSync.is_synced) {
-      // Рассчитываем синхронизированное время с биржей
-      const localTime = new Date().getTime();
-      const exchangeTime = new Date(localTime + timeSync.time_offset_ms);
-      setCurrentTime(exchangeTime);
-    } else {
-      // Используем локальное время, если синхронизация недоступна
-      setCurrentTime(new Date());
-    }
+    // Всегда используем локальное время
+    setCurrentTime(new Date());
   };
 
   const loadTimeSync = async () => {
@@ -192,8 +185,6 @@ const App: React.FC = () => {
       if (response.ok) {
         const timeSyncData = await response.json();
         setTimeSync(timeSyncData);
-        // Сразу обновляем время после получения данных синхронизации
-        updateCurrentTime();
       }
     } catch (error) {
       console.error('Ошибка загрузки информации о времени:', error);
@@ -245,6 +236,12 @@ const App: React.FC = () => {
         setPriorityAlerts((alertsData.priority_alerts || []).sort((a: Alert, b: Alert) => 
           new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
         ));
+        
+        console.log('Алерты загружены:', {
+          volume: alertsData.volume_alerts?.length || 0,
+          consecutive: alertsData.consecutive_alerts?.length || 0,
+          priority: alertsData.priority_alerts?.length || 0
+        });
       }
 
       // Загружаем watchlist
@@ -563,11 +560,7 @@ const App: React.FC = () => {
     if (!timeSync) return { color: 'text-gray-500', text: 'Нет данных', icon: '⚪' };
     
     if (!timeSync.is_synced) {
-      return { color: 'text-red-500', text: 'Не синхронизировано', icon: '🔴' };
-    }
-    
-    if (timeSync.sync_age_seconds && timeSync.sync_age_seconds > 600) { // 10 минут
-      return { color: 'text-yellow-500', text: 'Устаревшая синхронизация', icon: '🟡' };
+      return { color: 'text-yellow-500', text: 'Отключена', icon: '🟡' };
     }
     
     return { color: 'text-green-500', text: 'Синхронизировано', icon: '🟢' };
@@ -858,16 +851,9 @@ const App: React.FC = () => {
                   <div className="text-xs">
                     {timezoneInfo.timezone.split('/').pop()}
                   </div>
-                  {timeSync && timeSync.is_synced && (
-                    <div className="text-xs">
-                      {timeSync.time_offset_ms > 0 ? '+' : ''}{Math.round(timeSync.time_offset_ms)}мс
-                    </div>
-                  )}
-                  {timeSync && timeSync.sync_age_seconds && (
-                    <div className="text-xs">
-                      Синх: {Math.round(timeSync.sync_age_seconds)}с
-                    </div>
-                  )}
+                  <div className="text-xs">
+                    Синх: {timeSyncStatus.text}
+                  </div>
                 </div>
               </div>
               
@@ -1071,37 +1057,52 @@ const App: React.FC = () => {
             <div className="space-y-4">
               {streamData.slice(0, 50).map((item, index) => (
                 <div key={`${item.symbol}-${index}`} className="bg-white rounded-lg shadow-md border border-gray-200 p-4 w-full">
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="flex items-center space-x-3">
-                      <div className={`w-3 h-3 rounded-full ${item.is_long ? 'bg-green-500' : 'bg-red-500'}`}></div>
-                      <span className="font-bold text-lg text-gray-900">{item.symbol}</span>
-                      {item.is_closed && (
-                        <span className="px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded-full">Закрыта</span>
-                      )}
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-4">
+                      <div className={`w-4 h-4 rounded-full ${
+                        item.is_long ? 'bg-green-500' : 'bg-red-500'
+                      }`}></div>
+                      
+                      <div>
+                        <span className="font-semibold text-gray-900 text-lg">{item.symbol}</span>
+                        <div className="flex items-center space-x-2 text-sm">
+                          <span className={`px-2 py-1 rounded text-xs font-medium ${
+                            item.is_long ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                          }`}>
+                            {item.is_long ? 'LONG' : 'SHORT'}
+                          </span>
+                          {item.is_closed && (
+                            <span className="px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded-full">Закрыта</span>
+                          )}
+                        </div>
+                      </div>
                     </div>
                     
-                    <button
-                      onClick={() => openTradingView(item.symbol)}
-                      className="text-blue-600 hover:text-blue-800 p-1"
-                    >
-                      <ExternalLink className="w-4 h-4" />
-                    </button>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-4 text-sm">
-                    <div>
-                      <span className="text-gray-600">Цена:</span>
-                      <div className="font-mono text-gray-900">${item.price.toFixed(8)}</div>
+                    <div className="text-right">
+                      <div className="text-xl font-bold text-gray-900">
+                        ${item.price.toFixed(8)}
+                      </div>
+                      <div className="text-sm text-gray-600">
+                        Vol: {formatVolume(item.volume_usdt)}
+                      </div>
                     </div>
                     
-                    <div>
-                      <span className="text-gray-600">Объем:</span>
-                      <div className="text-gray-900">{formatVolume(item.volume_usdt)}</div>
+                    <div className="flex items-center space-x-2">
+                      <div className="text-right text-sm text-gray-500">
+                        <div>{formatTime(item.timestamp)}</div>
+                        <div className="text-xs">
+                          {formatVolume(item.volume)} {item.symbol.replace('USDT', '')}
+                        </div>
+                      </div>
+                      
+                      <button
+                        onClick={() => openTradingView(item.symbol)}
+                        className="text-blue-600 hover:text-blue-800 p-1"
+                        title="Открыть в TradingView"
+                      >
+                        <ExternalLink className="w-4 h-4" />
+                      </button>
                     </div>
-                  </div>
-
-                  <div className="mt-3 pt-3 border-t border-gray-200 text-xs text-gray-500">
-                    {formatTime(item.timestamp)}
                   </div>
                 </div>
               ))}

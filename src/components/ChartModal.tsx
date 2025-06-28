@@ -394,11 +394,6 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
             },
             tooltipFormat: timeZone === 'UTC' ? 'dd.MM.yyyy HH:mm:ss UTC' : 'dd.MM.yyyy HH:mm:ss'
           },
-          adapters: {
-            date: {
-              zone: timeZone === 'UTC' ? 'UTC' : undefined
-            }
-          },
           ticks: {
             color: '#6B7280',
             callback: function(value, index, values) {

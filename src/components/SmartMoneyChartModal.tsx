@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, ExternalLink, Download } from 'lucide-react';
+import { X, ExternalLink, Download, Clock, Globe, Info } from 'lucide-react';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -66,6 +66,8 @@ const SmartMoneyChartModal: React.FC<SmartMoneyChartModalProps> = ({ alert, onCl
   const [chartData, setChartData] = useState<ChartData[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [timeZone, setTimeZone] = useState<'UTC' | 'local'>('local');
+  const [showTimestampInfo, setShowTimestampInfo] = useState(false);
 
   useEffect(() => {
     loadChartData();
@@ -112,6 +114,33 @@ const SmartMoneyChartModal: React.FC<SmartMoneyChartModalProps> = ({ alert, onCl
     a.download = `${alert.symbol}_smart_money_chart.csv`;
     a.click();
     window.URL.revokeObjectURL(url);
+  };
+
+  const formatTime = (timestamp: number | string, useUTC: boolean = false) => {
+    const date = new Date(timestamp);
+    const options: Intl.DateTimeFormatOptions = {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    };
+
+    if (useUTC) {
+      options.timeZone = 'UTC';
+      return date.toLocaleString('ru-RU', options) + ' UTC';
+    } else {
+      return date.toLocaleString('ru-RU', options);
+    }
+  };
+
+  const getTimezoneOffset = () => {
+    const offset = new Date().getTimezoneOffset();
+    const hours = Math.abs(Math.floor(offset / 60));
+    const minutes = Math.abs(offset % 60);
+    const sign = offset <= 0 ? '+' : '-';
+    return `UTC${sign}${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
   };
 
   const getChartConfig = () => {
@@ -215,8 +244,8 @@ const SmartMoneyChartModal: React.FC<SmartMoneyChartModalProps> = ({ alert, onCl
           label: 'Объем (USDT)',
           data: volumeData,
           type: 'bar' as const,
-          backgroundColor: chartData.map(d => d.is_long ? 'rgba(34, 197, 94, 0.6)' : 'rgba(239, 68, 68, 0.6)'),
-          borderColor: chartData.map(d => d.is_long ? 'rgb(34, 197, 94)' : 'rgb(239, 68, 68)'),
+          backgroundColor: chartData.map(d => d.is_long ? 'rgba(34, 197, 94, 0.2)' : 'rgba(239, 68, 68, 0.2)'),
+          borderColor: chartData.map(d => d.is_long ? 'rgba(34, 197, 94, 0.4)' : 'rgba(239, 68, 68, 0.4)'),
           borderWidth: 1,
           yAxisID: 'y1'
         },
@@ -249,7 +278,7 @@ const SmartMoneyChartModal: React.FC<SmartMoneyChartModalProps> = ({ alert, onCl
       plugins: {
         title: {
           display: true,
-          text: `${alert.symbol} - Smart Money: ${alert.type.replace('_', ' ').toUpperCase()}`,
+          text: `${alert.symbol} - Smart Money: ${alert.type.replace('_', ' ').toUpperCase()} - ${timeZone === 'UTC' ? 'UTC' : `Локальное время (${getTimezoneOffset()})`}`,
           color: '#374151'
         },
         legend: {
@@ -260,7 +289,7 @@ const SmartMoneyChartModal: React.FC<SmartMoneyChartModalProps> = ({ alert, onCl
         tooltip: {
           callbacks: {
             title: (context) => {
-              return new Date(context[0].parsed.x).toLocaleString('ru-RU');
+              return formatTime(context[0].parsed.x, timeZone === 'UTC');
             },
             label: (context) => {
               if (context.datasetIndex === 0) {
@@ -299,10 +328,26 @@ const SmartMoneyChartModal: React.FC<SmartMoneyChartModalProps> = ({ alert, onCl
             unit: 'minute',
             displayFormats: {
               minute: 'HH:mm'
-            }
+            },
+            tooltipFormat: timeZone === 'UTC' ? 'dd.MM.yyyy HH:mm:ss UTC' : 'dd.MM.yyyy HH:mm:ss'
           },
           ticks: {
-            color: '#6B7280'
+            color: '#6B7280',
+            callback: function(value, index, values) {
+              const date = new Date(value);
+              if (timeZone === 'UTC') {
+                return date.toLocaleTimeString('ru-RU', { 
+                  timeZone: 'UTC',
+                  hour: '2-digit', 
+                  minute: '2-digit' 
+                });
+              } else {
+                return date.toLocaleTimeString('ru-RU', { 
+                  hour: '2-digit', 
+                  minute: '2-digit' 
+                });
+              }
+            }
           },
           grid: {
             color: 'rgba(107, 114, 128, 0.1)'
@@ -361,7 +406,7 @@ const SmartMoneyChartModal: React.FC<SmartMoneyChartModalProps> = ({ alert, onCl
           <div>
             <h2 className="text-2xl font-bold text-gray-900">{alert.symbol}</h2>
             <p className="text-gray-600">
-              Smart Money: {alert.type.replace('_', ' ').toUpperCase()} • {new Date(alert.timestamp).toLocaleString('ru-RU')}
+              Smart Money: {alert.type.replace('_', ' ').toUpperCase()} • {formatTime(alert.timestamp, timeZone === 'UTC')}
             </p>
             <div className="flex items-center space-x-4 mt-2">
               <span className={`px-3 py-1 rounded-full text-sm font-medium ${
@@ -376,6 +421,41 @@ const SmartMoneyChartModal: React.FC<SmartMoneyChartModalProps> = ({ alert, onCl
           </div>
           
           <div className="flex items-center space-x-3">
+            {/* Переключатель часового пояса */}
+            <div className="flex items-center space-x-2 bg-gray-100 rounded-lg p-2">
+              <Clock className="w-4 h-4 text-gray-600" />
+              <button
+                onClick={() => setTimeZone('UTC')}
+                className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+                  timeZone === 'UTC' 
+                    ? 'bg-blue-600 text-white' 
+                    : 'bg-white text-gray-700 hover:bg-gray-50'
+                }`}
+              >
+                UTC
+              </button>
+              <button
+                onClick={() => setTimeZone('local')}
+                className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+                  timeZone === 'local' 
+                    ? 'bg-blue-600 text-white' 
+                    : 'bg-white text-gray-700 hover:bg-gray-50'
+                }`}
+              >
+                <Globe className="w-3 h-3 inline mr-1" />
+                Локальное
+              </button>
+            </div>
+
+            {/* Информация о timestamp */}
+            <button
+              onClick={() => setShowTimestampInfo(!showTimestampInfo)}
+              className="text-gray-500 hover:text-gray-700 p-2"
+              title="Информация о формате времени"
+            >
+              <Info className="w-4 h-4" />
+            </button>
+            
             <button
               onClick={downloadChart}
               className="flex items-center space-x-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg transition-colors"
@@ -400,6 +480,30 @@ const SmartMoneyChartModal: React.FC<SmartMoneyChartModalProps> = ({ alert, onCl
             </button>
           </div>
         </div>
+
+        {/* Информация о timestamp */}
+        {showTimestampInfo && (
+          <div className="p-4 bg-blue-50 border-b border-gray-200">
+            <h4 className="font-medium text-blue-900 mb-2">📅 Объяснение формата времени</h4>
+            <div className="text-sm text-blue-700 space-y-2">
+              <p><strong>Пример:</strong> 2025-06-28 10:02:13.594327+03</p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <p><strong>2025-06-28</strong> - дата (год-месяц-день)</p>
+                  <p><strong>10:02:13</strong> - время (часы:минуты:секунды)</p>
+                </div>
+                <div>
+                  <p><strong>.594327</strong> - микросекунды (доли секунды)</p>
+                  <p><strong>+03</strong> - часовой пояс (UTC+3, например, Москва)</p>
+                </div>
+              </div>
+              <p className="mt-2 text-xs">
+                <strong>Микросекунды</strong> показывают точное время до миллионных долей секунды. 
+                Это нужно для высокоточной синхронизации с биржей и избежания дублирования данных.
+              </p>
+            </div>
+          </div>
+        )}
 
         {/* Chart Content */}
         <div className="flex-1 p-6 overflow-hidden">
