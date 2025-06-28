@@ -275,6 +275,61 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Ошибка очистки старых данных для {symbol}: {e}")
 
+    async def check_data_integrity(self, symbol: str, hours: int) -> Dict:
+        """Улучшенная проверка целостности исторических данных"""
+        try:
+            cursor = self.connection.cursor()
+            
+            # Определяем временные границы
+            current_time = datetime.utcnow()
+            current_minute = current_time.replace(second=0, microsecond=0)
+            end_time = int(current_minute.timestamp() * 1000)
+            start_time = end_time - (hours * 60 * 60 * 1000)
+            
+            # Получаем существующие данные (только закрытые свечи)
+            cursor.execute("""
+                SELECT open_time FROM kline_data 
+                WHERE symbol = %s AND open_time >= %s AND open_time < %s
+                AND is_closed = TRUE
+                ORDER BY open_time
+            """, (symbol, start_time, end_time))
+            
+            existing_times = [row[0] for row in cursor.fetchall()]
+            cursor.close()
+            
+            # Генерируем ожидаемые временные метки
+            expected_times = []
+            current_time_ms = start_time
+            cutoff_time = end_time - (3 * 60 * 1000)  # Исключаем последние 3 минуты
+            
+            while current_time_ms < cutoff_time:
+                expected_times.append(current_time_ms)
+                current_time_ms += 60000
+            
+            # Находим недостающие периоды
+            missing_times = [t for t in expected_times if t not in existing_times]
+            
+            total_expected = len(expected_times)
+            total_existing = len([t for t in existing_times if t < cutoff_time])
+            
+            return {
+                'total_expected': total_expected,
+                'total_existing': total_existing,
+                'missing_count': len(missing_times),
+                'missing_periods': missing_times,
+                'integrity_percentage': (total_existing / total_expected) * 100 if total_expected > 0 else 100
+            }
+            
+        except Exception as e:
+            logger.error(f"Ошибка проверки целостности данных для {symbol}: {e}")
+            return {
+                'total_expected': 0,
+                'total_existing': 0,
+                'missing_count': 0,
+                'missing_periods': [],
+                'integrity_percentage': 0
+            }
+
     async def get_historical_long_volumes(self, symbol: str, hours: int, offset_minutes: int = 0, 
                                         volume_type: str = 'long') -> List[float]:
         """Получить объемы свечей за указанный период с настройками смещения и типа"""
@@ -469,61 +524,6 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Ошибка получения последних свечей для {symbol}: {e}")
             return []
-
-    async def check_data_integrity(self, symbol: str, hours: int) -> Dict:
-        """Проверка целостности исторических данных"""
-        try:
-            cursor = self.connection.cursor()
-            
-            # Определяем временные границы
-            current_time = datetime.utcnow()
-            current_minute = current_time.replace(second=0, microsecond=0)
-            end_time = int(current_minute.timestamp() * 1000)
-            start_time = end_time - (hours * 60 * 60 * 1000)
-            
-            # Получаем существующие данные
-            cursor.execute("""
-                SELECT open_time FROM kline_data 
-                WHERE symbol = %s AND open_time >= %s AND open_time < %s
-                AND is_closed = TRUE
-                ORDER BY open_time
-            """, (symbol, start_time, end_time))
-            
-            existing_times = [row[0] for row in cursor.fetchall()]
-            cursor.close()
-            
-            # Генерируем ожидаемые временные метки
-            expected_times = []
-            current_time_ms = start_time
-            cutoff_time = end_time - (3 * 60 * 1000)  # Исключаем последние 3 минуты
-            
-            while current_time_ms < cutoff_time:
-                expected_times.append(current_time_ms)
-                current_time_ms += 60000
-            
-            # Находим недостающие периоды
-            missing_times = [t for t in expected_times if t not in existing_times]
-            
-            total_expected = len(expected_times)
-            total_existing = len([t for t in existing_times if t < cutoff_time])
-            
-            return {
-                'total_expected': total_expected,
-                'total_existing': total_existing,
-                'missing_count': len(missing_times),
-                'missing_periods': missing_times,
-                'integrity_percentage': (total_existing / total_expected) * 100 if total_expected > 0 else 100
-            }
-            
-        except Exception as e:
-            logger.error(f"Ошибка проверки целостности данных для {symbol}: {e}")
-            return {
-                'total_expected': 0,
-                'total_existing': 0,
-                'missing_count': 0,
-                'missing_periods': [],
-                'integrity_percentage': 0
-            }
 
     async def cleanup_old_data(self, retention_hours: int = 2):
         """Очистка старых данных"""
