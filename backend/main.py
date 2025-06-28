@@ -126,7 +126,7 @@ async def lifespan(app: FastAPI):
             # Запуск периодической очистки данных
             asyncio.create_task(periodic_cleanup())
 
-            logger.info("Система успешно запущена с синхронизацией времени!")
+            logger.info("Система успешно запущена с синхронизацией времени и автообновлением подписок!")
         else:
             logger.error("Не удалось получить торговые пары. Система не запущена.")
 
@@ -217,6 +217,11 @@ async def get_stats():
         if time_sync:
             time_sync_info = time_sync.get_sync_status()
 
+        # Добавляем статистику подписок
+        subscription_stats = {}
+        if bybit_client:
+            subscription_stats = bybit_client.get_subscription_stats()
+
         return {
             "pairs_count": len(watchlist),
             "alerts_count": len(alerts_data.get('alerts', [])),
@@ -225,7 +230,8 @@ async def get_stats():
             "priority_alerts_count": len(alerts_data.get('priority_alerts', [])),
             "last_update": datetime.now().isoformat(),
             "system_status": "running",
-            "time_sync": time_sync_info
+            "time_sync": time_sync_info,
+            "subscriptions": subscription_stats
         }
     except Exception as e:
         logger.error(f"Ошибка получения статистики: {e}")
@@ -268,6 +274,29 @@ async def get_time_info():
             "time_offset_ms": 0,
             "status": "error",
             "error": str(e)
+        }
+
+
+@app.get("/api/subscription-stats")
+async def get_subscription_stats():
+    """Получить статистику подписок WebSocket"""
+    try:
+        if bybit_client:
+            stats = bybit_client.get_subscription_stats()
+            return {
+                "status": "success",
+                "data": stats
+            }
+        else:
+            return {
+                "status": "error",
+                "message": "WebSocket client not initialized"
+            }
+    except Exception as e:
+        logger.error(f"Ошибка получения статистики подписок: {e}")
+        return {
+            "status": "error",
+            "message": str(e)
         }
 
 
@@ -406,6 +435,11 @@ async def get_settings():
         if time_sync:
             time_sync_info = time_sync.get_sync_status()
 
+        # Добавляем статистику подписок
+        subscription_stats = {}
+        if bybit_client:
+            subscription_stats = bybit_client.get_subscription_stats()
+
         settings = {
             "volume_analyzer": alert_manager.get_settings(),
             "price_filter": price_filter.settings,
@@ -428,7 +462,8 @@ async def get_settings():
             "telegram": {
                 "enabled": telegram_bot.enabled if telegram_bot else False
             },
-            "time_sync": time_sync_info
+            "time_sync": time_sync_info,
+            "subscriptions": subscription_stats
         }
 
         return settings
@@ -469,6 +504,12 @@ async def get_settings():
         "time_sync": {
             "is_synced": False,
             "status": "not_initialized"
+        },
+        "subscriptions": {
+            "total_pairs": 0,
+            "subscribed_pairs": 0,
+            "pending_pairs": 0,
+            "subscription_rate": 0
         }
     }
 

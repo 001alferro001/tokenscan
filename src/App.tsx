@@ -14,7 +14,10 @@ import {
   Activity,
   Zap,
   Database,
-  AlertCircle
+  AlertCircle,
+  Users,
+  CheckCircle,
+  XCircle
 } from 'lucide-react';
 import ChartModal from './components/ChartModal';
 import SmartMoneyChartModal from './components/SmartMoneyChartModal';
@@ -97,6 +100,14 @@ interface TimeSync {
   serverTime?: number;
 }
 
+interface SubscriptionStats {
+  total_pairs: number;
+  subscribed_pairs: number;
+  pending_pairs: number;
+  last_update?: string;
+  subscription_rate: number;
+}
+
 interface Settings {
   volume_analyzer: {
     analysis_hours: number;
@@ -128,6 +139,7 @@ interface Settings {
     enabled: boolean;
   };
   time_sync?: TimeSync;
+  subscriptions?: SubscriptionStats;
 }
 
 const App: React.FC = () => {
@@ -148,6 +160,7 @@ const App: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [currentTime, setCurrentTime] = useState<Date>(new Date());
   const [timeSync, setTimeSync] = useState<TimeSync | null>(null);
+  const [subscriptionStats, setSubscriptionStats] = useState<SubscriptionStats | null>(null);
   const [lastDataUpdate, setLastDataUpdate] = useState<Date | null>(null);
   const [reconnectAttempts, setReconnectAttempts] = useState(0);
   const [dataActivity, setDataActivity] = useState<'active' | 'idle' | 'error'>('idle');
@@ -239,6 +252,20 @@ const App: React.FC = () => {
     }
   };
 
+  const loadSubscriptionStats = async () => {
+    try {
+      const response = await fetch('/api/subscription-stats');
+      if (response.ok) {
+        const data = await response.json();
+        if (data.status === 'success') {
+          setSubscriptionStats(data.data);
+        }
+      }
+    } catch (error) {
+      console.error('Ошибка загрузки статистики подписок:', error);
+    }
+  };
+
   const refreshData = async () => {
     try {
       updateDataActivity('active');
@@ -280,6 +307,9 @@ const App: React.FC = () => {
         });
         setWatchlist(sortedWatchlist);
       }
+
+      // Обновляем статистику подписок
+      await loadSubscriptionStats();
 
     } catch (error) {
       console.error('Ошибка обновления данных:', error);
@@ -365,7 +395,13 @@ const App: React.FC = () => {
         if (settingsData.time_sync) {
           setTimeSync(settingsData.time_sync);
         }
+        if (settingsData.subscriptions) {
+          setSubscriptionStats(settingsData.subscriptions);
+        }
       }
+
+      // Загружаем статистику подписок
+      await loadSubscriptionStats();
 
     } catch (error) {
       console.error('Ошибка загрузки данных:', error);
@@ -562,6 +598,19 @@ const App: React.FC = () => {
         });
         break;
 
+      case 'subscription_updated':
+        // Обновление подписок
+        console.log('🔄 Обновление подписок:', {
+          totalPairs: data.total_pairs,
+          subscribedPairs: data.subscribed_pairs,
+          newPairs: data.new_pairs,
+          removedPairs: data.removed_pairs
+        });
+        
+        // Обновляем статистику подписок
+        loadSubscriptionStats();
+        break;
+
       case 'watchlist_updated':
         // Обновляем watchlist при изменениях
         refreshData();
@@ -675,7 +724,7 @@ const App: React.FC = () => {
 
   const getAlertStatusBadge = (alert: Alert) => {
     if (!alert.is_closed) {
-      return <span className="px-2 py-1 bg-yellow-100 text-yellow-800 text-xs rounde-full">В процессе</span>;
+      return <span className="px-2 py-1 bg-yellow-100 text-yellow-800 text-xs rounded-full">В процессе</span>;
     }
 
     if (alert.is_true_signal === true) {
@@ -695,6 +744,19 @@ const App: React.FC = () => {
     }
 
     return { color: 'text-green-500', text: 'Синхронизировано', icon: '🟢' };
+  };
+
+  const getSubscriptionStatus = () => {
+    if (!subscriptionStats) return { color: 'text-gray-500', text: 'Нет данных', icon: '⚪' };
+
+    const rate = subscriptionStats.subscription_rate;
+    if (rate >= 95) {
+      return { color: 'text-green-500', text: 'Отлично', icon: '🟢' };
+    } else if (rate >= 80) {
+      return { color: 'text-yellow-500', text: 'Хорошо', icon: '🟡' };
+    } else {
+      return { color: 'text-red-500', text: 'Проблемы', icon: '🔴' };
+    }
   };
 
   const formatLocalTime = (date: Date) => {
@@ -741,6 +803,10 @@ const App: React.FC = () => {
   };
 
   const getConnectionStatusText = () => {
+    if (subscriptionStats) {
+      return `${subscriptionStats.subscribed_pairs}/${subscriptionStats.total_pairs} (${subscriptionStats.subscription_rate.toFixed(1)}%)`;
+    }
+    
     switch (connectionStatus) {
       case 'connected':
         return `Подключено (${connectionInfo.subscribedCount}/${watchlist.length})`;
@@ -916,6 +982,17 @@ const App: React.FC = () => {
         <div className="flex items-center space-x-3">
           <div className={`w-3 h-3 rounded-full ${item.is_active ? 'bg-green-500' : 'bg-red-500'}`}></div>
           <span className="font-bold text-lg text-gray-900">{item.symbol}</span>
+          
+          {/* Индикатор подписки */}
+          {subscriptionStats && (
+            <div className="flex items-center space-x-1">
+              {connectionInfo.subscribedPairs.includes(item.symbol) ? (
+                <CheckCircle className="w-4 h-4 text-green-500" title="Подписка активна" />
+              ) : (
+                <XCircle className="w-4 h-4 text-red-500" title="Нет подписки" />
+              )}
+            </div>
+          )}
         </div>
 
         <button
@@ -1019,6 +1096,7 @@ const App: React.FC = () => {
   }
 
   const timeSyncStatus = getTimeSyncStatus();
+  const subscriptionStatus = getSubscriptionStatus();
   const timezoneInfo = getTimezoneInfo();
 
   return (
@@ -1034,6 +1112,17 @@ const App: React.FC = () => {
                 <span className="text-sm text-gray-600">
                   {getConnectionStatusText()}
                 </span>
+                
+                {/* Индикатор подписок */}
+                {subscriptionStats && (
+                  <div className="flex items-center space-x-1">
+                    <Users className="w-4 h-4 text-blue-500" />
+                    <span className={`text-xs ${subscriptionStatus.color}`}>
+                      {subscriptionStatus.text}
+                    </span>
+                  </div>
+                )}
+                
                 {/* Индикатор активности данных */}
                 <div className="flex items-center space-x-1">
                   {getDataActivityIcon()}
@@ -1044,11 +1133,6 @@ const App: React.FC = () => {
                 {lastDataUpdate && (
                   <span className="text-xs text-gray-400">
                     • {formatLocalTime(lastDataUpdate)}
-                  </span>
-                )}
-                {connectionInfo.subscribedCount > 0 && (
-                  <span className="text-xs text-gray-400">
-                    • Подписано: {connectionInfo.subscribedCount}
                   </span>
                 )}
               </div>
@@ -1076,6 +1160,11 @@ const App: React.FC = () => {
                   <div className="text-xs">
                     Синх: {timeSyncStatus.text}
                   </div>
+                  {subscriptionStats && (
+                    <div className={`text-xs ${subscriptionStatus.color}`}>
+                      Подп: {subscriptionStatus.text}
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -1236,12 +1325,20 @@ const App: React.FC = () => {
           <div>
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-2xl font-bold text-gray-900">Список торговых пар</h2>
-              <button
-                onClick={() => setShowWatchlistModal(true)}
-                className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors"
-              >
-                Управление
-              </button>
+              <div className="flex items-center space-x-4">
+                {subscriptionStats && (
+                  <div className="text-sm text-gray-600">
+                    Подписок: {subscriptionStats.subscribed_pairs}/{subscriptionStats.total_pairs} 
+                    ({subscriptionStats.subscription_rate.toFixed(1)}%)
+                  </div>
+                )}
+                <button
+                  onClick={() => setShowWatchlistModal(true)}
+                  className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors"
+                >
+                  Управление
+                </button>
+              </div>
             </div>
 
             <div className="space-y-4">
@@ -1264,7 +1361,8 @@ const App: React.FC = () => {
               <h2 className="text-2xl font-bold text-gray-900">Потоковые данные</h2>
               <div className="flex items-center space-x-4">
                 <span className="text-sm text-gray-600">
-                  Обновлений: {streamData.length} / Пар в watchlist: {watchlist.length} / Подписано: {connectionInfo.subscribedCount}
+                  Обновлений: {streamData.length} / Пар в watchlist: {watchlist.length} / 
+                  Подписано: {subscriptionStats?.subscribed_pairs || connectionInfo.subscribedCount}
                 </span>
                 <button
                   onClick={() => connectWebSocket()}
@@ -1295,6 +1393,14 @@ const App: React.FC = () => {
                           </span>
                           {item.is_closed && (
                             <span className="px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded-full">Закрыта</span>
+                          )}
+                          {/* Индикатор подписки */}
+                          {subscriptionStats && (
+                            connectionInfo.subscribedPairs.includes(item.symbol) ? (
+                              <CheckCircle className="w-3 h-3 text-green-500" title="Подписка активна" />
+                            ) : (
+                              <XCircle className="w-3 h-3 text-red-500" title="Нет подписки" />
+                            )
                           )}
                         </div>
                       </div>

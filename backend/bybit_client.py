@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import websockets
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Set
 import requests
 from datetime import datetime, timedelta
 
@@ -11,12 +11,13 @@ logger = logging.getLogger(__name__)
 
 class BybitWebSocketClient:
     def __init__(self, trading_pairs: List[str], alert_manager, connection_manager):
-        self.trading_pairs = trading_pairs
+        self.trading_pairs = set(trading_pairs)  # Используем set для быстрого поиска
         self.alert_manager = alert_manager
         self.connection_manager = connection_manager
         self.websocket = None
         self.is_running = False
         self.ping_task = None
+        self.subscription_update_task = None
         self.last_message_time = None
 
         # Bybit WebSocket URLs
@@ -33,12 +34,20 @@ class BybitWebSocketClient:
         # Кэш для отслеживания обработанных свечей
         self.processed_candles = {}  # symbol -> last_processed_timestamp
 
+        # Отслеживание подписок
+        self.subscribed_pairs = set()  # Пары, на которые мы подписаны
+        self.subscription_pending = set()  # Пары, ожидающие подписки
+        self.last_subscription_update = datetime.utcnow()
+
     async def start(self):
         """Запуск WebSocket соединения"""
         self.is_running = True
 
         # Проверяем и загружаем недостающие исторические данные
         await self.check_and_load_missing_data()
+
+        # Запускаем задачу обновления подписок
+        self.subscription_update_task = asyncio.create_task(self._subscription_updater())
 
         # Затем подключаемся к WebSocket для real-time данных
         while self.is_running:
@@ -55,12 +64,129 @@ class BybitWebSocketClient:
         self.is_running = False
         if self.ping_task:
             self.ping_task.cancel()
+        if self.subscription_update_task:
+            self.subscription_update_task.cancel()
         if self.websocket:
             await self.websocket.close()
+
+    async def _subscription_updater(self):
+        """Периодическое обновление подписок на новые пары"""
+        while self.is_running:
+            try:
+                await asyncio.sleep(60)  # Проверяем каждую минуту
+                
+                if not self.is_running:
+                    break
+                
+                # Получаем актуальный список пар из базы данных
+                current_pairs = set(await self.alert_manager.db_manager.get_watchlist())
+                
+                # Находим новые пары
+                new_pairs = current_pairs - self.trading_pairs
+                
+                # Находим удаленные пары
+                removed_pairs = self.trading_pairs - current_pairs
+                
+                if new_pairs or removed_pairs:
+                    logger.info(f"Обновление подписок: +{len(new_pairs)} новых пар, -{len(removed_pairs)} удаленных пар")
+                    
+                    # Обновляем локальный список
+                    self.trading_pairs = current_pairs.copy()
+                    
+                    # Если WebSocket активен, обновляем подписки
+                    if self.websocket and self.websocket.open:
+                        await self._update_subscriptions(new_pairs, removed_pairs)
+                    
+                    # Загружаем данные для новых пар
+                    if new_pairs:
+                        await self._load_data_for_new_pairs(new_pairs)
+                
+                self.last_subscription_update = datetime.utcnow()
+                
+            except Exception as e:
+                logger.error(f"Ошибка обновления подписок: {e}")
+                await asyncio.sleep(30)  # При ошибке ждем 30 секунд
+
+    async def _update_subscriptions(self, new_pairs: Set[str], removed_pairs: Set[str]):
+        """Обновление подписок WebSocket"""
+        try:
+            # Отписываемся от удаленных пар
+            if removed_pairs:
+                unsubscribe_message = {
+                    "op": "unsubscribe",
+                    "args": [f"kline.1.{pair}" for pair in removed_pairs]
+                }
+                await self.websocket.send(json.dumps(unsubscribe_message))
+                logger.info(f"Отписка от {len(removed_pairs)} пар: {list(removed_pairs)[:5]}...")
+                
+                # Обновляем отслеживание подписок
+                self.subscribed_pairs -= removed_pairs
+
+            # Подписываемся на новые пары
+            if new_pairs:
+                # Разбиваем на группы по 50 пар
+                batch_size = 50
+                new_pairs_list = list(new_pairs)
+                
+                for i in range(0, len(new_pairs_list), batch_size):
+                    batch = new_pairs_list[i:i + batch_size]
+                    subscribe_message = {
+                        "op": "subscribe",
+                        "args": [f"kline.1.{pair}" for pair in batch]
+                    }
+                    
+                    await self.websocket.send(json.dumps(subscribe_message))
+                    logger.info(f"Подписка на новые пары (пакет {i // batch_size + 1}): {len(batch)} пар")
+                    
+                    # Добавляем в ожидающие подписки
+                    self.subscription_pending.update(batch)
+                    
+                    # Небольшая задержка между пакетами
+                    if i + batch_size < len(new_pairs_list):
+                        await asyncio.sleep(0.5)
+
+            # Отправляем обновленную статистику
+            await self.connection_manager.broadcast_json({
+                "type": "subscription_updated",
+                "total_pairs": len(self.trading_pairs),
+                "subscribed_pairs": len(self.subscribed_pairs),
+                "new_pairs": list(new_pairs),
+                "removed_pairs": list(removed_pairs),
+                "timestamp": datetime.utcnow().isoformat()
+            })
+
+        except Exception as e:
+            logger.error(f"Ошибка обновления подписок WebSocket: {e}")
+
+    async def _load_data_for_new_pairs(self, new_pairs: Set[str]):
+        """Загрузка исторических данных для новых пар"""
+        try:
+            retention_hours = self.alert_manager.settings.get('data_retention_hours', 2)
+            analysis_hours = self.alert_manager.settings.get('analysis_hours', 1)
+            total_hours_needed = retention_hours + analysis_hours + 1
+
+            logger.info(f"Загрузка данных для {len(new_pairs)} новых пар...")
+            
+            for symbol in new_pairs:
+                try:
+                    await self.load_symbol_data(symbol, total_hours_needed)
+                    await asyncio.sleep(0.1)  # Небольшая задержка между запросами
+                except Exception as e:
+                    logger.error(f"Ошибка загрузки данных для новой пары {symbol}: {e}")
+                    continue
+            
+            logger.info(f"Загрузка данных для новых пар завершена")
+
+        except Exception as e:
+            logger.error(f"Ошибка загрузки данных для новых пар: {e}")
 
     async def check_and_load_missing_data(self):
         """Проверка и загрузка недостающих данных для всех пар"""
         logger.info("Проверка существующих данных...")
+
+        # Получаем актуальный список пар из базы данных
+        current_pairs = await self.alert_manager.db_manager.get_watchlist()
+        self.trading_pairs = set(current_pairs)
 
         # Получаем период хранения из настроек
         retention_hours = self.alert_manager.settings.get('data_retention_hours', 2)
@@ -212,7 +338,7 @@ class BybitWebSocketClient:
         try:
             logger.info(f"Подключение к WebSocket: {self.ws_url}")
             logger.info(
-                f"Подписка на {len(self.trading_pairs)} торговых пар: {self.trading_pairs[:10]}...")
+                f"Подписка на {len(self.trading_pairs)} торговых пар: {list(self.trading_pairs)[:10]}...")
 
             async with websockets.connect(
                     self.ws_url,
@@ -223,11 +349,17 @@ class BybitWebSocketClient:
                 self.websocket = websocket
                 self.last_message_time = datetime.utcnow()
 
+                # Сбрасываем отслеживание подписок
+                self.subscribed_pairs.clear()
+                self.subscription_pending.clear()
+
                 # Подписываемся на kline данные для ВСЕХ торговых пар
                 # Разбиваем на группы по 50 пар для избежания ограничений WebSocket
                 batch_size = 50
-                for i in range(0, len(self.trading_pairs), batch_size):
-                    batch = self.trading_pairs[i:i + batch_size]
+                trading_pairs_list = list(self.trading_pairs)
+                
+                for i in range(0, len(trading_pairs_list), batch_size):
+                    batch = trading_pairs_list[i:i + batch_size]
                     subscribe_message = {
                         "op": "subscribe",
                         "args": [f"kline.1.{pair}" for pair in batch]
@@ -236,8 +368,11 @@ class BybitWebSocketClient:
                     await websocket.send(json.dumps(subscribe_message))
                     logger.info(f"Подписка на пакет {i // batch_size + 1}: {len(batch)} пар")
 
+                    # Добавляем в ожидающие подписки
+                    self.subscription_pending.update(batch)
+
                     # Небольшая задержка между пакетами
-                    if i + batch_size < len(self.trading_pairs):
+                    if i + batch_size < len(trading_pairs_list):
                         await asyncio.sleep(0.5)
 
                 logger.info(f"Подписка завершена на {len(self.trading_pairs)} торговых пар")
@@ -247,6 +382,8 @@ class BybitWebSocketClient:
                     "type": "connection_status",
                     "status": "connected",
                     "pairs_count": len(self.trading_pairs),
+                    "subscribed_count": len(self.subscribed_pairs),
+                    "pending_count": len(self.subscription_pending),
                     "update_interval": self.update_interval,
                     "timestamp": datetime.utcnow().isoformat()
                 })
@@ -268,7 +405,7 @@ class BybitWebSocketClient:
 
                         # Логируем статистику каждые 5 минут
                         if (datetime.utcnow() - self.last_stats_log).total_seconds() > 300:
-                            logger.info(f"WebSocket статистика: {self.messages_received} сообщений получено")
+                            logger.info(f"WebSocket статистика: {self.messages_received} сообщений получено, подписано на {len(self.subscribed_pairs)} пар")
                             self.last_stats_log = datetime.utcnow()
 
                     except Exception as e:
@@ -311,6 +448,8 @@ class BybitWebSocketClient:
             if 'success' in data:
                 if data['success']:
                     logger.debug("Успешная подписка на WebSocket пакет")
+                    # Перемещаем пары из ожидающих в подписанные
+                    # (точное определение каких пар требует дополнительной логики)
                 else:
                     logger.error(f"Ошибка подписки WebSocket: {data}")
                 return
@@ -328,6 +467,11 @@ class BybitWebSocketClient:
                 if symbol not in self.trading_pairs:
                     logger.debug(f"Получены данные для символа {symbol}, которого нет в watchlist")
                     return
+
+                # Добавляем символ в подписанные (если получили данные, значит подписка работает)
+                if symbol in self.subscription_pending:
+                    self.subscription_pending.remove(symbol)
+                self.subscribed_pairs.add(symbol)
 
                 # Биржа передает время в миллисекундах
                 start_time_ms = int(kline_data['start'])
@@ -366,7 +510,7 @@ class BybitWebSocketClient:
                         # Помечаем свечу как обработанную
                         self.processed_candles[symbol] = start_time_ms
 
-                        # НОВОЕ: Загружаем новые данные для поддержания диапазона
+                        # Загружаем новые данные для поддержания диапазона
                         await self._maintain_data_range(symbol)
 
                         logger.debug(f"Обработана закрытая свеча {symbol} в {start_time_ms}")
@@ -412,3 +556,13 @@ class BybitWebSocketClient:
 
         except Exception as e:
             logger.error(f"Ошибка поддержания диапазона данных для {symbol}: {e}")
+
+    def get_subscription_stats(self) -> Dict:
+        """Получить статистику подписок"""
+        return {
+            'total_pairs': len(self.trading_pairs),
+            'subscribed_pairs': len(self.subscribed_pairs),
+            'pending_pairs': len(self.subscription_pending),
+            'last_update': self.last_subscription_update.isoformat() if self.last_subscription_update else None,
+            'subscription_rate': len(self.subscribed_pairs) / len(self.trading_pairs) * 100 if self.trading_pairs else 0
+        }
