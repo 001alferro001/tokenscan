@@ -194,7 +194,7 @@ class DatabaseManager:
             logger.error(f"Ошибка обновления таблиц: {e}")
 
     async def check_data_integrity(self, symbol: str, hours: int) -> Dict:
-        """Улучшенная проверка целостности исторических данных"""
+        """Улучшенная проверка целостности исторических данных с правильным временем"""
         try:
             cursor = self.connection.cursor()
             
@@ -644,13 +644,19 @@ class DatabaseManager:
             return []
 
     async def get_chart_data(self, symbol: str, hours: int = 1, alert_time: str = None) -> List[Dict]:
-        """Получить данные для построения графика"""
+        """Получить данные для построения графика с правильным временем"""
         try:
             cursor = self.connection.cursor(cursor_factory=RealDictCursor)
 
             # Определяем временные границы
             if alert_time:
-                end_time = int(datetime.fromisoformat(alert_time.replace('Z', '+00:00')).timestamp() * 1000)
+                # Парсим время алерта
+                try:
+                    alert_dt = datetime.fromisoformat(alert_time.replace('Z', '+00:00'))
+                    end_time = int(alert_dt.timestamp() * 1000)
+                except:
+                    # Если не удалось распарсить, используем текущее время
+                    end_time = int(datetime.utcnow().timestamp() * 1000)
             else:
                 end_time = int(datetime.utcnow().timestamp() * 1000)
             
@@ -669,7 +675,21 @@ class DatabaseManager:
             result = cursor.fetchall()
             cursor.close()
 
-            return [dict(row) for row in result]
+            chart_data = []
+            for row in result:
+                chart_data.append({
+                    'timestamp': int(row['timestamp']),
+                    'open': float(row['open']),
+                    'high': float(row['high']),
+                    'low': float(row['low']),
+                    'close': float(row['close']),
+                    'volume': float(row['volume']),
+                    'volume_usdt': float(row['volume_usdt']),
+                    'is_long': row['is_long']
+                })
+
+            logger.info(f"Получено {len(chart_data)} свечей для {symbol} за период {hours}ч")
+            return chart_data
 
         except Exception as e:
             logger.error(f"Ошибка получения данных графика для {symbol}: {e}")

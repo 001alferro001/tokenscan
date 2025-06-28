@@ -97,13 +97,16 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
       setLoading(true);
       setError(null);
 
-      const response = await fetch(`/api/chart-data/${alert.symbol}?hours=1&alert_time=${alert.close_timestamp || alert.timestamp}`);
+      // Используем время алерта для загрузки данных
+      const alertTime = alert.close_timestamp || alert.timestamp;
+      const response = await fetch(`/api/chart-data/${alert.symbol}?hours=2&alert_time=${alertTime}`);
       
       if (!response.ok) {
         throw new Error('Ошибка загрузки данных графика');
       }
 
       const data = await response.json();
+      console.log(`Загружено ${data.chart_data?.length || 0} свечей для ${alert.symbol}`);
       setChartData(data.chart_data || []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Неизвестная ошибка');
@@ -322,7 +325,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
       plugins: {
         title: {
           display: true,
-          text: `${alert.symbol} - Свечной график с объемами`,
+          text: `${alert.symbol} - Свечной график с объемами (${chartData.length} свечей)`,
           color: '#374151'
         },
         legend: {
@@ -333,7 +336,16 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
         tooltip: {
           callbacks: {
             title: (context) => {
-              return new Date(context[0].parsed.x).toLocaleString('ru-RU');
+              const date = new Date(context[0].parsed.x);
+              return date.toLocaleString('ru-RU', {
+                timeZone: 'UTC',
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+              }) + ' UTC';
             },
             label: (context) => {
               if (context.datasetIndex === 0) {
@@ -370,7 +382,8 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
             unit: 'minute',
             displayFormats: {
               minute: 'HH:mm'
-            }
+            },
+            tooltipFormat: 'dd.MM.yyyy HH:mm:ss'
           },
           ticks: {
             color: '#6B7280'
@@ -432,7 +445,15 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
           <div>
             <h2 className="text-2xl font-bold text-gray-900">{alert.symbol}</h2>
             <p className="text-gray-600">
-              График с данными • Алерт: {new Date(alert.close_timestamp || alert.timestamp).toLocaleString('ru-RU')}
+              График с данными • Алерт: {new Date(alert.close_timestamp || alert.timestamp).toLocaleString('ru-RU', {
+                timeZone: 'UTC',
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+              })} UTC
             </p>
             {alert.has_imbalance && (
               <div className="flex items-center space-x-2 mt-2">
@@ -530,9 +551,17 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
               <span className="ml-2 text-gray-900 font-mono">${alert.price.toFixed(8)}</span>
             </div>
             <div>
-              <span className="text-gray-600">Время:</span>
+              <span className="text-gray-600">Время (UTC):</span>
               <span className="ml-2 text-gray-900">
-                {new Date(alert.close_timestamp || alert.timestamp).toLocaleString('ru-RU')}
+                {new Date(alert.close_timestamp || alert.timestamp).toLocaleString('ru-RU', {
+                  timeZone: 'UTC',
+                  year: 'numeric',
+                  month: '2-digit',
+                  day: '2-digit',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                  second: '2-digit'
+                })}
               </span>
             </div>
             <div>
