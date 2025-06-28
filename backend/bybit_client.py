@@ -207,7 +207,7 @@ class BybitWebSocketClient:
         """Подключение к WebSocket с подпиской на ВСЕ торговые пары"""
         try:
             logger.info(f"Подключение к WebSocket: {self.ws_url}")
-            logger.info(f"Подписка на {len(self.trading_pairs)} торговых пар: {self.trading_pairs[:10]}...")  # Показываем первые 10
+            logger.info(f"Подписка на {len(self.trading_pairs)} торговых пар")
             
             async with websockets.connect(
                 self.ws_url,
@@ -219,8 +219,10 @@ class BybitWebSocketClient:
                 self.last_message_time = datetime.utcnow()
                 
                 # Подписываемся на kline данные для ВСЕХ торговых пар
-                # Разбиваем на группы по 50 пар для избежания ограничений WebSocket
-                batch_size = 50
+                # Увеличиваем размер пакета до 100 пар для более эффективной подписки
+                batch_size = 100
+                total_subscribed = 0
+                
                 for i in range(0, len(self.trading_pairs), batch_size):
                     batch = self.trading_pairs[i:i + batch_size]
                     subscribe_message = {
@@ -229,19 +231,21 @@ class BybitWebSocketClient:
                     }
                     
                     await websocket.send(json.dumps(subscribe_message))
-                    logger.info(f"Подписка на пакет {i//batch_size + 1}: {len(batch)} пар")
+                    total_subscribed += len(batch)
+                    logger.info(f"Подписка на пакет {i//batch_size + 1}: {len(batch)} пар (всего подписано: {total_subscribed}/{len(self.trading_pairs)})")
                     
-                    # Небольшая задержка между пакетами
+                    # Небольшая задержка между пакетами для стабильности
                     if i + batch_size < len(self.trading_pairs):
-                        await asyncio.sleep(0.5)
+                        await asyncio.sleep(0.2)
                 
-                logger.info(f"Подписка завершена на {len(self.trading_pairs)} торговых пар")
+                logger.info(f"✅ Подписка завершена на {total_subscribed} торговых пар")
                 
                 # Отправляем статус подключения
                 await self.connection_manager.broadcast_json({
                     "type": "connection_status",
                     "status": "connected",
                     "pairs_count": len(self.trading_pairs),
+                    "subscribed_count": total_subscribed,
                     "update_interval": self.update_interval,
                     "timestamp": datetime.utcnow().isoformat()
                 })

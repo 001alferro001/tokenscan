@@ -19,6 +19,8 @@ import SmartMoneyChartModal from './components/SmartMoneyChartModal';
 import WatchlistModal from './components/WatchlistModal';
 import StreamDataModal from './components/StreamDataModal';
 import SettingsModal from './components/SettingsModal';
+import { TimeZoneProvider } from './contexts/TimeZoneContext';
+import { useTimeSync } from './hooks/useTimeSync';
 
 interface Alert {
   id: number;
@@ -117,7 +119,7 @@ interface Settings {
   time_sync?: TimeSync;
 }
 
-const App: React.FC = () => {
+const AppContent: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'volume' | 'consecutive' | 'priority' | 'watchlist' | 'stream' | 'smart_money'>('volume');
   const [volumeAlerts, setVolumeAlerts] = useState<Alert[]>([]);
   const [consecutiveAlerts, setConsecutiveAlerts] = useState<Alert[]>([]);
@@ -146,6 +148,9 @@ const App: React.FC = () => {
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const dataRefreshIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const activityTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Используем хук синхронизации времени
+  useTimeSync();
 
   useEffect(() => {
     loadInitialData();
@@ -519,13 +524,14 @@ const App: React.FC = () => {
         setStreamData(prev => {
           // Обновляем или добавляем данные для символа
           const filtered = prev.filter(item => item.symbol !== data.symbol);
-          const newData = [streamItem, ...filtered].slice(0, 1000); // Увеличиваем лимит до 1000
+          const newData = [streamItem, ...filtered].slice(0, 2000); // Увеличиваем лимит до 2000
           return newData;
         });
         break;
 
       case 'connection_status':
         setConnectionStatus(data.status === 'connected' ? 'connected' : 'disconnected');
+        console.log('Статус подключения:', data.status, 'Подписано пар:', data.subscribed_count || data.pairs_count);
         break;
 
       case 'watchlist_updated':
@@ -1165,7 +1171,7 @@ const App: React.FC = () => {
             </div>
             
             <div className="space-y-4">
-              {streamData.slice(0, 100).map((item, index) => (
+              {streamData.slice(0, 200).map((item, index) => (
                 <div key={`${item.symbol}-${index}`} className="bg-white rounded-lg shadow-md border border-gray-200 p-4 w-full">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center space-x-4">
@@ -1260,6 +1266,14 @@ const App: React.FC = () => {
         />
       )}
     </div>
+  );
+};
+
+const App: React.FC = () => {
+  return (
+    <TimeZoneProvider>
+      <AppContent />
+    </TimeZoneProvider>
   );
 };
 
