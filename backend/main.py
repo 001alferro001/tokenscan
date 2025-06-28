@@ -17,7 +17,8 @@ from alert_manager import AlertManager
 from bybit_client import BybitWebSocketClient
 from price_filter import PriceFilter
 from telegram_bot import TelegramBot
-from time_sync import ExchangeTimeSync
+# Временно отключаем синхронизацию времени
+# from time_sync import ExchangeTimeSync
 
 # Настройка логирования
 logging.basicConfig(
@@ -32,7 +33,7 @@ alert_manager = None
 bybit_client = None
 price_filter = None
 telegram_bot = None
-time_sync = None
+# time_sync = None  # Отключено
 manager = None
 
 class ConnectionManager:
@@ -78,14 +79,14 @@ manager = ConnectionManager()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    global db_manager, alert_manager, bybit_client, price_filter, telegram_bot, time_sync
+    global db_manager, alert_manager, bybit_client, price_filter, telegram_bot  # , time_sync
     
     try:
         logger.info("Запуск системы анализа объемов...")
         
-        # Инициализация синхронизации времени
-        time_sync = ExchangeTimeSync()
-        await time_sync.start()
+        # Отключаем синхронизацию времени временно
+        # time_sync = ExchangeTimeSync()
+        # await time_sync.start()
         
         # Инициализация базы данных
         db_manager = DatabaseManager()
@@ -94,8 +95,8 @@ async def lifespan(app: FastAPI):
         # Инициализация Telegram бота
         telegram_bot = TelegramBot()
         
-        # Инициализация менеджера алертов с синхронизацией времени
-        alert_manager = AlertManager(db_manager, telegram_bot, manager, time_sync)
+        # Инициализация менеджера алертов БЕЗ синхронизации времени
+        alert_manager = AlertManager(db_manager, telegram_bot, manager, None)  # time_sync=None
         
         # Инициализация фильтра цен
         price_filter = PriceFilter(db_manager)
@@ -134,8 +135,8 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logger.info("Остановка системы...")
-    if time_sync:
-        await time_sync.stop()
+    # if time_sync:
+    #     await time_sync.stop()
     if bybit_client:
         await bybit_client.stop()
     if price_filter:
@@ -202,9 +203,6 @@ async def get_stats():
         watchlist = await db_manager.get_watchlist()
         alerts_data = await db_manager.get_all_alerts(limit=1000)
         
-        # Добавляем информацию о синхронизации времени
-        time_sync_status = time_sync.get_sync_status() if time_sync else None
-        
         return {
             "pairs_count": len(watchlist),
             "alerts_count": len(alerts_data.get('alerts', [])),
@@ -213,7 +211,10 @@ async def get_stats():
             "priority_alerts_count": len(alerts_data.get('priority_alerts', [])),
             "last_update": datetime.now().isoformat(),
             "system_status": "running",
-            "time_sync": time_sync_status
+            "time_sync": {
+                "is_synced": False,
+                "status": "disabled_temporarily"
+            }
         }
     except Exception as e:
         logger.error(f"Ошибка получения статистики: {e}")
@@ -223,14 +224,11 @@ async def get_stats():
 async def get_time_info():
     """Получить информацию о времени"""
     try:
-        if time_sync:
-            return time_sync.get_sync_status()
-        else:
-            return {
-                "is_synced": False,
-                "local_time": datetime.now().isoformat(),
-                "error": "Time sync not initialized"
-            }
+        return {
+            "is_synced": False,
+            "local_time": datetime.now().isoformat(),
+            "status": "Time sync temporarily disabled"
+        }
     except Exception as e:
         logger.error(f"Ошибка получения информации о времени: {e}")
         return {"error": str(e)}
@@ -371,12 +369,12 @@ async def get_settings():
             },
             "telegram": {
                 "enabled": telegram_bot.enabled if telegram_bot else False
+            },
+            "time_sync": {
+                "is_synced": False,
+                "status": "disabled_temporarily"
             }
         }
-        
-        # Добавляем информацию о синхронизации времени
-        if time_sync:
-            settings["time_sync"] = time_sync.get_sync_status()
         
         return settings
     return {
@@ -413,7 +411,7 @@ async def get_settings():
         },
         "time_sync": {
             "is_synced": False,
-            "error": "Time sync not initialized"
+            "status": "disabled_temporarily"
         }
     }
 

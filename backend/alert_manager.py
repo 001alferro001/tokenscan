@@ -161,7 +161,8 @@ class AlertManager:
         self.db_manager = db_manager
         self.telegram_bot = telegram_bot
         self.connection_manager = connection_manager
-        self.time_sync = time_sync
+        # ОТКЛЮЧАЕМ синхронизацию времени временно
+        self.time_sync = None  # time_sync
         self.imbalance_analyzer = ImbalanceAnalyzer()
         
         # Настройки из переменных окружения
@@ -188,36 +189,21 @@ class AlertManager:
         }
         
         # Кэш для отслеживания состояния алертов
-        self.volume_alerts_cache = {}  # symbol -> {timestamp, alert_id, alert_level}
-        self.consecutive_counters = {}  # symbol -> consecutive long count
-        self.consecutive_alert_ids = {}  # symbol -> ID текущего алерта по последовательности
         self.alert_cooldowns = {}  # symbol -> last alert timestamp
         
-        logger.info("AlertManager инициализирован с анализом имбаланса и синхронизацией времени")
+        logger.info("AlertManager инициализирован БЕЗ синхронизации времени")
 
     def _get_current_time(self) -> datetime:
-        """Получить текущее время (биржевое, если доступно)"""
-        if self.time_sync:
-            return self.time_sync.get_exchange_time()
+        """Получить текущее время (всегда UTC)"""
         return datetime.utcnow()
-
-    def _is_candle_closed(self, kline_data: Dict) -> bool:
-        """Проверка, закрылась ли свеча (используя биржевое время)"""
-        if self.time_sync:
-            return self.time_sync.is_candle_closed(kline_data)
-        
-        # Fallback на UTC время
-        current_time = datetime.utcnow().timestamp() * 1000
-        candle_end_time = int(kline_data['end'])
-        return current_time >= candle_end_time
 
     async def process_kline_data(self, symbol: str, kline_data: Dict) -> List[Dict]:
         """Обработка данных свечи и генерация алертов"""
         alerts = []
         
         try:
-            # Определяем, закрылась ли свеча
-            is_closed = self._is_candle_closed(kline_data)
+            # Простая проверка закрытия свечи по confirm от биржи
+            is_closed = kline_data.get('confirm', False)
             
             # Сохраняем данные в базу
             await self.db_manager.save_kline_data(symbol, kline_data, is_closed)
@@ -278,9 +264,7 @@ class AlertManager:
             if current_volume_usdt < self.settings['min_volume_usdt']:
                 return None
             
-            timestamp = int(kline_data['start'])
-            
-            # Проверяем кулдаун для повторных сигналов
+            # Проверяем кулдаун для повторных сигналов (простая проверка)
             if symbol in self.alert_cooldowns:
                 last_alert_time = self.alert_cooldowns[symbol]
                 current_time = self._get_current_time()
@@ -611,9 +595,6 @@ class AlertManager:
     async def cleanup_old_data(self):
         """Очистка старых данных"""
         try:
-            # Очищаем кэши
-            cutoff_time = self._get_current_time() - timedelta(minutes=5)
-            
             # Очищаем кулдауны (старше часа)
             cooldown_cutoff = self._get_current_time() - timedelta(hours=1)
             for symbol in list(self.alert_cooldowns.keys()):

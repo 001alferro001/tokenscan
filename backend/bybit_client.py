@@ -29,15 +29,15 @@ class BybitWebSocketClient:
         self.messages_received = 0
         self.last_stats_log = datetime.utcnow()
         
-        # Кэш для отслеживания обработанных свечей
-        self.processed_candles = {}  # symbol -> set of timestamps
+        # Кэш для отслеживания обработанных свечей (упрощенный)
+        self.processed_candles = {}  # symbol -> last_processed_timestamp
 
     async def start(self):
         """Запуск WebSocket соединения"""
         self.is_running = True
         
         # Сначала загружаем исторические данные
-        await self.load_historical_data_with_integrity_check()
+        await self.load_historical_data_simple()
         
         # Затем подключаемся к WebSocket для real-time данных
         while self.is_running:
@@ -57,9 +57,9 @@ class BybitWebSocketClient:
         if self.websocket:
             await self.websocket.close()
 
-    async def load_historical_data_with_integrity_check(self):
-        """Загрузка исторических данных с проверкой целостности"""
-        logger.info("Проверка целостности исторических данных...")
+    async def load_historical_data_simple(self):
+        """Простая загрузка исторических данных без сложной логики"""
+        logger.info("Загрузка исторических данных...")
         
         # Получаем период хранения из настроек
         retention_hours = self.alert_manager.settings.get('data_retention_hours', 2)
@@ -68,152 +68,65 @@ class BybitWebSocketClient:
         
         for symbol in self.trading_pairs:
             try:
-                # Проверяем целостность данных
-                integrity_info = await self.alert_manager.db_manager.check_data_integrity(
-                    symbol, total_hours_needed
-                )
-                
-                logger.info(f"{symbol}: {integrity_info['total_existing']}/{integrity_info['total_expected']} свечей "
-                           f"({integrity_info['integrity_percentage']:.1f}% целостность)")
-                
-                # Если целостность менее 95% или есть недостающие данные, загружаем
-                if integrity_info['integrity_percentage'] < 95 or integrity_info['missing_count'] > 0:
-                    logger.info(f"Загрузка недостающих данных для {symbol}...")
-                    await self.load_missing_data(symbol, integrity_info['missing_periods'], total_hours_needed)
-                else:
-                    logger.info(f"Данные для {symbol} актуальны")
-                
-                # Небольшая задержка между запросами
-                await asyncio.sleep(0.1)
+                await self.load_symbol_data(symbol, total_hours_needed)
+                await asyncio.sleep(0.1)  # Небольшая задержка между запросами
                         
             except Exception as e:
-                logger.error(f"Ошибка проверки данных для {symbol}: {e}")
+                logger.error(f"Ошибка загрузки данных для {symbol}: {e}")
                 continue
 
-        logger.info("Проверка целостности данных завершена")
+        logger.info("Загрузка исторических данных завершена")
 
-    async def load_missing_data(self, symbol: str, missing_periods: List[int], retention_hours: int):
-        """Загрузка недостающих исторических данных"""
+    async def load_symbol_data(self, symbol: str, hours: int):
+        """Загрузка данных для одного символа"""
         try:
-            if not missing_periods:
-                # Загружаем весь период с запасом
-                limit = min(retention_hours * 60 + 60, 1000)
-                
-                # Используем биржевое время для точности
-                if self.alert_manager.time_sync:
-                    end_time = self.alert_manager.time_sync.get_exchange_timestamp()
-                else:
-                    end_time = int(datetime.utcnow().timestamp() * 1000)
-                
-                start_time = end_time - (retention_hours * 60 * 60 * 1000)
-                
-                url = f"{self.rest_url}/v5/market/kline"
-                params = {
-                    'category': 'linear',
-                    'symbol': symbol,
-                    'interval': '1',
-                    'start': start_time,
-                    'end': end_time,
-                    'limit': limit
-                }
-                
-                response = requests.get(url, params=params, timeout=10)
-                data = response.json()
-                
-                if data.get('retCode') == 0:
-                    klines = data['result']['list']
-                    klines.reverse()  # Bybit возвращает данные в обратном порядке
-                    
-                    saved_count = 0
-                    for kline in klines:
-                        kline_data = {
-                            'start': int(kline[0]),
-                            'end': int(kline[0]) + 60000,
-                            'open': kline[1],
-                            'high': kline[2],
-                            'low': kline[3],
-                            'close': kline[4],
-                            'volume': kline[5]
-                        }
-                        
-                        # Сохраняем как закрытую свечу
-                        await self.alert_manager.db_manager.save_kline_data(symbol, kline_data, is_closed=True)
-                        saved_count += 1
-                    
-                    logger.info(f"Загружено {saved_count} свечей для {symbol}")
-                else:
-                    logger.error(f"Ошибка API при загрузке данных для {symbol}: {data.get('retMsg')}")
-            else:
-                # Загружаем только недостающие периоды
-                await self._load_specific_missing_periods(symbol, missing_periods)
-                    
-        except Exception as e:
-            logger.error(f"Ошибка загрузки недостающих данных для {symbol}: {e}")
-
-    async def _load_specific_missing_periods(self, symbol: str, missing_periods: List[int]):
-        """Загрузка конкретных недостающих периодов"""
-        try:
-            # Группируем последовательные периоды для оптимизации запросов
-            groups = self._group_consecutive_periods(missing_periods)
+            # Простая загрузка без сложной проверки целостности
+            limit = min(hours * 60 + 60, 1000)
             
-            for group in groups:
-                start_time = group[0]
-                end_time = group[-1] + 60000
+            # Используем простое UTC время
+            end_time = int(datetime.utcnow().timestamp() * 1000)
+            start_time = end_time - (hours * 60 * 60 * 1000)
+            
+            url = f"{self.rest_url}/v5/market/kline"
+            params = {
+                'category': 'linear',
+                'symbol': symbol,
+                'interval': '1',
+                'start': start_time,
+                'end': end_time,
+                'limit': limit
+            }
+            
+            response = requests.get(url, params=params, timeout=10)
+            data = response.json()
+            
+            if data.get('retCode') == 0:
+                klines = data['result']['list']
+                klines.reverse()  # Bybit возвращает данные в обратном порядке
                 
-                url = f"{self.rest_url}/v5/market/kline"
-                params = {
-                    'category': 'linear',
-                    'symbol': symbol,
-                    'interval': '1',
-                    'start': start_time,
-                    'end': end_time
-                }
-                
-                response = requests.get(url, params=params, timeout=10)
-                data = response.json()
-                
-                if data.get('retCode') == 0:
-                    klines = data['result']['list']
-                    klines.reverse()
+                saved_count = 0
+                for kline in klines:
+                    kline_data = {
+                        'start': int(kline[0]),
+                        'end': int(kline[0]) + 60000,
+                        'open': kline[1],
+                        'high': kline[2],
+                        'low': kline[3],
+                        'close': kline[4],
+                        'volume': kline[5],
+                        'confirm': True  # Исторические данные всегда закрыты
+                    }
                     
-                    for kline in klines:
-                        kline_data = {
-                            'start': int(kline[0]),
-                            'end': int(kline[0]) + 60000,
-                            'open': kline[1],
-                            'high': kline[2],
-                            'low': kline[3],
-                            'close': kline[4],
-                            'volume': kline[5]
-                        }
-                        
-                        await self.alert_manager.db_manager.save_kline_data(symbol, kline_data, is_closed=True)
-                else:
-                    logger.error(f"Ошибка API при загрузке группы для {symbol}: {data.get('retMsg')}")
+                    # Сохраняем как закрытую свечу
+                    await self.alert_manager.db_manager.save_kline_data(symbol, kline_data, is_closed=True)
+                    saved_count += 1
                 
-                await asyncio.sleep(0.2)
-                
-        except Exception as e:
-            logger.error(f"Ошибка загрузки конкретных периодов для {symbol}: {e}")
-
-    def _group_consecutive_periods(self, periods: List[int]) -> List[List[int]]:
-        """Группировка последовательных периодов"""
-        if not periods:
-            return []
-        
-        periods.sort()
-        groups = []
-        current_group = [periods[0]]
-        
-        for i in range(1, len(periods)):
-            if periods[i] - periods[i-1] == 60000:
-                current_group.append(periods[i])
+                logger.info(f"Загружено {saved_count} свечей для {symbol}")
             else:
-                groups.append(current_group)
-                current_group = [periods[i]]
-        
-        groups.append(current_group)
-        return groups
+                logger.error(f"Ошибка API при загрузке данных для {symbol}: {data.get('retMsg')}")
+                    
+        except Exception as e:
+            logger.error(f"Ошибка загрузки данных для {symbol}: {e}")
 
     async def connect_websocket(self):
         """Подключение к WebSocket"""
@@ -328,31 +241,25 @@ class BybitWebSocketClient:
                     'high': kline_data['high'],
                     'low': kline_data['low'],
                     'close': kline_data['close'],
-                    'volume': kline_data['volume']
+                    'volume': kline_data['volume'],
+                    'confirm': kline_data.get('confirm', False)  # Важно: флаг закрытия от биржи
                 }
                 
-                # Проверяем, не обрабатывали ли мы уже эту свечу
+                # Простая проверка на дублирование
                 timestamp = int(kline_data['start'])
-                if symbol not in self.processed_candles:
-                    self.processed_candles[symbol] = set()
-                
-                # Определяем, закрылась ли свеча
                 is_closed = kline_data.get('confirm', False)
                 
                 # Если свеча закрылась и мы её ещё не обрабатывали
-                if is_closed and timestamp not in self.processed_candles[symbol]:
-                    # Обрабатываем через менеджер алертов
-                    alerts = await self.alert_manager.process_kline_data(symbol, formatted_data)
-                    
-                    # Помечаем свечу как обработанную
-                    self.processed_candles[symbol].add(timestamp)
-                    
-                    # Очищаем старые записи (оставляем только последние 100)
-                    if len(self.processed_candles[symbol]) > 100:
-                        sorted_timestamps = sorted(self.processed_candles[symbol])
-                        self.processed_candles[symbol] = set(sorted_timestamps[-100:])
-                    
-                    logger.debug(f"Обработана закрытая свеча {symbol} в {timestamp}")
+                if is_closed:
+                    last_processed = self.processed_candles.get(symbol, 0)
+                    if timestamp > last_processed:
+                        # Обрабатываем через менеджер алертов
+                        alerts = await self.alert_manager.process_kline_data(symbol, formatted_data)
+                        
+                        # Помечаем свечу как обработанную
+                        self.processed_candles[symbol] = timestamp
+                        
+                        logger.debug(f"Обработана закрытая свеча {symbol} в {timestamp}")
                 
                 # Отправляем обновление данных клиентам (потоковые данные)
                 stream_item = {
