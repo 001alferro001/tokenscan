@@ -138,24 +138,28 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
     window.URL.revokeObjectURL(url);
   };
 
-  const formatTime = (timestamp: number | string) => {
+  const formatUTCTime = (timestamp: number | string) => {
     const date = new Date(timestamp);
     return date.toLocaleString('ru-RU', {
+      timeZone: 'UTC',
       year: 'numeric',
       month: '2-digit',
       day: '2-digit',
       hour: '2-digit',
       minute: '2-digit',
       second: '2-digit'
-    });
+    }) + ' UTC';
   };
 
   const getChartConfig = () => {
     if (chartData.length === 0) return null;
 
-    // Определяем время алерта
+    // Определяем время алерта - используем время закрытой свечи (предыдущая минута)
     const alertTime = new Date(alert.close_timestamp || alert.timestamp).getTime();
+    const candleAlertTime = alertTime - 60000; // Предыдущая минута (где был объем)
     
+    const preliminaryTime = alert.preliminary_alert ? new Date(alert.preliminary_alert.timestamp).getTime() : null;
+
     // Создаем свечные данные
     const candleData = chartData.map(d => ({
       x: d.timestamp,
@@ -165,23 +169,32 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
       c: d.close
     }));
 
-    // Данные объема с увеличенной прозрачностью
+    // Данные объема с повышенной прозрачностью
     const volumeData = chartData.map(d => ({
       x: d.timestamp,
       y: d.volume_usdt
     }));
 
-    // Отметки алертов
-    const alertPoints = [{
-      x: alertTime,
+    // Отметки алертов - размещаем на свече, где был объем
+    const alertPoints = [];
+    
+    if (preliminaryTime) {
+      alertPoints.push({
+        x: candleAlertTime, // На свече с объемом
+        y: alert.preliminary_alert?.price || alert.price
+      });
+    }
+    
+    alertPoints.push({
+      x: candleAlertTime, // На свече с объемом
       y: alert.price
-    }];
+    });
 
     // Уровень алерта
     let alertLevelData = [];
     if (alert.candle_data?.alert_level) {
       alertLevelData = [{
-        x: alertTime,
+        x: candleAlertTime, // На свече с объемом
         y: alert.candle_data.alert_level
       }];
     }
@@ -190,7 +203,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
     const annotations: any = {};
     
     if (alert.has_imbalance && alert.imbalance_data) {
-      const imbalanceTime = alert.imbalance_data.timestamp || alertTime;
+      const imbalanceTime = alert.imbalance_data.timestamp || candleAlertTime;
       
       // Линии границ имбаланса
       annotations.imbalanceTop = {
@@ -217,7 +230,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
         type: 'line',
         yAxisID: 'y',
         xMin: imbalanceTime,
-        xMax: imbalanceTime + 300000,
+        xMax: imbalanceTime + 300000, // 5 минут вправо
         yMin: alert.imbalance_data.bottom,
         yMax: alert.imbalance_data.bottom,
         borderColor: alert.imbalance_data.direction === 'bullish' ? 'rgb(34, 197, 94)' : 'rgb(239, 68, 68)',
@@ -282,8 +295,8 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
           data: volumeData,
           type: 'bar' as const,
           // Увеличиваем прозрачность для лучшей видимости свечей
-          backgroundColor: chartData.map(d => d.is_long ? 'rgba(34, 197, 94, 0.2)' : 'rgba(239, 68, 68, 0.2)'),
-          borderColor: chartData.map(d => d.is_long ? 'rgba(34, 197, 94, 0.4)' : 'rgba(239, 68, 68, 0.4)'),
+          backgroundColor: chartData.map(d => d.is_long ? 'rgba(34, 197, 94, 0.3)' : 'rgba(239, 68, 68, 0.3)'),
+          borderColor: chartData.map(d => d.is_long ? 'rgba(34, 197, 94, 0.6)' : 'rgba(239, 68, 68, 0.6)'),
           borderWidth: 1,
           yAxisID: 'y1'
         },
@@ -313,6 +326,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
     // Рассчитываем диапазоны для правильного масштабирования
     const maxPrice = Math.max(...chartData.map(d => d.high));
     const minPrice = Math.min(...chartData.map(d => d.low));
+    const priceRange = maxPrice - minPrice;
     const maxVolume = Math.max(...chartData.map(d => d.volume_usdt));
 
     const options: ChartOptions = {
@@ -336,7 +350,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
         tooltip: {
           callbacks: {
             title: (context) => {
-              return formatTime(context[0].parsed.x);
+              return formatUTCTime(context[0].parsed.x);
             },
             label: (context) => {
               if (context.datasetIndex === 0) {
@@ -401,8 +415,9 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
           type: 'linear',
           display: true,
           position: 'right',
+          // Объем имеет свой собственный масштаб, основанный на максимальном объеме
           min: 0,
-          max: maxVolume * 1.1,
+          max: maxVolume * 1.1, // Добавляем 10% сверху для лучшей визуализации
           ticks: {
             color: '#6B7280',
             callback: function(value) {
@@ -435,7 +450,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
           <div>
             <h2 className="text-2xl font-bold text-gray-900">{alert.symbol}</h2>
             <p className="text-gray-600">
-              График с данными • Алерт: {formatTime(alert.close_timestamp || alert.timestamp)}
+              График с данными • Алерт: {formatUTCTime(alert.close_timestamp || alert.timestamp)}
             </p>
             {alert.has_imbalance && (
               <div className="flex items-center space-x-2 mt-2">
@@ -533,9 +548,9 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
               <span className="ml-2 text-gray-900 font-mono">${alert.price.toFixed(8)}</span>
             </div>
             <div>
-              <span className="text-gray-600">Время:</span>
+              <span className="text-gray-600">Время (UTC):</span>
               <span className="ml-2 text-gray-900">
-                {formatTime(alert.close_timestamp || alert.timestamp)}
+                {formatUTCTime(alert.close_timestamp || alert.timestamp)}
               </span>
             </div>
             <div>
@@ -572,7 +587,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
               </div>
               {alert.candle_data.alert_level && (
                 <div className="mt-2 text-sm">
-                  <span className="text-gray-600">Уровень алерта:</span>
+                  <span className="text-gray-600">Уровень первоначального алерта:</span>
                   <span className="ml-2 text-purple-600 font-mono">${alert.candle_data.alert_level.toFixed(8)}</span>
                 </div>
               )}
