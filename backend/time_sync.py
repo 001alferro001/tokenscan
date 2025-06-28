@@ -20,7 +20,7 @@ class ExchangeTimeSync:
     async def start(self):
         """Запуск автоматической синхронизации времени"""
         self.is_running = True
-        logger.info("Запуск синхронизации времени с биржей Bybit")
+        logger.info("🕐 Запуск синхронизации времени с биржей Bybit")
         
         # Первоначальная синхронизация
         await self.sync_time()
@@ -37,7 +37,7 @@ class ExchangeTimeSync:
                 await self.sync_task
             except asyncio.CancelledError:
                 pass
-        logger.info("Синхронизация времени остановлена")
+        logger.info("🕐 Синхронизация времени остановлена")
         
     async def _periodic_sync(self):
         """Периодическая синхронизация времени"""
@@ -49,7 +49,7 @@ class ExchangeTimeSync:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Ошибка периодической синхронизации времени: {e}")
+                logger.error(f"❌ Ошибка периодической синхронизации времени: {e}")
                 await asyncio.sleep(60)  # Повторить через минуту при ошибке
                 
     async def sync_time(self) -> bool:
@@ -70,8 +70,12 @@ class ExchangeTimeSync:
                         local_time_after = datetime.utcnow().timestamp() * 1000
                         
                         if data.get('retCode') == 0:
-                            # Время биржи в миллисекундах
-                            exchange_time = int(data['result']['timeSecond']) * 1000 + int(data['result']['timeNano']) // 1000000
+                            # ИСПРАВЛЯЕМ: Правильное время биржи в миллисекундах
+                            exchange_time_seconds = int(data['result']['timeSecond'])
+                            exchange_time_nanos = int(data['result']['timeNano'])
+                            
+                            # Преобразуем в миллисекунды правильно
+                            exchange_time = exchange_time_seconds * 1000 + exchange_time_nanos // 1000000
                             
                             # Учитываем задержку сети (половина времени запроса)
                             network_delay = (local_time_after - local_time_before) / 2
@@ -82,17 +86,28 @@ class ExchangeTimeSync:
                             self.last_sync = datetime.utcnow()
                             self.is_synced = True
                             
-                            logger.info(f"Время синхронизировано с биржей Bybit. Смещение: {self.time_offset:.0f}мс, задержка сети: {network_delay:.0f}мс")
-                            return True
+                            # Проверяем корректность времени
+                            current_unix_ms = int(datetime.utcnow().timestamp() * 1000)
+                            expected_range_min = 1700000000000  # 2023 год
+                            expected_range_max = 2000000000000  # 2033 год
+                            
+                            if expected_range_min <= exchange_time <= expected_range_max:
+                                logger.info(f"✅ Время синхронизировано с биржей Bybit. Смещение: {self.time_offset:.0f}мс, задержка сети: {network_delay:.0f}мс")
+                                logger.info(f"🕐 Биржевое время: {exchange_time}, локальное: {current_unix_ms:.0f}")
+                                return True
+                            else:
+                                logger.error(f"❌ Некорректное время биржи: {exchange_time} (ожидается в диапазоне {expected_range_min}-{expected_range_max})")
+                                self.is_synced = False
+                                return False
                         else:
-                            logger.error(f"Ошибка API биржи при синхронизации времени: {data.get('retMsg')}")
+                            logger.error(f"❌ Ошибка API биржи при синхронизации времени: {data.get('retMsg')}")
                     else:
-                        logger.error(f"HTTP ошибка при синхронизации времени: {response.status}")
+                        logger.error(f"❌ HTTP ошибка при синхронизации времени: {response.status}")
                         
         except asyncio.TimeoutError:
-            logger.error("Таймаут при синхронизации времени с биржей")
+            logger.error("⏰ Таймаут при синхронизации времени с биржей")
         except Exception as e:
-            logger.error(f"Ошибка синхронизации времени с биржей: {e}")
+            logger.error(f"❌ Ошибка синхронизации времени с биржей: {e}")
             
         self.is_synced = False
         return False

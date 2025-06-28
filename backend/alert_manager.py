@@ -161,7 +161,7 @@ class AlertManager:
         self.db_manager = db_manager
         self.telegram_bot = telegram_bot
         self.connection_manager = connection_manager
-        self.time_sync = time_sync  # Включаем синхронизацию времени
+        self.time_sync = time_sync
         self.imbalance_analyzer = ImbalanceAnalyzer()
         
         # Настройки из переменных окружения
@@ -210,6 +210,7 @@ class AlertManager:
             logger.debug(f"⏰ Используется биржевый timestamp: {timestamp}")
             return timestamp
         else:
+            # ИСПРАВЛЯЕМ: Правильный расчет UNIX времени в миллисекундах
             timestamp = int(datetime.utcnow().timestamp() * 1000)
             logger.debug(f"⏰ Используется UTC timestamp (fallback): {timestamp}")
             return timestamp
@@ -318,7 +319,6 @@ class AlertManager:
                 
                 # ИСПРАВЛЯЕМ: Используем правильное время
                 close_time = self._get_current_time()
-                close_timestamp_ms = self._get_current_timestamp_ms()
                 
                 # Создаем данные свечи для алерта
                 candle_data = {
@@ -364,7 +364,7 @@ class AlertManager:
                 self.alert_cooldowns[symbol] = self._get_current_time()
                 
                 logger.info(f"✅ Создан алерт по объему для {symbol}: {volume_ratio:.2f}x (биржевое время: {self.time_sync.is_synced if self.time_sync else False})")
-                logger.info(f"⏰ Время алерта: {close_time.isoformat()}, timestamp: {close_timestamp_ms}")
+                logger.info(f"⏰ Время алерта: {close_time.isoformat()}")
                 return alert_data
             
             return None
@@ -458,7 +458,6 @@ class AlertManager:
             if consecutive_count >= self.settings['consecutive_long_count']:
                 # ИСПРАВЛЯЕМ: Используем правильное время
                 close_time = self._get_current_time()
-                close_timestamp_ms = self._get_current_timestamp_ms()
                 current_price = float(kline_data['close'])
                 
                 # Создаем данные свечи
@@ -489,7 +488,7 @@ class AlertManager:
                 }
                 
                 logger.info(f"✅ Алерт по последовательности для {symbol}: {consecutive_count} LONG свечей (биржевое время: {self.time_sync.is_synced if self.time_sync else False})")
-                logger.info(f"⏰ Время алерта: {close_time.isoformat()}, timestamp: {close_timestamp_ms}")
+                logger.info(f"⏰ Время алерта: {close_time.isoformat()}")
                 return alert_data
             
             return None
@@ -532,7 +531,6 @@ class AlertManager:
                     
                     # ИСПРАВЛЯЕМ: Используем правильное время
                     close_time = self._get_current_time()
-                    close_timestamp_ms = self._get_current_timestamp_ms()
                     
                     priority_data = {
                         'symbol': symbol,
@@ -556,7 +554,7 @@ class AlertManager:
                         })
                     
                     logger.info(f"✅ Приоритетный алерт для {symbol} (биржевое время: {self.time_sync.is_synced if self.time_sync else False})")
-                    logger.info(f"⏰ Время алерта: {close_time.isoformat()}, timestamp: {close_timestamp_ms}")
+                    logger.info(f"⏰ Время алерта: {close_time.isoformat()}")
                     return priority_data
             
             return None
