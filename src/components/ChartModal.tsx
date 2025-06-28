@@ -165,7 +165,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
       c: d.close
     }));
 
-    // Данные объема с повышенной прозрачностью
+    // Данные объема с увеличенной прозрачностью для лучшей видимости свечей
     const volumeData = chartData.map(d => ({
       x: d.timestamp,
       y: d.volume_usdt
@@ -282,8 +282,8 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
           data: volumeData,
           type: 'bar' as const,
           // Увеличиваем прозрачность для лучшей видимости свечей
-          backgroundColor: chartData.map(d => d.is_long ? 'rgba(34, 197, 94, 0.3)' : 'rgba(239, 68, 68, 0.3)'),
-          borderColor: chartData.map(d => d.is_long ? 'rgba(34, 197, 94, 0.6)' : 'rgba(239, 68, 68, 0.6)'),
+          backgroundColor: chartData.map(d => d.is_long ? 'rgba(34, 197, 94, 0.2)' : 'rgba(239, 68, 68, 0.2)'),
+          borderColor: chartData.map(d => d.is_long ? 'rgba(34, 197, 94, 0.4)' : 'rgba(239, 68, 68, 0.4)'),
           borderWidth: 1,
           yAxisID: 'y1'
         },

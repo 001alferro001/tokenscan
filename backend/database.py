@@ -315,7 +315,7 @@ class DatabaseManager:
             return []
 
     async def get_chart_data(self, symbol: str, hours: int = 1, alert_time: str = None) -> List[Dict]:
-        """Получить данные для построения графика"""
+        """Получить данные для построения графика (включая текущую формирующуюся свечу)"""
         try:
             cursor = self.connection.cursor(cursor_factory=RealDictCursor)
 
@@ -324,17 +324,21 @@ class DatabaseManager:
                 try:
                     alert_dt = datetime.fromisoformat(alert_time.replace('Z', '+00:00'))
                     end_time = int(alert_dt.timestamp() * 1000)
+                    # Для алертов показываем данные до времени алерта
+                    include_current = False
                 except:
                     end_time = int(datetime.utcnow().timestamp() * 1000)
+                    include_current = True
             else:
                 end_time = int(datetime.utcnow().timestamp() * 1000)
+                include_current = True
             
             start_time = end_time - (hours * 60 * 60 * 1000)
 
-            # Получаем данные из основной таблицы (закрытые свечи)
+            # Получаем закрытые свечи из основной таблицы
             cursor.execute("""
                 SELECT open_time as timestamp, open_price as open, high_price as high,
-                       low_price as low, close_price as close, volume, volume_usdt, is_long
+                       low_price as low, close_price as close, volume, volume_usdt, is_long, TRUE as is_closed
                 FROM kline_data 
                 WHERE symbol = %s 
                 AND open_time >= %s 
@@ -343,11 +347,10 @@ class DatabaseManager:
                 ORDER BY open_time
             """, (symbol, start_time, end_time))
 
-            result = cursor.fetchall()
-            cursor.close()
+            closed_candles = cursor.fetchall()
 
             chart_data = []
-            for row in result:
+            for row in closed_candles:
                 chart_data.append({
                     'timestamp': int(row['timestamp']),
                     'open': float(row['open']),
@@ -359,7 +362,37 @@ class DatabaseManager:
                     'is_long': row['is_long']
                 })
 
-            logger.info(f"Получено {len(chart_data)} свечей для {symbol} за период {hours}ч")
+            # Добавляем текущую формирующуюся свечу, если нужно
+            if include_current:
+                cursor.execute("""
+                    SELECT open_time as timestamp, open_price as open, high_price as high,
+                           low_price as low, close_price as close, volume, volume_usdt, is_long, FALSE as is_closed
+                    FROM kline_stream 
+                    WHERE symbol = %s 
+                    AND open_time > %s
+                    ORDER BY open_time DESC
+                    LIMIT 1
+                """, (symbol, end_time - 120000))  # Ищем свечи за последние 2 минуты
+
+                current_candle = cursor.fetchone()
+                if current_candle:
+                    chart_data.append({
+                        'timestamp': int(current_candle['timestamp']),
+                        'open': float(current_candle['open']),
+                        'high': float(current_candle['high']),
+                        'low': float(current_candle['low']),
+                        'close': float(current_candle['close']),
+                        'volume': float(current_candle['volume']),
+                        'volume_usdt': float(current_candle['volume_usdt']),
+                        'is_long': current_candle['is_long']
+                    })
+
+            cursor.close()
+
+            # Сортируем по времени
+            chart_data.sort(key=lambda x: x['timestamp'])
+
+            logger.info(f"Получено {len(chart_data)} свечей для {symbol} за период {hours}ч (включая текущую: {include_current})")
             return chart_data
 
         except Exception as e:
@@ -400,20 +433,6 @@ class DatabaseManager:
             # Объединяем данные
             all_candles = []
             
-            # Добавляем текущую свечу если есть
-            if current_candle:
-                all_candles.append({
-                    'timestamp': int(current_candle['timestamp']),
-                    'open': float(current_candle['open']),
-                    'high': float(current_candle['high']),
-                    'low': float(current_candle['low']),
-                    'close': float(current_candle['close']),
-                    'volume': float(current_candle['volume']),
-                    'volume_usdt': float(current_candle['volume_usdt']),
-                    'is_long': current_candle['is_long'],
-                    'is_closed': False
-                })
-
             # Добавляем закрытые свечи (в обратном порядке, так как они отсортированы по убыванию)
             for row in reversed(closed_candles):
                 all_candles.append({
@@ -426,6 +445,20 @@ class DatabaseManager:
                     'volume_usdt': float(row['volume_usdt']),
                     'is_long': row['is_long'],
                     'is_closed': True
+                })
+
+            # Добавляем текущую свечу если есть
+            if current_candle:
+                all_candles.append({
+                    'timestamp': int(current_candle['timestamp']),
+                    'open': float(current_candle['open']),
+                    'high': float(current_candle['high']),
+                    'low': float(current_candle['low']),
+                    'close': float(current_candle['close']),
+                    'volume': float(current_candle['volume']),
+                    'volume_usdt': float(current_candle['volume_usdt']),
+                    'is_long': current_candle['is_long'],
+                    'is_closed': False
                 })
 
             # Сортируем по времени
