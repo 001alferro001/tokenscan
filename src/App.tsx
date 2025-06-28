@@ -12,12 +12,7 @@ import {
   Clock,
   WifiOff,
   Activity,
-  Zap,
-  CheckCircle,
-  AlertCircle,
-  XCircle,
-  Database,
-  Info
+  Zap
 } from 'lucide-react';
 import ChartModal from './components/ChartModal';
 import SmartMoneyChartModal from './components/SmartMoneyChartModal';
@@ -55,23 +50,6 @@ interface WatchlistItem {
   historical_price?: number;
   created_at: string;
   updated_at: string;
-  data_info?: {
-    total_candles: number;
-    expected_candles: number;
-    closed_candles: number;
-    integrity_percentage: number;
-    quality: string;
-    quality_text: string;
-    first_candle_time?: string;
-    last_candle_time?: string;
-    missing_ranges: Array<{
-      start_unix: number;
-      end_unix: number;
-      duration_minutes: number;
-    }>;
-    missing_count: number;
-    has_gaps: boolean;
-  };
 }
 
 interface StreamData {
@@ -105,14 +83,6 @@ interface TimeSync {
   local_time: string;
   sync_age_seconds?: number;
   serverTime?: number;
-}
-
-interface ConnectionInfo {
-  subscribedCount: number;
-  confirmedCount: number;
-  failedCount: number;
-  successRate?: number;
-  subscribedPairs: string[];
 }
 
 interface Settings {
@@ -169,13 +139,12 @@ const App: React.FC = () => {
   const [lastDataUpdate, setLastDataUpdate] = useState<Date | null>(null);
   const [reconnectAttempts, setReconnectAttempts] = useState(0);
   const [dataActivity, setDataActivity] = useState<'active' | 'idle' | 'error'>('idle');
-  const [connectionInfo, setConnectionInfo] = useState<ConnectionInfo>({
-    subscribedCount: 0,
-    confirmedCount: 0,
-    failedCount: 0,
-    subscribedPairs: []
-  });
-  
+  const [connectionInfo, setConnectionInfo] = useState<{
+    subscribedCount: number;
+    failedCount: number;
+    subscribedPairs: string[];
+  }>({ subscribedCount: 0, failedCount: 0, subscribedPairs: [] });
+
   // Refs для WebSocket и интервалов
   const wsRef = useRef<WebSocket | null>(null);
   const timeIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -188,21 +157,21 @@ const App: React.FC = () => {
     loadInitialData();
     connectWebSocket();
     requestNotificationPermission();
-    
+
     // Обновляем время каждую секунду
     timeIntervalRef.current = setInterval(() => {
       updateCurrentTime();
     }, 1000);
-    
+
     // Загружаем информацию о синхронизации времени каждые 30 секунд
     syncIntervalRef.current = setInterval(loadTimeSync, 30000);
     loadTimeSync();
-    
+
     // Периодически обновляем данные (каждые 30 секунд)
     dataRefreshIntervalRef.current = setInterval(() => {
       refreshData();
     }, 30000);
-    
+
     // Cleanup function
     return () => {
       if (timeIntervalRef.current) {
@@ -232,12 +201,12 @@ const App: React.FC = () => {
 
   const updateDataActivity = (status: 'active' | 'idle' | 'error') => {
     setDataActivity(status);
-    
+
     // Сбрасываем таймер активности
     if (activityTimeoutRef.current) {
       clearTimeout(activityTimeoutRef.current);
     }
-    
+
     // Если статус активный, через 3 секунды переводим в idle
     if (status === 'active') {
       activityTimeoutRef.current = setTimeout(() => {
@@ -261,23 +230,23 @@ const App: React.FC = () => {
   const refreshData = async () => {
     try {
       updateDataActivity('active');
-      
+
       // Обновляем алерты
       const alertsResponse = await fetch('/api/alerts/all');
       if (alertsResponse.ok) {
         const alertsData = await alertsResponse.json();
-        
+
         // Обновляем алерты с сортировкой
-        setVolumeAlerts((alertsData.volume_alerts || []).sort((a: Alert, b: Alert) => 
+        setVolumeAlerts((alertsData.volume_alerts || []).sort((a: Alert, b: Alert) =>
           new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
         ));
-        setConsecutiveAlerts((alertsData.consecutive_alerts || []).sort((a: Alert, b: Alert) => 
+        setConsecutiveAlerts((alertsData.consecutive_alerts || []).sort((a: Alert, b: Alert) =>
           new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
         ));
-        setPriorityAlerts((alertsData.priority_alerts || []).sort((a: Alert, b: Alert) => 
+        setPriorityAlerts((alertsData.priority_alerts || []).sort((a: Alert, b: Alert) =>
           new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
         ));
-        
+
         console.log('Данные обновлены:', {
           volume: alertsData.volume_alerts?.length || 0,
           consecutive: alertsData.consecutive_alerts?.length || 0,
@@ -322,13 +291,13 @@ const App: React.FC = () => {
         icon: '/favicon.ico',
         tag: `alert-${alert.id}`
       });
-      
+
       notification.onclick = () => {
         window.focus();
         setSelectedAlert(alert);
         notification.close();
       };
-      
+
       setTimeout(() => notification.close(), 10000);
     }
   };
@@ -337,22 +306,22 @@ const App: React.FC = () => {
     try {
       setLoading(true);
       updateDataActivity('active');
-      
+
       // Загружаем алерты
       const alertsResponse = await fetch('/api/alerts/all');
       if (alertsResponse.ok) {
         const alertsData = await alertsResponse.json();
         // Сортируем по времени закрытия (новые сверху)
-        setVolumeAlerts((alertsData.volume_alerts || []).sort((a: Alert, b: Alert) => 
+        setVolumeAlerts((alertsData.volume_alerts || []).sort((a: Alert, b: Alert) =>
           new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
         ));
-        setConsecutiveAlerts((alertsData.consecutive_alerts || []).sort((a: Alert, b: Alert) => 
+        setConsecutiveAlerts((alertsData.consecutive_alerts || []).sort((a: Alert, b: Alert) =>
           new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
         ));
-        setPriorityAlerts((alertsData.priority_alerts || []).sort((a: Alert, b: Alert) => 
+        setPriorityAlerts((alertsData.priority_alerts || []).sort((a: Alert, b: Alert) =>
           new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
         ));
-        
+
         console.log('Алерты загружены:', {
           volume: alertsData.volume_alerts?.length || 0,
           consecutive: alertsData.consecutive_alerts?.length || 0,
@@ -402,10 +371,10 @@ const App: React.FC = () => {
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}/ws`;
-    
+
     console.log('🔗 Подключение к WebSocket:', wsUrl);
     setConnectionStatus('connecting');
-    
+
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
@@ -414,7 +383,7 @@ const App: React.FC = () => {
       setReconnectAttempts(0);
       updateDataActivity('active');
       console.log('✅ WebSocket подключен');
-      
+
       // Отправляем ping для поддержания соединения
       const pingInterval = setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) {
@@ -441,12 +410,12 @@ const App: React.FC = () => {
       console.log('❌ WebSocket отключен:', event.code, event.reason);
       setConnectionStatus('disconnected');
       updateDataActivity('error');
-      
+
       // Автоматическое переподключение с экспоненциальной задержкой
       if (wsRef.current === ws) { // Проверяем, что это текущее соединение
         const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000); // Максимум 30 секунд
         console.log(`🔄 Переподключение через ${delay}мс (попытка ${reconnectAttempts + 1})`);
-        
+
         reconnectTimeoutRef.current = setTimeout(() => {
           setReconnectAttempts(prev => prev + 1);
           connectWebSocket();
@@ -466,16 +435,16 @@ const App: React.FC = () => {
       case 'pong':
         // Ответ на ping - ничего не делаем
         break;
-        
+
       case 'new_alert':
       case 'alert_updated':
         const alert = data.alert;
-        
+
         // Показываем уведомление только для новых алертов
         if (data.type === 'new_alert') {
           showNotification(alert);
         }
-        
+
         // Обновляем алерты без дублирования
         if (alert.alert_type === 'volume_spike') {
           setVolumeAlerts(prev => {
@@ -483,13 +452,13 @@ const App: React.FC = () => {
             if (existing) {
               // Обновляем существующий алерт
               const updated = prev.map(a => a.id === alert.id ? alert : a);
-              return updated.sort((a, b) => 
+              return updated.sort((a, b) =>
                 new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
               );
             }
             // Добавляем новый алерт
             const newList = [alert, ...prev].slice(0, 100);
-            return newList.sort((a, b) => 
+            return newList.sort((a, b) =>
               new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
             );
           });
@@ -498,12 +467,12 @@ const App: React.FC = () => {
             const existing = prev.find(a => a.id === alert.id);
             if (existing) {
               const updated = prev.map(a => a.id === alert.id ? alert : a);
-              return updated.sort((a, b) => 
+              return updated.sort((a, b) =>
                 new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
               );
             }
             const newList = [alert, ...prev].slice(0, 100);
-            return newList.sort((a, b) => 
+            return newList.sort((a, b) =>
               new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
             );
           });
@@ -512,12 +481,12 @@ const App: React.FC = () => {
             const existing = prev.find(a => a.id === alert.id);
             if (existing) {
               const updated = prev.map(a => a.id === alert.id ? alert : a);
-              return updated.sort((a, b) => 
+              return updated.sort((a, b) =>
                 new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
               );
             }
             const newList = [alert, ...prev].slice(0, 100);
-            return newList.sort((a, b) => 
+            return newList.sort((a, b) =>
               new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
             );
           });
@@ -552,7 +521,7 @@ const App: React.FC = () => {
           timestamp: data.timestamp,
           is_closed: data.is_closed || false
         };
-        
+
         setStreamData(prev => {
           // Обновляем или добавляем данные для символа
           const filtered = prev.filter(item => item.symbol !== data.symbol);
@@ -563,24 +532,20 @@ const App: React.FC = () => {
 
       case 'connection_status':
         setConnectionStatus(data.status === 'connected' ? 'connected' : 'disconnected');
-        
-        // 🎯 НОВОЕ: Обновляем детальную информацию о подключении
+
+        // Обновляем информацию о подключении
         if (data.subscribed_count !== undefined) {
           setConnectionInfo({
             subscribedCount: data.subscribed_count || 0,
-            confirmedCount: data.confirmed_count || 0,
             failedCount: data.failed_count || 0,
-            successRate: data.success_rate || 0,
             subscribedPairs: data.subscribed_pairs || []
           });
         }
-        
+
         console.log('📊 Статус подключения:', {
           status: data.status,
           subscribedCount: data.subscribed_count,
-          confirmedCount: data.confirmed_count,
           failedCount: data.failed_count,
-          successRate: data.success_rate,
           totalPairs: data.pairs_count
         });
         break;
@@ -637,7 +602,7 @@ const App: React.FC = () => {
       const response = await fetch(`/api/alerts/clear/${alertType}`, {
         method: 'DELETE'
       });
-      
+
       if (response.ok) {
         if (alertType === 'volume_spike') {
           setVolumeAlerts([]);
@@ -670,7 +635,7 @@ const App: React.FC = () => {
         console.error('Некорректная временная метка:', timestamp);
         return 'Некорректное время';
       }
-      
+
       // Используем локальное время (Москва UTC+3)
       return date.toLocaleString('ru-RU', {
         day: '2-digit',
@@ -700,32 +665,32 @@ const App: React.FC = () => {
     if (!alert.is_closed) {
       return <span className="px-2 py-1 bg-yellow-100 text-yellow-800 text-xs rounded-full">В процессе</span>;
     }
-    
+
     if (alert.is_true_signal === true) {
       return <span className="px-2 py-1 bg-green-100 text-green-800 text-xs rounded-full">Истинный</span>;
     } else if (alert.is_true_signal === false) {
       return <span className="px-2 py-1 bg-red-100 text-red-800 text-xs rounded-full">Ложный</span>;
     }
-    
+
     return <span className="px-2 py-1 bg-gray-100 text-gray-800 text-xs rounded-full">Неизвестно</span>;
   };
 
   const getTimeSyncStatus = () => {
     if (!timeSync) return { color: 'text-gray-500', text: 'Нет данных', icon: '⚪' };
-    
+
     if (!timeSync.is_synced) {
       return { color: 'text-yellow-500', text: 'Не синхронизировано', icon: '🟡' };
     }
-    
+
     return { color: 'text-green-500', text: 'Синхронизировано', icon: '🟢' };
   };
 
   const formatLocalTime = (date: Date) => {
-    return date.toLocaleTimeString('ru-RU', { 
-      hour: '2-digit', 
-      minute: '2-digit', 
+    return date.toLocaleTimeString('ru-RU', {
+      hour: '2-digit',
+      minute: '2-digit',
       second: '2-digit',
-      hour12: false 
+      hour12: false
     });
   };
 
@@ -743,7 +708,7 @@ const App: React.FC = () => {
     const offsetHours = Math.abs(Math.floor(offset / 60));
     const offsetMinutes = Math.abs(offset % 60);
     const offsetSign = offset <= 0 ? '+' : '-';
-    
+
     return {
       timezone,
       offsetString: `UTC${offsetSign}${offsetHours.toString().padStart(2, '0')}:${offsetMinutes.toString().padStart(2, '0')}`
@@ -764,37 +729,15 @@ const App: React.FC = () => {
   };
 
   const getConnectionStatusText = () => {
-    const totalPairs = watchlist.length;
-    const confirmedPairs = connectionInfo.confirmedCount;
-    const successRate = connectionInfo.successRate || 0;
-    
     switch (connectionStatus) {
       case 'connected':
-        return `Подключено (${confirmedPairs}/${totalPairs} пар, ${successRate.toFixed(1)}%)`;
+        return `Подключено (${connectionInfo.subscribedCount}/${watchlist.length})`;
       case 'connecting':
         return 'Подключение...';
       case 'disconnected':
         return reconnectAttempts > 0 ? `Переподключение (${reconnectAttempts})` : 'Отключено';
       default:
         return 'Неизвестно';
-    }
-  };
-
-  const getSubscriptionStatusIcon = () => {
-    const totalPairs = watchlist.length;
-    const confirmedPairs = connectionInfo.confirmedCount;
-    const successRate = (confirmedPairs / totalPairs) * 100;
-    
-    if (totalPairs === 0) {
-      return <AlertCircle className="w-4 h-4 text-gray-400" />;
-    }
-    
-    if (successRate >= 90) {
-      return <CheckCircle className="w-4 h-4 text-green-500" />;
-    } else if (successRate >= 70) {
-      return <AlertCircle className="w-4 h-4 text-yellow-500" />;
-    } else {
-      return <XCircle className="w-4 h-4 text-red-500" />;
     }
   };
 
@@ -822,67 +765,9 @@ const App: React.FC = () => {
     }
   };
 
-  const getDataQualityIcon = (quality: string) => {
-    switch (quality) {
-      case 'excellent':
-        return <CheckCircle className="w-4 h-4 text-green-500" />;
-      case 'good':
-        return <CheckCircle className="w-4 h-4 text-blue-500" />;
-      case 'fair':
-        return <AlertCircle className="w-4 h-4 text-yellow-500" />;
-      case 'poor':
-        return <AlertCircle className="w-4 h-4 text-orange-500" />;
-      case 'critical':
-        return <XCircle className="w-4 h-4 text-red-500" />;
-      default:
-        return <Database className="w-4 h-4 text-gray-400" />;
-    }
-  };
-
-  const getDataQualityColor = (quality: string) => {
-    switch (quality) {
-      case 'excellent':
-        return 'text-green-600';
-      case 'good':
-        return 'text-blue-600';
-      case 'fair':
-        return 'text-yellow-600';
-      case 'poor':
-        return 'text-orange-600';
-      case 'critical':
-        return 'text-red-600';
-      default:
-        return 'text-gray-600';
-    }
-  };
-
-  const formatMissingRanges = (ranges: Array<{start_unix: number, end_unix: number, duration_minutes: number}>) => {
-    if (!ranges || ranges.length === 0) return 'Нет пропусков';
-    
-    if (ranges.length === 1) {
-      const range = ranges[0];
-      const startTime = new Date(range.start_unix).toLocaleString('ru-RU', {
-        day: '2-digit',
-        month: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit'
-      });
-      const endTime = new Date(range.end_unix).toLocaleString('ru-RU', {
-        day: '2-digit',
-        month: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit'
-      });
-      return `${startTime} - ${endTime} (${range.duration_minutes}мин)`;
-    }
-    
-    const totalMinutes = ranges.reduce((sum, range) => sum + range.duration_minutes, 0);
-    return `${ranges.length} пропусков (${totalMinutes}мин)`;
-  };
-
   const renderAlertCard = (alert: Alert) => (
-    <div 
-      key={alert.id} 
+    <div
+      key={alert.id}
       className="bg-white rounded-lg shadow-md border border-gray-200 p-4 hover:shadow-lg transition-shadow cursor-pointer w-full"
       onClick={() => setSelectedAlert(alert)}
     >
@@ -894,7 +779,7 @@ const App: React.FC = () => {
           )}
           {getAlertStatusBadge(alert)}
         </div>
-        
+
         <div className="flex items-center space-x-2">
           <button
             onClick={(e) => {
@@ -914,21 +799,21 @@ const App: React.FC = () => {
           <span className="text-gray-600">Цена:</span>
           <div className="font-mono text-gray-900">${alert.price.toFixed(8)}</div>
         </div>
-        
+
         {alert.volume_ratio && (
           <div>
             <span className="text-gray-600">Превышение:</span>
             <div className="font-semibold text-orange-600">{alert.volume_ratio}x</div>
           </div>
         )}
-        
+
         {alert.current_volume_usdt && (
           <div>
             <span className="text-gray-600">Объем:</span>
             <div className="text-gray-900">{formatVolume(alert.current_volume_usdt)}</div>
           </div>
         )}
-        
+
         {alert.consecutive_count && (
           <div>
             <span className="text-gray-600">LONG свечей:</span>
@@ -949,8 +834,8 @@ const App: React.FC = () => {
   );
 
   const renderSmartMoneyCard = (alert: SmartMoneyAlert) => (
-    <div 
-      key={alert.id} 
+    <div
+      key={alert.id}
       className="bg-white rounded-lg shadow-md border border-gray-200 p-4 hover:shadow-lg transition-shadow cursor-pointer w-full"
       onClick={() => setSelectedSmartMoneyAlert(alert)}
     >
@@ -963,7 +848,7 @@ const App: React.FC = () => {
             {alert.direction === 'bullish' ? 'Бычий' : 'Медвежий'}
           </span>
         </div>
-        
+
         <button
           onClick={(e) => {
             e.stopPropagation();
@@ -985,17 +870,17 @@ const App: React.FC = () => {
             {alert.type === 'breaker_block' && 'Breaker Block'}
           </div>
         </div>
-        
+
         <div>
           <span className="text-gray-600">Сила:</span>
           <div className="font-semibold text-purple-600">{alert.strength.toFixed(2)}%</div>
         </div>
-        
+
         <div>
           <span className="text-gray-600">Цена:</span>
           <div className="font-mono text-gray-900">${alert.price.toFixed(8)}</div>
         </div>
-        
+
         <div>
           <span className="text-gray-600">Время:</span>
           <div className="text-gray-900">{formatTime(alert.timestamp)}</div>
@@ -1019,23 +904,8 @@ const App: React.FC = () => {
         <div className="flex items-center space-x-3">
           <div className={`w-3 h-3 rounded-full ${item.is_active ? 'bg-green-500' : 'bg-red-500'}`}></div>
           <span className="font-bold text-lg text-gray-900">{item.symbol}</span>
-          {/* Показываем статус подписки для этой пары */}
-          {connectionInfo.subscribedPairs.includes(item.symbol) ? (
-            <CheckCircle className="w-4 h-4 text-green-500" title="Подписка активна" />
-          ) : (
-            <XCircle className="w-4 h-4 text-red-500" title="Подписка неактивна" />
-          )}
-          {/* Показываем качество данных */}
-          {item.data_info && (
-            <div className="flex items-center space-x-1" title={`Качество данных: ${item.data_info.quality_text}`}>
-              {getDataQualityIcon(item.data_info.quality)}
-              <span className={`text-xs ${getDataQualityColor(item.data_info.quality)}`}>
-                {item.data_info.integrity_percentage}%
-              </span>
-            </div>
-          )}
         </div>
-        
+
         <button
           onClick={() => openTradingView(item.symbol)}
           className="text-blue-600 hover:text-blue-800 p-1"
@@ -1046,53 +916,16 @@ const App: React.FC = () => {
       </div>
 
       {item.price_drop_percentage && (
-        <div className="grid grid-cols-2 gap-4 text-sm mb-3">
+        <div className="grid grid-cols-2 gap-4 text-sm">
           <div>
             <span className="text-gray-600">Падение цены:</span>
             <div className="font-semibold text-red-600">{item.price_drop_percentage.toFixed(2)}%</div>
           </div>
-          
+
           {item.current_price && (
             <div>
               <span className="text-gray-600">Текущая цена:</span>
               <div className="font-mono text-gray-900">${item.current_price.toFixed(8)}</div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Информация о данных */}
-      {item.data_info && (
-        <div className="mt-3 pt-3 border-t border-gray-200">
-          <div className="grid grid-cols-2 gap-4 text-xs">
-            <div>
-              <span className="text-gray-600">Свечей загружено:</span>
-              <div className={`font-semibold ${getDataQualityColor(item.data_info.quality)}`}>
-                {item.data_info.total_candles}/{item.data_info.expected_candles}
-              </div>
-            </div>
-            <div>
-              <span className="text-gray-600">Закрытых свечей:</span>
-              <div className="text-gray-900">{item.data_info.closed_candles}</div>
-            </div>
-          </div>
-          
-          {item.data_info.first_candle_time && item.data_info.last_candle_time && (
-            <div className="mt-2 text-xs text-gray-500">
-              <div>Первая: {formatTime(item.data_info.first_candle_time)}</div>
-              <div>Последняя: {formatTime(item.data_info.last_candle_time)}</div>
-            </div>
-          )}
-          
-          {item.data_info.has_gaps && (
-            <div className="mt-2 p-2 bg-yellow-50 rounded text-xs">
-              <div className="flex items-center space-x-1 text-yellow-700">
-                <Info className="w-3 h-3" />
-                <span className="font-medium">Пропуски данных:</span>
-              </div>
-              <div className="text-yellow-600 mt-1">
-                {formatMissingRanges(item.data_info.missing_ranges)}
-              </div>
             </div>
           )}
         </div>
@@ -1131,13 +964,6 @@ const App: React.FC = () => {
                 <span className="text-sm text-gray-600">
                   {getConnectionStatusText()}
                 </span>
-                {/* 🎯 НОВЫЙ индикатор статуса подписок */}
-                <div className="flex items-center space-x-1">
-                  {getSubscriptionStatusIcon()}
-                  <span className="text-xs text-gray-500">
-                    Подписки
-                  </span>
-                </div>
                 {/* Индикатор активности данных */}
                 <div className="flex items-center space-x-1">
                   {getDataActivityIcon()}
@@ -1150,9 +976,14 @@ const App: React.FC = () => {
                     • {formatLocalTime(lastDataUpdate)}
                   </span>
                 )}
+                {connectionInfo.subscribedCount > 0 && (
+                  <span className="text-xs text-gray-400">
+                    • Подписано: {connectionInfo.subscribedCount}
+                  </span>
+                )}
               </div>
             </div>
-            
+
             <div className="flex items-center space-x-6">
               {/* Динамические часы в локальном часовом поясе */}
               <div className="flex items-center space-x-3 bg-gray-100 rounded-lg px-4 py-2">
@@ -1177,7 +1008,7 @@ const App: React.FC = () => {
                   </div>
                 </div>
               </div>
-              
+
               <button
                 onClick={() => setShowSettings(true)}
                 className="text-gray-600 hover:text-gray-900 p-2 rounded-lg hover:bg-gray-100 transition-colors"
@@ -1238,7 +1069,7 @@ const App: React.FC = () => {
                 Очистить
               </button>
             </div>
-            
+
             <div className="space-y-4">
               {volumeAlerts.length === 0 ? (
                 <div className="text-center py-12 text-gray-500">
@@ -1264,7 +1095,7 @@ const App: React.FC = () => {
                 Очистить
               </button>
             </div>
-            
+
             <div className="space-y-4">
               {consecutiveAlerts.length === 0 ? (
                 <div className="text-center py-12 text-gray-500">
@@ -1290,7 +1121,7 @@ const App: React.FC = () => {
                 Очистить
               </button>
             </div>
-            
+
             <div className="space-y-4">
               {priorityAlerts.length === 0 ? (
                 <div className="text-center py-12 text-gray-500">
@@ -1316,7 +1147,7 @@ const App: React.FC = () => {
                 Очистить
               </button>
             </div>
-            
+
             <div className="space-y-4">
               {smartMoneyAlerts.length === 0 ? (
                 <div className="text-center py-12 text-gray-500">
@@ -1334,13 +1165,7 @@ const App: React.FC = () => {
         {activeTab === 'watchlist' && (
           <div>
             <div className="flex items-center justify-between mb-6">
-              <div>
-                <h2 className="text-2xl font-bold text-gray-900">Список торговых пар</h2>
-                <p className="text-sm text-gray-600 mt-1">
-                  Подтверждено подписок: {connectionInfo.confirmedCount}/{watchlist.length} 
-                  ({connectionInfo.successRate ? connectionInfo.successRate.toFixed(1) : '0'}%)
-                </p>
-              </div>
+              <h2 className="text-2xl font-bold text-gray-900">Список торговых пар</h2>
               <button
                 onClick={() => setShowWatchlistModal(true)}
                 className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors"
@@ -1348,7 +1173,7 @@ const App: React.FC = () => {
                 Управление
               </button>
             </div>
-            
+
             <div className="space-y-4">
               {watchlist.length === 0 ? (
                 <div className="text-center py-12 text-gray-500">
@@ -1369,7 +1194,7 @@ const App: React.FC = () => {
               <h2 className="text-2xl font-bold text-gray-900">Потоковые данные</h2>
               <div className="flex items-center space-x-4">
                 <span className="text-sm text-gray-600">
-                  Обновлений: {streamData.length} / Пар в watchlist: {watchlist.length} / Подтверждено: {connectionInfo.confirmedCount}
+                  Обновлений: {streamData.length} / Пар в watchlist: {watchlist.length} / Подписано: {connectionInfo.subscribedCount}
                 </span>
                 <button
                   onClick={() => connectWebSocket()}
@@ -1380,7 +1205,7 @@ const App: React.FC = () => {
                 </button>
               </div>
             </div>
-            
+
             <div className="space-y-4">
               {streamData.slice(0, 200).map((item, index) => (
                 <div key={`${item.symbol}-${index}`} className="bg-white rounded-lg shadow-md border border-gray-200 p-4 w-full">
@@ -1389,7 +1214,7 @@ const App: React.FC = () => {
                       <div className={`w-4 h-4 rounded-full ${
                         item.is_long ? 'bg-green-500' : 'bg-red-500'
                       }`}></div>
-                      
+
                       <div>
                         <span className="font-semibold text-gray-900 text-lg">{item.symbol}</span>
                         <div className="flex items-center space-x-2 text-sm">
@@ -1401,16 +1226,10 @@ const App: React.FC = () => {
                           {item.is_closed && (
                             <span className="px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded-full">Закрыта</span>
                           )}
-                          {/* Показываем статус подписки */}
-                          {connectionInfo.subscribedPairs.includes(item.symbol) ? (
-                            <CheckCircle className="w-3 h-3 text-green-500" title="Подписка активна" />
-                          ) : (
-                            <XCircle className="w-3 h-3 text-red-500" title="Подписка неактивна" />
-                          )}
                         </div>
                       </div>
                     </div>
-                    
+
                     <div className="text-right">
                       <div className="text-xl font-bold text-gray-900">
                         ${item.price.toFixed(8)}
@@ -1419,7 +1238,7 @@ const App: React.FC = () => {
                         Vol: {formatVolume(item.volume_usdt)}
                       </div>
                     </div>
-                    
+
                     <div className="flex items-center space-x-2">
                       <div className="text-right text-sm text-gray-500">
                         <div>{formatTime(item.timestamp)}</div>
@@ -1427,7 +1246,7 @@ const App: React.FC = () => {
                           {formatVolume(item.volume)} {item.symbol.replace('USDT', '')}
                         </div>
                       </div>
-                      
+
                       <button
                         onClick={() => openTradingView(item.symbol)}
                         className="text-blue-600 hover:text-blue-800 p-1"
