@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, ExternalLink, Download, BookOpen, Clock, Globe } from 'lucide-react';
+import { X, ExternalLink, Download, BookOpen, Clock, Globe, Info } from 'lucide-react';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -88,6 +88,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
   const [error, setError] = useState<string | null>(null);
   const [showOrderBook, setShowOrderBook] = useState(false);
   const [timeZone, setTimeZone] = useState<'UTC' | 'local'>('local');
+  const [showTimestampInfo, setShowTimestampInfo] = useState(false);
 
   useEffect(() => {
     loadChartData();
@@ -156,6 +157,14 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
     } else {
       return date.toLocaleString('ru-RU', options);
     }
+  };
+
+  const getTimezoneOffset = () => {
+    const offset = new Date().getTimezoneOffset();
+    const hours = Math.abs(Math.floor(offset / 60));
+    const minutes = Math.abs(offset % 60);
+    const sign = offset <= 0 ? '+' : '-';
+    return `UTC${sign}${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
   };
 
   const getChartConfig = () => {
@@ -334,7 +343,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
       plugins: {
         title: {
           display: true,
-          text: `${alert.symbol} - Свечной график с объемами (${chartData.length} свечей) - ${timeZone === 'UTC' ? 'UTC' : 'Локальное время'}`,
+          text: `${alert.symbol} - Свечной график с объемами (${chartData.length} свечей) - ${timeZone === 'UTC' ? 'UTC' : `Локальное время (${getTimezoneOffset()})`}`,
           color: '#374151'
         },
         legend: {
@@ -385,8 +394,28 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
             },
             tooltipFormat: timeZone === 'UTC' ? 'dd.MM.yyyy HH:mm:ss UTC' : 'dd.MM.yyyy HH:mm:ss'
           },
+          adapters: {
+            date: {
+              zone: timeZone === 'UTC' ? 'UTC' : undefined
+            }
+          },
           ticks: {
-            color: '#6B7280'
+            color: '#6B7280',
+            callback: function(value, index, values) {
+              const date = new Date(value);
+              if (timeZone === 'UTC') {
+                return date.toLocaleTimeString('ru-RU', { 
+                  timeZone: 'UTC',
+                  hour: '2-digit', 
+                  minute: '2-digit' 
+                });
+              } else {
+                return date.toLocaleTimeString('ru-RU', { 
+                  hour: '2-digit', 
+                  minute: '2-digit' 
+                });
+              }
+            }
           },
           grid: {
             color: 'rgba(107, 114, 128, 0.1)'
@@ -464,7 +493,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
             <div className="flex items-center space-x-2 bg-gray-100 rounded-lg p-2">
               <Clock className="w-4 h-4 text-gray-600" />
               <button
-                onClick={() => setTimeZone(timeZone === 'UTC' ? 'local' : 'UTC')}
+                onClick={() => setTimeZone('UTC')}
                 className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
                   timeZone === 'UTC' 
                     ? 'bg-blue-600 text-white' 
@@ -474,7 +503,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
                 UTC
               </button>
               <button
-                onClick={() => setTimeZone(timeZone === 'local' ? 'UTC' : 'local')}
+                onClick={() => setTimeZone('local')}
                 className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
                   timeZone === 'local' 
                     ? 'bg-blue-600 text-white' 
@@ -485,6 +514,15 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
                 Локальное
               </button>
             </div>
+
+            {/* Информация о timestamp */}
+            <button
+              onClick={() => setShowTimestampInfo(!showTimestampInfo)}
+              className="text-gray-500 hover:text-gray-700 p-2"
+              title="Информация о формате времени"
+            >
+              <Info className="w-4 h-4" />
+            </button>
 
             {alert.order_book_snapshot && (
               <button
@@ -520,6 +558,30 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
             </button>
           </div>
         </div>
+
+        {/* Информация о timestamp */}
+        {showTimestampInfo && (
+          <div className="p-4 bg-blue-50 border-b border-gray-200">
+            <h4 className="font-medium text-blue-900 mb-2">📅 Объяснение формата времени</h4>
+            <div className="text-sm text-blue-700 space-y-2">
+              <p><strong>Пример:</strong> 2025-06-28 10:02:13.594327+03</p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <p><strong>2025-06-28</strong> - дата (год-месяц-день)</p>
+                  <p><strong>10:02:13</strong> - время (часы:минуты:секунды)</p>
+                </div>
+                <div>
+                  <p><strong>.594327</strong> - микросекунды (доли секунды)</p>
+                  <p><strong>+03</strong> - часовой пояс (UTC+3, например, Москва)</p>
+                </div>
+              </div>
+              <p className="mt-2 text-xs">
+                <strong>Микросекунды</strong> показывают точное время до миллионных долей секунды. 
+                Это нужно для высокоточной синхронизации с биржей и избежания дублирования данных.
+              </p>
+            </div>
+          </div>
+        )}
 
         {/* Chart Content */}
         <div className="flex-1 p-6 overflow-hidden">
