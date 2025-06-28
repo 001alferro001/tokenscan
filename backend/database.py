@@ -40,7 +40,7 @@ class DatabaseManager:
             raise
 
     async def create_tables(self):
-        """Создание необходимых таблиц"""
+        """Создание необходимых таблиц с UTC временем"""
         try:
             cursor = self.connection.cursor()
 
@@ -53,12 +53,12 @@ class DatabaseManager:
                     price_drop_percentage DECIMAL(5, 2),
                     current_price DECIMAL(20, 8),
                     historical_price DECIMAL(20, 8),
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() AT TIME ZONE 'UTC'),
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() AT TIME ZONE 'UTC')
                 )
             """)
 
-            # Создаем основную таблицу для исторических данных (ограниченный период)
+            # Создаем основную таблицу для исторических данных (UTC время)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS kline_data (
                     id SERIAL PRIMARY KEY,
@@ -73,12 +73,12 @@ class DatabaseManager:
                     volume_usdt DECIMAL(20, 8) NOT NULL,
                     is_long BOOLEAN NOT NULL,
                     is_closed BOOLEAN DEFAULT FALSE,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() AT TIME ZONE 'UTC'),
                     UNIQUE(symbol, open_time)
                 )
             """)
 
-            # Создаем временную таблицу для потоковых данных (текущие формирующиеся свечи)
+            # Создаем временную таблицу для потоковых данных (UTC время)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS kline_stream (
                     id SERIAL PRIMARY KEY,
@@ -92,12 +92,12 @@ class DatabaseManager:
                     volume DECIMAL(20, 8) NOT NULL,
                     volume_usdt DECIMAL(20, 8) NOT NULL,
                     is_long BOOLEAN NOT NULL,
-                    last_update TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_update TIMESTAMP WITH TIME ZONE DEFAULT (NOW() AT TIME ZONE 'UTC'),
                     UNIQUE(symbol, open_time)
                 )
             """)
 
-            # Создаем обновленную таблицу алертов
+            # Создаем обновленную таблицу алертов (UTC время)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS alerts (
                     id SERIAL PRIMARY KEY,
@@ -113,14 +113,14 @@ class DatabaseManager:
                     has_imbalance BOOLEAN DEFAULT FALSE,
                     message TEXT,
                     telegram_sent BOOLEAN DEFAULT FALSE,
-                    alert_timestamp TIMESTAMP NOT NULL,
-                    close_timestamp TIMESTAMP,
+                    alert_timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
+                    close_timestamp TIMESTAMP WITH TIME ZONE,
                     candle_data JSONB,
                     preliminary_alert JSONB,
                     imbalance_data JSONB,
                     order_book_snapshot JSONB,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() AT TIME ZONE 'UTC'),
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() AT TIME ZONE 'UTC')
                 )
             """)
 
@@ -156,7 +156,7 @@ class DatabaseManager:
             """)
 
             cursor.close()
-            logger.info("Таблицы успешно созданы")
+            logger.info("Таблицы успешно созданы с UTC временем")
 
         except Exception as e:
             logger.error(f"Ошибка создания таблиц: {e}")
@@ -180,6 +180,31 @@ class DatabaseManager:
                 WHERE is_closed IS NULL OR is_closed = FALSE
             """)
 
+            # Обновляем колонки времени на UTC если они не UTC
+            cursor.execute("""
+                ALTER TABLE watchlist 
+                ALTER COLUMN created_at TYPE TIMESTAMP WITH TIME ZONE USING created_at AT TIME ZONE 'UTC',
+                ALTER COLUMN updated_at TYPE TIMESTAMP WITH TIME ZONE USING updated_at AT TIME ZONE 'UTC'
+            """)
+
+            cursor.execute("""
+                ALTER TABLE kline_data 
+                ALTER COLUMN created_at TYPE TIMESTAMP WITH TIME ZONE USING created_at AT TIME ZONE 'UTC'
+            """)
+
+            cursor.execute("""
+                ALTER TABLE kline_stream 
+                ALTER COLUMN last_update TYPE TIMESTAMP WITH TIME ZONE USING last_update AT TIME ZONE 'UTC'
+            """)
+
+            cursor.execute("""
+                ALTER TABLE alerts 
+                ALTER COLUMN alert_timestamp TYPE TIMESTAMP WITH TIME ZONE USING alert_timestamp AT TIME ZONE 'UTC',
+                ALTER COLUMN close_timestamp TYPE TIMESTAMP WITH TIME ZONE USING close_timestamp AT TIME ZONE 'UTC',
+                ALTER COLUMN created_at TYPE TIMESTAMP WITH TIME ZONE USING created_at AT TIME ZONE 'UTC',
+                ALTER COLUMN updated_at TYPE TIMESTAMP WITH TIME ZONE USING updated_at AT TIME ZONE 'UTC'
+            """)
+
             cursor.close()
 
         except Exception as e:
@@ -200,8 +225,8 @@ class DatabaseManager:
                 cursor.execute("""
                     INSERT INTO kline_data 
                     (symbol, open_time, close_time, open_price, high_price, 
-                     low_price, close_price, volume, volume_usdt, is_long, is_closed)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     low_price, close_price, volume, volume_usdt, is_long, is_closed, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW() AT TIME ZONE 'UTC')
                     ON CONFLICT (symbol, open_time) DO UPDATE SET
                         close_time = EXCLUDED.close_time,
                         open_price = EXCLUDED.open_price,
@@ -234,7 +259,7 @@ class DatabaseManager:
                     INSERT INTO kline_stream 
                     (symbol, open_time, close_time, open_price, high_price, 
                      low_price, close_price, volume, volume_usdt, is_long, last_update)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW() AT TIME ZONE 'UTC')
                     ON CONFLICT (symbol, open_time) DO UPDATE SET
                         close_time = EXCLUDED.close_time,
                         high_price = GREATEST(kline_stream.high_price, EXCLUDED.high_price),
@@ -243,7 +268,7 @@ class DatabaseManager:
                         volume = EXCLUDED.volume,
                         volume_usdt = EXCLUDED.volume_usdt,
                         is_long = EXCLUDED.is_long,
-                        last_update = CURRENT_TIMESTAMP
+                        last_update = NOW() AT TIME ZONE 'UTC'
                 """, (
                     symbol, open_time, int(kline_data['end']),
                     float(kline_data['open']), float(kline_data['high']),
@@ -275,100 +300,6 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Ошибка очистки старых данных для {symbol}: {e}")
 
-    async def check_data_integrity(self, symbol: str, hours: int) -> Dict:
-        """Улучшенная проверка целостности исторических данных"""
-        try:
-            cursor = self.connection.cursor()
-            
-            # Определяем временные границы
-            current_time = datetime.utcnow()
-            current_minute = current_time.replace(second=0, microsecond=0)
-            end_time = int(current_minute.timestamp() * 1000)
-            start_time = end_time - (hours * 60 * 60 * 1000)
-            
-            # Получаем существующие данные (только закрытые свечи)
-            cursor.execute("""
-                SELECT open_time FROM kline_data 
-                WHERE symbol = %s AND open_time >= %s AND open_time < %s
-                AND is_closed = TRUE
-                ORDER BY open_time
-            """, (symbol, start_time, end_time))
-            
-            existing_times = [row[0] for row in cursor.fetchall()]
-            cursor.close()
-            
-            # Генерируем ожидаемые временные метки
-            expected_times = []
-            current_time_ms = start_time
-            cutoff_time = end_time - (3 * 60 * 1000)  # Исключаем последние 3 минуты
-            
-            while current_time_ms < cutoff_time:
-                expected_times.append(current_time_ms)
-                current_time_ms += 60000
-            
-            # Находим недостающие периоды
-            missing_times = [t for t in expected_times if t not in existing_times]
-            
-            total_expected = len(expected_times)
-            total_existing = len([t for t in existing_times if t < cutoff_time])
-            
-            return {
-                'total_expected': total_expected,
-                'total_existing': total_existing,
-                'missing_count': len(missing_times),
-                'missing_periods': missing_times,
-                'integrity_percentage': (total_existing / total_expected) * 100 if total_expected > 0 else 100
-            }
-            
-        except Exception as e:
-            logger.error(f"Ошибка проверки целостности данных для {symbol}: {e}")
-            return {
-                'total_expected': 0,
-                'total_existing': 0,
-                'missing_count': 0,
-                'missing_periods': [],
-                'integrity_percentage': 0
-            }
-
-    async def get_historical_long_volumes(self, symbol: str, hours: int, offset_minutes: int = 0, 
-                                        volume_type: str = 'long') -> List[float]:
-        """Получить объемы свечей за указанный период с настройками смещения и типа"""
-        try:
-            cursor = self.connection.cursor()
-
-            # Рассчитываем временные границы с учетом смещения
-            current_time = int(datetime.utcnow().timestamp() * 1000)
-            end_time = current_time - (offset_minutes * 60 * 1000)
-            start_time = end_time - (hours * 60 * 60 * 1000)
-
-            # Формируем условие в зависимости от типа объемов
-            if volume_type == 'long':
-                condition = "AND is_long = TRUE"
-            elif volume_type == 'short':
-                condition = "AND is_long = FALSE"
-            else:  # 'all'
-                condition = ""
-
-            # Получаем данные только из основной таблицы (закрытые свечи)
-            cursor.execute(f"""
-                SELECT volume_usdt FROM kline_data 
-                WHERE symbol = %s 
-                {condition}
-                AND open_time >= %s 
-                AND open_time < %s
-                AND is_closed = TRUE
-                ORDER BY open_time
-            """, (symbol, start_time, end_time))
-
-            volumes = [float(row[0]) for row in cursor.fetchall()]
-            cursor.close()
-
-            return volumes
-
-        except Exception as e:
-            logger.error(f"Ошибка получения исторических объемов: {e}")
-            return []
-
     async def get_chart_data(self, symbol: str, hours: int = 1, alert_time: str = None) -> List[Dict]:
         """Получить данные для построения графика (включая текущую формирующуюся свечу)"""
         try:
@@ -379,7 +310,8 @@ class DatabaseManager:
                 try:
                     alert_dt = datetime.fromisoformat(alert_time.replace('Z', '+00:00'))
                     end_time = int(alert_dt.timestamp() * 1000)
-                    # Для алертов показываем данные до времени алерта
+                    # Для алертов показываем данные включая время алерта + 2 минуты
+                    end_time += 120000  # +2 минуты
                     include_current = False
                 except:
                     end_time = int(datetime.utcnow().timestamp() * 1000)
@@ -427,7 +359,7 @@ class DatabaseManager:
                     AND open_time > %s
                     ORDER BY open_time DESC
                     LIMIT 1
-                """, (symbol, end_time - 120000))  # Ищем свечи за последние 2 минуты
+                """, (symbol, end_time - 180000))  # Ищем свечи за последние 3 минуты
 
                 current_candle = cursor.fetchone()
                 if current_candle:
@@ -544,7 +476,7 @@ class DatabaseManager:
             stream_cutoff = datetime.utcnow() - timedelta(minutes=5)
             cursor.execute("""
                 DELETE FROM kline_stream 
-                WHERE last_update < %s
+                WHERE last_update < %s AT TIME ZONE 'UTC'
             """, (stream_cutoff,))
             
             deleted_stream = cursor.rowcount
@@ -553,7 +485,7 @@ class DatabaseManager:
             alert_cutoff = datetime.utcnow() - timedelta(hours=24)
             cursor.execute("""
                 DELETE FROM alerts 
-                WHERE created_at < %s
+                WHERE created_at < %s AT TIME ZONE 'UTC'
             """, (alert_cutoff,))
             
             deleted_alerts = cursor.rowcount
@@ -565,7 +497,7 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Ошибка очистки старых данных: {e}")
 
-    # Остальные методы остаются без изменений
+    # Остальные методы остаются без изменений, но с UTC временем
     async def get_watchlist(self) -> List[str]:
         """Получить список активных торговых пар"""
         try:
@@ -613,14 +545,14 @@ class DatabaseManager:
         try:
             cursor = self.connection.cursor()
             cursor.execute("""
-                INSERT INTO watchlist (symbol, price_drop_percentage, current_price, historical_price) 
-                VALUES (%s, %s, %s, %s) 
+                INSERT INTO watchlist (symbol, price_drop_percentage, current_price, historical_price, created_at, updated_at) 
+                VALUES (%s, %s, %s, %s, NOW() AT TIME ZONE 'UTC', NOW() AT TIME ZONE 'UTC') 
                 ON CONFLICT (symbol) DO UPDATE SET
                     is_active = TRUE,
                     price_drop_percentage = EXCLUDED.price_drop_percentage,
                     current_price = EXCLUDED.current_price,
                     historical_price = EXCLUDED.historical_price,
-                    updated_at = CURRENT_TIMESTAMP
+                    updated_at = NOW() AT TIME ZONE 'UTC'
             """, (symbol, price_drop, current_price, historical_price))
 
             cursor.close()
@@ -634,7 +566,7 @@ class DatabaseManager:
             cursor = self.connection.cursor()
             cursor.execute("""
                 UPDATE watchlist 
-                SET symbol = %s, is_active = %s, updated_at = CURRENT_TIMESTAMP
+                SET symbol = %s, is_active = %s, updated_at = NOW() AT TIME ZONE 'UTC'
                 WHERE id = %s
             """, (symbol, is_active, item_id))
 
@@ -657,6 +589,100 @@ class DatabaseManager:
 
         except Exception as e:
             logger.error(f"Ошибка удаления из watchlist: {e}")
+
+    async def check_data_integrity(self, symbol: str, hours: int) -> Dict:
+        """Улучшенная проверка целостности исторических данных"""
+        try:
+            cursor = self.connection.cursor()
+            
+            # Определяем временные границы
+            current_time = datetime.utcnow()
+            current_minute = current_time.replace(second=0, microsecond=0)
+            end_time = int(current_minute.timestamp() * 1000)
+            start_time = end_time - (hours * 60 * 60 * 1000)
+            
+            # Получаем существующие данные (только закрытые свечи)
+            cursor.execute("""
+                SELECT open_time FROM kline_data 
+                WHERE symbol = %s AND open_time >= %s AND open_time < %s
+                AND is_closed = TRUE
+                ORDER BY open_time
+            """, (symbol, start_time, end_time))
+            
+            existing_times = [row[0] for row in cursor.fetchall()]
+            cursor.close()
+            
+            # Генерируем ожидаемые временные метки
+            expected_times = []
+            current_time_ms = start_time
+            cutoff_time = end_time - (3 * 60 * 1000)  # Исключаем последние 3 минуты
+            
+            while current_time_ms < cutoff_time:
+                expected_times.append(current_time_ms)
+                current_time_ms += 60000
+            
+            # Находим недостающие периоды
+            missing_times = [t for t in expected_times if t not in existing_times]
+            
+            total_expected = len(expected_times)
+            total_existing = len([t for t in existing_times if t < cutoff_time])
+            
+            return {
+                'total_expected': total_expected,
+                'total_existing': total_existing,
+                'missing_count': len(missing_times),
+                'missing_periods': missing_times,
+                'integrity_percentage': (total_existing / total_expected) * 100 if total_expected > 0 else 100
+            }
+            
+        except Exception as e:
+            logger.error(f"Ошибка проверки целостности данных для {symbol}: {e}")
+            return {
+                'total_expected': 0,
+                'total_existing': 0,
+                'missing_count': 0,
+                'missing_periods': [],
+                'integrity_percentage': 0
+            }
+
+    async def get_historical_long_volumes(self, symbol: str, hours: int, offset_minutes: int = 0, 
+                                        volume_type: str = 'long') -> List[float]:
+        """Получить объемы свечей за указанный период с настройками смещения и типа"""
+        try:
+            cursor = self.connection.cursor()
+
+            # Рассчитываем временные границы с учетом смещения
+            current_time = int(datetime.utcnow().timestamp() * 1000)
+            end_time = current_time - (offset_minutes * 60 * 1000)
+            start_time = end_time - (hours * 60 * 60 * 1000)
+
+            # Формируем условие в зависимости от типа объемов
+            if volume_type == 'long':
+                condition = "AND is_long = TRUE"
+            elif volume_type == 'short':
+                condition = "AND is_long = FALSE"
+            else:  # 'all'
+                condition = ""
+
+            # Получаем данные только из основной таблицы (закрытые свечи)
+            cursor.execute(f"""
+                SELECT volume_usdt FROM kline_data 
+                WHERE symbol = %s 
+                {condition}
+                AND open_time >= %s 
+                AND open_time < %s
+                AND is_closed = TRUE
+                ORDER BY open_time
+            """, (symbol, start_time, end_time))
+
+            volumes = [float(row[0]) for row in cursor.fetchall()]
+            cursor.close()
+
+            return volumes
+
+        except Exception as e:
+            logger.error(f"Ошибка получения исторических объемов: {e}")
+            return []
 
     async def save_alert(self, alert_data: Dict) -> int:
         """Сохранение алерта в базу данных"""
@@ -685,8 +711,10 @@ class DatabaseManager:
                 (symbol, alert_type, price, volume_ratio, consecutive_count,
                  current_volume_usdt, average_volume_usdt, is_true_signal, 
                  is_closed, has_imbalance, message, alert_timestamp, close_timestamp,
-                 candle_data, preliminary_alert, imbalance_data, order_book_snapshot)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 candle_data, preliminary_alert, imbalance_data, order_book_snapshot,
+                 created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 
+                        NOW() AT TIME ZONE 'UTC', NOW() AT TIME ZONE 'UTC')
                 RETURNING id
             """, (
                 alert_data['symbol'],
@@ -735,7 +763,8 @@ class DatabaseManager:
                 SET price = %s, volume_ratio = %s, consecutive_count = %s,
                     current_volume_usdt = %s, average_volume_usdt = %s,
                     is_true_signal = %s, is_closed = %s, has_imbalance = %s, message = %s,
-                    close_timestamp = %s, candle_data = %s, imbalance_data = %s, updated_at = CURRENT_TIMESTAMP
+                    close_timestamp = %s, candle_data = %s, imbalance_data = %s, 
+                    updated_at = NOW() AT TIME ZONE 'UTC'
                 WHERE id = %s
             """, (
                 alert_data['price'],
@@ -869,7 +898,7 @@ class DatabaseManager:
                 SELECT * FROM alerts 
                 WHERE symbol = %s 
                 AND alert_type = 'volume_spike'
-                AND alert_timestamp >= %s
+                AND alert_timestamp >= %s AT TIME ZONE 'UTC'
                 ORDER BY alert_timestamp DESC
             """, (symbol, cutoff_time))
 
@@ -887,7 +916,8 @@ class DatabaseManager:
         try:
             cursor = self.connection.cursor()
             cursor.execute("""
-                UPDATE alerts SET telegram_sent = TRUE WHERE id = %s
+                UPDATE alerts SET telegram_sent = TRUE, updated_at = NOW() AT TIME ZONE 'UTC' 
+                WHERE id = %s
             """, (alert_id,))
             cursor.close()
 

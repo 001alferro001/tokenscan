@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, ExternalLink, Download, BookOpen } from 'lucide-react';
+import { X, ExternalLink, Download, BookOpen, Clock, Globe } from 'lucide-react';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -87,6 +87,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showOrderBook, setShowOrderBook] = useState(false);
+  const [timeZone, setTimeZone] = useState<'UTC' | 'local'>('local');
 
   useEffect(() => {
     loadChartData();
@@ -138,16 +139,23 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
     window.URL.revokeObjectURL(url);
   };
 
-  const formatTime = (timestamp: number | string) => {
+  const formatTime = (timestamp: number | string, useUTC: boolean = false) => {
     const date = new Date(timestamp);
-    return date.toLocaleString('ru-RU', {
+    const options: Intl.DateTimeFormatOptions = {
       year: 'numeric',
       month: '2-digit',
       day: '2-digit',
       hour: '2-digit',
       minute: '2-digit',
       second: '2-digit'
-    });
+    };
+
+    if (useUTC) {
+      options.timeZone = 'UTC';
+      return date.toLocaleString('ru-RU', options) + ' UTC';
+    } else {
+      return date.toLocaleString('ru-RU', options);
+    }
   };
 
   const getChartConfig = () => {
@@ -326,7 +334,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
       plugins: {
         title: {
           display: true,
-          text: `${alert.symbol} - Свечной график с объемами (${chartData.length} свечей)`,
+          text: `${alert.symbol} - Свечной график с объемами (${chartData.length} свечей) - ${timeZone === 'UTC' ? 'UTC' : 'Локальное время'}`,
           color: '#374151'
         },
         legend: {
@@ -337,7 +345,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
         tooltip: {
           callbacks: {
             title: (context) => {
-              return formatTime(context[0].parsed.x);
+              return formatTime(context[0].parsed.x, timeZone === 'UTC');
             },
             label: (context) => {
               if (context.datasetIndex === 0) {
@@ -375,7 +383,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
             displayFormats: {
               minute: 'HH:mm'
             },
-            tooltipFormat: 'dd.MM.yyyy HH:mm:ss'
+            tooltipFormat: timeZone === 'UTC' ? 'dd.MM.yyyy HH:mm:ss UTC' : 'dd.MM.yyyy HH:mm:ss'
           },
           ticks: {
             color: '#6B7280'
@@ -437,7 +445,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
           <div>
             <h2 className="text-2xl font-bold text-gray-900">{alert.symbol}</h2>
             <p className="text-gray-600">
-              График с данными • Алерт: {formatTime(alert.close_timestamp || alert.timestamp)}
+              График с данными • Алерт: {formatTime(alert.close_timestamp || alert.timestamp, timeZone === 'UTC')}
             </p>
             {alert.has_imbalance && (
               <div className="flex items-center space-x-2 mt-2">
@@ -452,6 +460,32 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
           </div>
           
           <div className="flex items-center space-x-3">
+            {/* Переключатель часового пояса */}
+            <div className="flex items-center space-x-2 bg-gray-100 rounded-lg p-2">
+              <Clock className="w-4 h-4 text-gray-600" />
+              <button
+                onClick={() => setTimeZone(timeZone === 'UTC' ? 'local' : 'UTC')}
+                className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+                  timeZone === 'UTC' 
+                    ? 'bg-blue-600 text-white' 
+                    : 'bg-white text-gray-700 hover:bg-gray-50'
+                }`}
+              >
+                UTC
+              </button>
+              <button
+                onClick={() => setTimeZone(timeZone === 'local' ? 'UTC' : 'local')}
+                className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+                  timeZone === 'local' 
+                    ? 'bg-blue-600 text-white' 
+                    : 'bg-white text-gray-700 hover:bg-gray-50'
+                }`}
+              >
+                <Globe className="w-3 h-3 inline mr-1" />
+                Локальное
+              </button>
+            </div>
+
             {alert.order_book_snapshot && (
               <button
                 onClick={() => setShowOrderBook(true)}
@@ -537,7 +571,7 @@ const ChartModal: React.FC<ChartModalProps> = ({ alert, onClose }) => {
             <div>
               <span className="text-gray-600">Время:</span>
               <span className="ml-2 text-gray-900">
-                {formatTime(alert.close_timestamp || alert.timestamp)}
+                {formatTime(alert.close_timestamp || alert.timestamp, timeZone === 'UTC')}
               </span>
             </div>
             <div>
