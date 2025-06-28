@@ -141,9 +141,10 @@ const App: React.FC = () => {
   const [dataActivity, setDataActivity] = useState<'active' | 'idle' | 'error'>('idle');
   const [connectionInfo, setConnectionInfo] = useState<{
     subscribedCount: number;
+    confirmedCount: number;
     failedCount: number;
     subscribedPairs: string[];
-  }>({ subscribedCount: 0, failedCount: 0, subscribedPairs: [] });
+  }>({ subscribedCount: 0, confirmedCount: 0, failedCount: 0, subscribedPairs: [] });
   
   // Refs для WebSocket и интервалов
   const wsRef = useRef<WebSocket | null>(null);
@@ -537,6 +538,7 @@ const App: React.FC = () => {
         if (data.subscribed_count !== undefined) {
           setConnectionInfo({
             subscribedCount: data.subscribed_count || 0,
+            confirmedCount: data.confirmed_count || 0,
             failedCount: data.failed_count || 0,
             subscribedPairs: data.subscribed_pairs || []
           });
@@ -545,6 +547,7 @@ const App: React.FC = () => {
         console.log('📊 Статус подключения:', {
           status: data.status,
           subscribedCount: data.subscribed_count,
+          confirmedCount: data.confirmed_count,
           failedCount: data.failed_count,
           totalPairs: data.pairs_count
         });
@@ -731,7 +734,7 @@ const App: React.FC = () => {
   const getConnectionStatusText = () => {
     switch (connectionStatus) {
       case 'connected':
-        return `Подключено (${connectionInfo.subscribedCount}/${watchlist.length})`;
+        return `Подключено (${connectionInfo.confirmedCount}/${watchlist.length})`;
       case 'connecting':
         return 'Подключение...';
       case 'disconnected':
@@ -976,9 +979,9 @@ const App: React.FC = () => {
                     • {formatLocalTime(lastDataUpdate)}
                   </span>
                 )}
-                {connectionInfo.subscribedCount > 0 && (
+                {connectionInfo.confirmedCount > 0 && (
                   <span className="text-xs text-gray-400">
-                    • Подписано: {connectionInfo.subscribedCount}
+                    • Подтверждено: {connectionInfo.confirmedCount}
                   </span>
                 )}
               </div>
@@ -1194,7 +1197,7 @@ const App: React.FC = () => {
               <h2 className="text-2xl font-bold text-gray-900">Потоковые данные</h2>
               <div className="flex items-center space-x-4">
                 <span className="text-sm text-gray-600">
-                  Обновлений: {streamData.length} / Пар в watchlist: {watchlist.length} / Подписано: {connectionInfo.subscribedCount}
+                  Обновлений: {streamData.length} / Пар в watchlist: {watchlist.length} / Подтверждено: {connectionInfo.confirmedCount}
                 </span>
                 <button
                   onClick={() => connectWebSocket()}
