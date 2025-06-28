@@ -105,7 +105,7 @@ class BybitWebSocketClient:
             logger.info("Все данные актуальны, загрузка не требуется")
 
     async def load_symbol_data(self, symbol: str, hours: int):
-        """Загрузка данных для одного символа с проверкой существующих"""
+        """Загрузка данных для одного символа с UNIX временем"""
         try:
             # Получаем информацию о недостающих периодах
             integrity_info = await self.alert_manager.db_manager.check_data_integrity(symbol, hours)
@@ -114,25 +114,20 @@ class BybitWebSocketClient:
                 logger.debug(f"{symbol}: Все данные уже загружены")
                 return
             
-            # Определяем период для загрузки
-            end_time = int(datetime.utcnow().timestamp() * 1000)
-            start_time = end_time - (hours * 60 * 60 * 1000)
+            # Определяем период для загрузки в UNIX формате
+            end_time_unix = int(datetime.utcnow().timestamp() * 1000)
+            start_time_unix = end_time_unix - (hours * 60 * 60 * 1000)
             
-            # Если есть конкретные недостающие периоды, загружаем более точно
-            if len(integrity_info['missing_periods']) > 0:
-                # Загружаем весь период, но с проверкой дублей в базе
-                await self._load_period_with_deduplication(symbol, start_time, end_time)
-            else:
-                # Загружаем весь период
-                await self._load_full_period(symbol, start_time, end_time)
+            # Загружаем данные с биржи
+            await self._load_full_period(symbol, start_time_unix, end_time_unix)
                 
         except Exception as e:
             logger.error(f"Ошибка загрузки данных для {symbol}: {e}")
 
-    async def _load_full_period(self, symbol: str, start_time: int, end_time: int):
-        """Загрузка полного периода данных"""
+    async def _load_full_period(self, symbol: str, start_time_unix: int, end_time_unix: int):
+        """Загрузка полного периода данных с UNIX временем"""
         try:
-            hours = (end_time - start_time) / (60 * 60 * 1000)
+            hours = (end_time_unix - start_time_unix) / (60 * 60 * 1000)
             limit = min(int(hours * 60) + 60, 1000)
             
             url = f"{self.rest_url}/v5/market/kline"
@@ -140,8 +135,8 @@ class BybitWebSocketClient:
                 'category': 'linear',
                 'symbol': symbol,
                 'interval': '1',
-                'start': start_time,
-                'end': end_time,
+                'start': start_time_unix,
+                'end': end_time_unix,
                 'limit': limit
             }
             
@@ -156,9 +151,15 @@ class BybitWebSocketClient:
                 skipped_count = 0
                 
                 for kline in klines:
+                    # Биржа передает UNIX время в миллисекундах
+                    kline_timestamp_unix = int(kline[0])
+                    
+                    # Для исторических данных округляем до минут с нулями (1687958700000)
+                    rounded_timestamp = (kline_timestamp_unix // 60000) * 60000
+                    
                     kline_data = {
-                        'start': int(kline[0]),
-                        'end': int(kline[0]) + 60000,
+                        'start': rounded_timestamp,  # Округленное время с нулями
+                        'end': rounded_timestamp + 60000,
                         'open': kline[1],
                         'high': kline[2],
                         'low': kline[3],
@@ -168,7 +169,7 @@ class BybitWebSocketClient:
                     }
                     
                     # Проверяем, есть ли уже эта свеча в базе
-                    existing = await self._check_candle_exists(symbol, int(kline[0]))
+                    existing = await self._check_candle_exists(symbol, rounded_timestamp)
                     if not existing:
                         # Сохраняем как закрытую свечу
                         await self.alert_manager.db_manager.save_kline_data(symbol, kline_data, is_closed=True)
@@ -183,72 +184,15 @@ class BybitWebSocketClient:
         except Exception as e:
             logger.error(f"Ошибка загрузки полного периода для {symbol}: {e}")
 
-    async def _load_period_with_deduplication(self, symbol: str, start_time: int, end_time: int):
-        """Загрузка периода с дедупликацией"""
-        try:
-            # Разбиваем на более мелкие периоды для точной загрузки
-            period_hours = 6  # Загружаем по 6 часов за раз
-            current_start = start_time
-            
-            while current_start < end_time:
-                current_end = min(current_start + (period_hours * 60 * 60 * 1000), end_time)
-                
-                url = f"{self.rest_url}/v5/market/kline"
-                params = {
-                    'category': 'linear',
-                    'symbol': symbol,
-                    'interval': '1',
-                    'start': current_start,
-                    'end': current_end,
-                    'limit': period_hours * 60
-                }
-                
-                response = requests.get(url, params=params, timeout=10)
-                data = response.json()
-                
-                if data.get('retCode') == 0:
-                    klines = data['result']['list']
-                    klines.reverse()
-                    
-                    saved_count = 0
-                    for kline in klines:
-                        kline_timestamp = int(kline[0])
-                        
-                        # Проверяем, есть ли уже эта свеча
-                        existing = await self._check_candle_exists(symbol, kline_timestamp)
-                        if not existing:
-                            kline_data = {
-                                'start': kline_timestamp,
-                                'end': kline_timestamp + 60000,
-                                'open': kline[1],
-                                'high': kline[2],
-                                'low': kline[3],
-                                'close': kline[4],
-                                'volume': kline[5],
-                                'confirm': True
-                            }
-                            
-                            await self.alert_manager.db_manager.save_kline_data(symbol, kline_data, is_closed=True)
-                            saved_count += 1
-                    
-                    if saved_count > 0:
-                        logger.debug(f"{symbol}: Загружено {saved_count} свечей за период {datetime.fromtimestamp(current_start/1000)} - {datetime.fromtimestamp(current_end/1000)}")
-                
-                current_start = current_end
-                await asyncio.sleep(0.2)  # Задержка между запросами
-                
-        except Exception as e:
-            logger.error(f"Ошибка загрузки с дедупликацией для {symbol}: {e}")
-
-    async def _check_candle_exists(self, symbol: str, timestamp: int) -> bool:
-        """Проверка существования свечи в базе данных"""
+    async def _check_candle_exists(self, symbol: str, timestamp_unix: int) -> bool:
+        """Проверка существования свечи в базе данных по UNIX времени"""
         try:
             cursor = self.alert_manager.db_manager.connection.cursor()
             cursor.execute("""
                 SELECT 1 FROM kline_data 
-                WHERE symbol = %s AND open_time = %s
+                WHERE symbol = %s AND open_time_unix = %s
                 LIMIT 1
-            """, (symbol, timestamp))
+            """, (symbol, timestamp_unix))
             
             result = cursor.fetchone()
             cursor.close()
@@ -345,7 +289,7 @@ class BybitWebSocketClient:
                 logger.error(f"Ошибка мониторинга соединения: {e}")
 
     async def handle_message(self, data: Dict):
-        """Обработка входящих WebSocket сообщений"""
+        """Обработка входящих WebSocket сообщений с UNIX временем"""
         try:
             # Обрабатываем системные сообщения
             if 'success' in data:
@@ -364,33 +308,40 @@ class BybitWebSocketClient:
                 kline_data = data['data'][0]
                 symbol = data['topic'].split('.')[-1]
                 
+                # Биржа передает UNIX время в миллисекундах
+                start_time_unix = int(kline_data['start'])
+                end_time_unix = int(kline_data['end'])
+                is_closed = kline_data.get('confirm', False)
+                
+                # Для потоковых данных оставляем миллисекунды, но для закрытых свечей - округляем
+                if is_closed:
+                    # Закрытые свечи с нулями в конце (1687958700000)
+                    start_time_unix = (start_time_unix // 60000) * 60000
+                    end_time_unix = (end_time_unix // 60000) * 60000
+                
                 # Преобразуем данные в нужный формат
                 formatted_data = {
-                    'start': int(kline_data['start']),
-                    'end': int(kline_data['end']),
+                    'start': start_time_unix,
+                    'end': end_time_unix,
                     'open': kline_data['open'],
                     'high': kline_data['high'],
                     'low': kline_data['low'],
                     'close': kline_data['close'],
                     'volume': kline_data['volume'],
-                    'confirm': kline_data.get('confirm', False)  # Важно: флаг закрытия от биржи
+                    'confirm': is_closed
                 }
                 
-                # Простая проверка на дублирование
-                timestamp = int(kline_data['start'])
-                is_closed = kline_data.get('confirm', False)
-                
-                # Если свеча закрылась и мы её ещё не обрабатывали
+                # Простая проверка на дублирование для закрытых свечей
                 if is_closed:
                     last_processed = self.processed_candles.get(symbol, 0)
-                    if timestamp > last_processed:
+                    if start_time_unix > last_processed:
                         # Обрабатываем через менеджер алертов
                         alerts = await self.alert_manager.process_kline_data(symbol, formatted_data)
                         
                         # Помечаем свечу как обработанную
-                        self.processed_candles[symbol] = timestamp
+                        self.processed_candles[symbol] = start_time_unix
                         
-                        logger.debug(f"Обработана закрытая свеча {symbol} в {timestamp}")
+                        logger.debug(f"Обработана закрытая свеча {symbol} в {start_time_unix}")
                 
                 # Сохраняем данные в базу (формирующиеся или закрытые)
                 await self.alert_manager.db_manager.save_kline_data(symbol, formatted_data, is_closed)
