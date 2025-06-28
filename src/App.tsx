@@ -10,17 +10,15 @@ import {
   Brain,
   RefreshCw,
   Clock,
-  WifiOff
+  WifiOff,
+  Activity,
+  Zap
 } from 'lucide-react';
 import ChartModal from './components/ChartModal';
 import SmartMoneyChartModal from './components/SmartMoneyChartModal';
 import WatchlistModal from './components/WatchlistModal';
 import StreamDataModal from './components/StreamDataModal';
 import SettingsModal from './components/SettingsModal';
-import TimeZoneToggle from './components/TimeZoneToggle';
-import { TimeZoneProvider, useTimeZone } from './contexts/TimeZoneContext';
-import { useTimeSync } from './hooks/useTimeSync';
-import { formatTime, getTimezoneInfo } from './utils/timeUtils';
 
 interface Alert {
   id: number;
@@ -119,7 +117,7 @@ interface Settings {
   time_sync?: TimeSync;
 }
 
-const AppContent: React.FC = () => {
+const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'volume' | 'consecutive' | 'priority' | 'watchlist' | 'stream' | 'smart_money'>('volume');
   const [volumeAlerts, setVolumeAlerts] = useState<Alert[]>([]);
   const [consecutiveAlerts, setConsecutiveAlerts] = useState<Alert[]>([]);
@@ -139,13 +137,7 @@ const AppContent: React.FC = () => {
   const [timeSync, setTimeSync] = useState<TimeSync | null>(null);
   const [lastDataUpdate, setLastDataUpdate] = useState<Date | null>(null);
   const [reconnectAttempts, setReconnectAttempts] = useState(0);
-  const [wsStats, setWsStats] = useState({ messagesReceived: 0, lastMessage: null as Date | null });
-  
-  // Используем контекст часового пояса
-  const { timeZone, isTimeSynced } = useTimeZone();
-  
-  // Используем хук синхронизации времени
-  useTimeSync();
+  const [dataActivity, setDataActivity] = useState<'active' | 'idle' | 'error'>('idle');
   
   // Refs для WebSocket и интервалов
   const wsRef = useRef<WebSocket | null>(null);
@@ -153,6 +145,7 @@ const AppContent: React.FC = () => {
   const syncIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const dataRefreshIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const activityTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     loadInitialData();
@@ -187,6 +180,9 @@ const AppContent: React.FC = () => {
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
       }
+      if (activityTimeoutRef.current) {
+        clearTimeout(activityTimeoutRef.current);
+      }
       if (wsRef.current) {
         wsRef.current.close();
       }
@@ -195,6 +191,22 @@ const AppContent: React.FC = () => {
 
   const updateCurrentTime = () => {
     setCurrentTime(new Date());
+  };
+
+  const updateDataActivity = (status: 'active' | 'idle' | 'error') => {
+    setDataActivity(status);
+    
+    // Сбрасываем таймер активности
+    if (activityTimeoutRef.current) {
+      clearTimeout(activityTimeoutRef.current);
+    }
+    
+    // Если статус активный, через 3 секунды переводим в idle
+    if (status === 'active') {
+      activityTimeoutRef.current = setTimeout(() => {
+        setDataActivity('idle');
+      }, 3000);
+    }
   };
 
   const loadTimeSync = async () => {
@@ -211,6 +223,8 @@ const AppContent: React.FC = () => {
 
   const refreshData = async () => {
     try {
+      updateDataActivity('active');
+      
       // Обновляем алерты
       const alertsResponse = await fetch('/api/alerts/all');
       if (alertsResponse.ok) {
@@ -251,6 +265,7 @@ const AppContent: React.FC = () => {
 
     } catch (error) {
       console.error('Ошибка обновления данных:', error);
+      updateDataActivity('error');
     }
   };
 
@@ -284,6 +299,7 @@ const AppContent: React.FC = () => {
   const loadInitialData = async () => {
     try {
       setLoading(true);
+      updateDataActivity('active');
       
       // Загружаем алерты
       const alertsResponse = await fetch('/api/alerts/all');
@@ -335,6 +351,7 @@ const AppContent: React.FC = () => {
 
     } catch (error) {
       console.error('Ошибка загрузки данных:', error);
+      updateDataActivity('error');
     } finally {
       setLoading(false);
     }
@@ -358,6 +375,7 @@ const AppContent: React.FC = () => {
     ws.onopen = () => {
       setConnectionStatus('connected');
       setReconnectAttempts(0);
+      updateDataActivity('active');
       console.log('WebSocket подключен');
       
       // Отправляем ping для поддержания соединения
@@ -374,19 +392,18 @@ const AppContent: React.FC = () => {
       try {
         const data = JSON.parse(event.data);
         setLastDataUpdate(new Date());
-        setWsStats(prev => ({
-          messagesReceived: prev.messagesReceived + 1,
-          lastMessage: new Date()
-        }));
+        updateDataActivity('active');
         handleWebSocketMessage(data);
       } catch (error) {
         console.error('Ошибка парсинга WebSocket сообщения:', error);
+        updateDataActivity('error');
       }
     };
 
     ws.onclose = (event) => {
       console.log('WebSocket отключен:', event.code, event.reason);
       setConnectionStatus('disconnected');
+      updateDataActivity('error');
       
       // Автоматическое переподключение с экспоненциальной задержкой
       if (wsRef.current === ws) { // Проверяем, что это текущее соединение
@@ -403,6 +420,7 @@ const AppContent: React.FC = () => {
     ws.onerror = (error) => {
       console.error('WebSocket ошибка:', error);
       setConnectionStatus('disconnected');
+      updateDataActivity('error');
     };
   };
 
@@ -587,6 +605,16 @@ const AppContent: React.FC = () => {
     setSettings(newSettings);
   };
 
+  const formatTime = (timestamp: string) => {
+    return new Date(timestamp).toLocaleString('ru-RU', {
+      day: '2-digit',
+      month: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    });
+  };
+
   const formatVolume = (volume: number) => {
     if (volume >= 1000000) {
       return `$${(volume / 1000000).toFixed(1)}M`;
@@ -611,15 +639,22 @@ const AppContent: React.FC = () => {
   };
 
   const getTimeSyncStatus = () => {
-    if (!isTimeSynced) {
-      return { color: 'text-yellow-500', text: 'Не синхронизировано', icon: '🟡' };
+    if (!timeSync) return { color: 'text-gray-500', text: 'Нет данных', icon: '⚪' };
+    
+    if (!timeSync.is_synced) {
+      return { color: 'text-yellow-500', text: 'Отключена', icon: '🟡' };
     }
     
     return { color: 'text-green-500', text: 'Синхронизировано', icon: '🟢' };
   };
 
   const formatLocalTime = (date: Date) => {
-    return formatTime(date.getTime(), timeZone, { includeDate: false, includeSeconds: true });
+    return date.toLocaleTimeString('ru-RU', { 
+      hour: '2-digit', 
+      minute: '2-digit', 
+      second: '2-digit',
+      hour12: false 
+    });
   };
 
   const formatLocalDate = (date: Date) => {
@@ -630,7 +665,18 @@ const AppContent: React.FC = () => {
     });
   };
 
-  const timezoneInfo = getTimezoneInfo();
+  const getTimezoneInfo = () => {
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const offset = new Date().getTimezoneOffset();
+    const offsetHours = Math.abs(Math.floor(offset / 60));
+    const offsetMinutes = Math.abs(offset % 60);
+    const offsetSign = offset <= 0 ? '+' : '-';
+    
+    return {
+      timezone,
+      offsetString: `UTC${offsetSign}${offsetHours.toString().padStart(2, '0')}:${offsetMinutes.toString().padStart(2, '0')}`
+    };
+  };
 
   const getConnectionStatusIcon = () => {
     switch (connectionStatus) {
@@ -655,6 +701,30 @@ const AppContent: React.FC = () => {
         return reconnectAttempts > 0 ? `Переподключение (${reconnectAttempts})` : 'Отключено';
       default:
         return 'Неизвестно';
+    }
+  };
+
+  const getDataActivityIcon = () => {
+    switch (dataActivity) {
+      case 'active':
+        return <Zap className="w-4 h-4 text-green-500 animate-pulse" />;
+      case 'error':
+        return <Activity className="w-4 h-4 text-red-500" />;
+      case 'idle':
+      default:
+        return <Activity className="w-4 h-4 text-gray-400" />;
+    }
+  };
+
+  const getDataActivityText = () => {
+    switch (dataActivity) {
+      case 'active':
+        return 'Получение данных';
+      case 'error':
+        return 'Ошибка данных';
+      case 'idle':
+      default:
+        return 'Ожидание';
     }
   };
 
@@ -717,9 +787,9 @@ const AppContent: React.FC = () => {
 
       <div className="mt-3 pt-3 border-t border-gray-200">
         <div className="text-xs text-gray-500">
-          <div>Время закрытия: {formatTime(alert.close_timestamp || alert.timestamp, timeZone)}</div>
+          <div>Время закрытия: {formatTime(alert.close_timestamp || alert.timestamp)}</div>
           {alert.preliminary_alert && (
-            <div>Предварительный: {formatTime(alert.preliminary_alert.timestamp, timeZone)}</div>
+            <div>Предварительный: {formatTime(alert.preliminary_alert.timestamp)}</div>
           )}
         </div>
       </div>
@@ -776,7 +846,7 @@ const AppContent: React.FC = () => {
         
         <div>
           <span className="text-gray-600">Время:</span>
-          <div className="text-gray-900">{formatTime(alert.timestamp, timeZone)}</div>
+          <div className="text-gray-900">{formatTime(alert.timestamp)}</div>
         </div>
       </div>
 
@@ -825,7 +895,7 @@ const AppContent: React.FC = () => {
       )}
 
       <div className="mt-3 pt-3 border-t border-gray-200 text-xs text-gray-500">
-        Обновлено: {formatTime(item.updated_at, timeZone)}
+        Обновлено: {formatTime(item.updated_at)}
       </div>
     </div>
   );
@@ -842,6 +912,7 @@ const AppContent: React.FC = () => {
   }
 
   const timeSyncStatus = getTimeSyncStatus();
+  const timezoneInfo = getTimezoneInfo();
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -851,24 +922,28 @@ const AppContent: React.FC = () => {
           <div className="flex items-center justify-between h-16">
             <div className="flex items-center space-x-4">
               <h1 className="text-xl font-bold text-gray-900">Анализатор Объемов</h1>
-              <div className="flex items-center space-x-2">
+              <div className="flex items-center space-x-3">
                 {getConnectionStatusIcon()}
                 <span className="text-sm text-gray-600">
                   {getConnectionStatusText()}
                 </span>
+                {/* Индикатор активности данных */}
+                <div className="flex items-center space-x-1">
+                  {getDataActivityIcon()}
+                  <span className="text-xs text-gray-500">
+                    {getDataActivityText()}
+                  </span>
+                </div>
                 {lastDataUpdate && (
                   <span className="text-xs text-gray-400">
-                    • Данные: {formatLocalTime(lastDataUpdate)}
+                    • {formatLocalTime(lastDataUpdate)}
                   </span>
                 )}
-                <span className="text-xs text-gray-400">
-                  • Сообщений: {wsStats.messagesReceived}
-                </span>
               </div>
             </div>
             
             <div className="flex items-center space-x-6">
-              {/* Динамические часы в выбранном часовом поясе */}
+              {/* Динамические часы в локальном часовом поясе */}
               <div className="flex items-center space-x-3 bg-gray-100 rounded-lg px-4 py-2">
                 <Clock className="w-5 h-5 text-gray-600" />
                 <div className="text-center">
@@ -881,18 +956,16 @@ const AppContent: React.FC = () => {
                 </div>
                 <div className="text-xs text-gray-500 text-center">
                   <div className={timeSyncStatus.color}>
-                    {timeSyncStatus.icon} {timeZone === 'UTC' ? 'UTC' : timezoneInfo.offsetString}
+                    {timeSyncStatus.icon} {timezoneInfo.offsetString}
                   </div>
                   <div className="text-xs">
-                    {timeZone === 'UTC' ? 'UTC' : timezoneInfo.name}
+                    {timezoneInfo.timezone.split('/').pop()}
                   </div>
                   <div className="text-xs">
                     Синх: {timeSyncStatus.text}
                   </div>
                 </div>
               </div>
-              
-              <TimeZoneToggle />
               
               <button
                 onClick={() => setShowSettings(true)}
@@ -1126,7 +1199,7 @@ const AppContent: React.FC = () => {
                     
                     <div className="flex items-center space-x-2">
                       <div className="text-right text-sm text-gray-500">
-                        <div>{formatTime(item.timestamp, timeZone)}</div>
+                        <div>{formatTime(item.timestamp)}</div>
                         <div className="text-xs">
                           {formatVolume(item.volume)} {item.symbol.replace('USDT', '')}
                         </div>
@@ -1187,14 +1260,6 @@ const AppContent: React.FC = () => {
         />
       )}
     </div>
-  );
-};
-
-const App: React.FC = () => {
-  return (
-    <TimeZoneProvider>
-      <AppContent />
-    </TimeZoneProvider>
   );
 };
 
