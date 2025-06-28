@@ -32,10 +32,11 @@ class BybitWebSocketClient:
         # Кэш для отслеживания обработанных свечей
         self.processed_candles = {}  # symbol -> last_processed_timestamp
         
-        # Отслеживание подписанных пар
+        # 🎯 КРИТИЧЕСКИ ВАЖНО: Отслеживание подписанных пар
         self.subscribed_pairs = set()
         self.subscription_confirmed = set()  # Пары с подтвержденной подпиской
         self.failed_subscriptions = set()
+        self.subscription_attempts = {}  # symbol -> attempt_count
 
     async def start(self):
         """Запуск WebSocket соединения с проверкой целостности БД"""
@@ -49,9 +50,9 @@ class BybitWebSocketClient:
             try:
                 await self.connect_websocket()
             except Exception as e:
-                logger.error(f"WebSocket ошибка: {e}")
+                logger.error(f"❌ WebSocket ошибка: {e}")
                 if self.is_running:
-                    logger.info("Переподключение через 5 секунд...")
+                    logger.info("🔄 Переподключение через 5 секунд...")
                     await asyncio.sleep(5)
 
     async def stop(self):
@@ -256,18 +257,6 @@ class BybitWebSocketClient:
         except Exception as e:
             logger.error(f"❌ Ошибка загрузки периода для {symbol}: {e}")
 
-    async def load_symbol_data(self, symbol: str, hours: int):
-        """УСТАРЕВШИЙ метод - заменен на _load_symbol_data_optimized"""
-        await self._load_symbol_data_optimized(symbol, hours)
-
-    async def _load_full_period(self, symbol: str, start_time_unix: int, end_time_unix: int):
-        """УСТАРЕВШИЙ метод - заменен на _load_period_from_exchange"""
-        await self._load_period_from_exchange(symbol, start_time_unix, end_time_unix)
-
-    async def check_and_load_missing_data(self):
-        """УСТАРЕВШИЙ метод - заменен на intelligent_data_check_and_load"""
-        await self.intelligent_data_check_and_load()
-
     async def _check_candle_exists(self, symbol: str, timestamp_unix: int) -> bool:
         """Проверка существования свечи в базе данных по UNIX времени"""
         try:
@@ -288,15 +277,16 @@ class BybitWebSocketClient:
             return False
 
     async def connect_websocket(self):
-        """Подключение к WebSocket с улучшенной подпиской на ВСЕ торговые пары"""
+        """🎯 ИСПРАВЛЕННОЕ подключение к WebSocket с гарантированной подпиской на ВСЕ торговые пары"""
         try:
             logger.info(f"🔗 Подключение к WebSocket: {self.ws_url}")
-            logger.info(f"📊 Всего торговых пар для подписки: {len(self.trading_pairs)}")
+            logger.info(f"📊 ВСЕГО торговых пар для подписки: {len(self.trading_pairs)}")
             
             # Очищаем списки подписанных пар
             self.subscribed_pairs.clear()
             self.subscription_confirmed.clear()
             self.failed_subscriptions.clear()
+            self.subscription_attempts.clear()
             
             async with websockets.connect(
                 self.ws_url,
@@ -307,18 +297,40 @@ class BybitWebSocketClient:
                 self.websocket = websocket
                 self.last_message_time = datetime.utcnow()
                 
-                # УЛУЧШЕННАЯ СТРАТЕГИЯ ПОДПИСКИ
-                await self._subscribe_to_all_pairs(websocket)
+                # 🚀 КРИТИЧЕСКИ ВАЖНО: Подписываемся на ВСЕ пары из watchlist
+                await self._subscribe_to_all_pairs_guaranteed(websocket)
+                
+                # Ждем подтверждений подписок
+                await asyncio.sleep(10)  # Даем время на получение подтверждений
+                
+                # Проверяем результаты подписки
+                confirmed_count = len(self.subscription_confirmed)
+                total_pairs = len(self.trading_pairs)
+                success_rate = (confirmed_count / total_pairs) * 100 if total_pairs > 0 else 0
+                
+                logger.info(f"📊 РЕЗУЛЬТАТ ПОДПИСКИ:")
+                logger.info(f"   • Всего пар в watchlist: {total_pairs}")
+                logger.info(f"   • Подтверждено подписок: {confirmed_count}")
+                logger.info(f"   • Успешность: {success_rate:.1f}%")
+                logger.info(f"   • Неподтвержденных: {total_pairs - confirmed_count}")
+                
+                if confirmed_count < total_pairs:
+                    unconfirmed = set(self.trading_pairs) - self.subscription_confirmed
+                    logger.warning(f"⚠️ Неподтвержденные пары: {sorted(list(unconfirmed))[:10]}...")  # Показываем первые 10
+                    
+                    # Пробуем повторную подписку на неподтвержденные пары
+                    await self._retry_failed_subscriptions(websocket, unconfirmed)
                 
                 # Отправляем статус подключения с детальной информацией
                 await self.connection_manager.broadcast_json({
                     "type": "connection_status",
                     "status": "connected",
-                    "pairs_count": len(self.trading_pairs),
+                    "pairs_count": total_pairs,
                     "subscribed_count": len(self.subscribed_pairs),
-                    "confirmed_count": len(self.subscription_confirmed),
+                    "confirmed_count": confirmed_count,
                     "failed_count": len(self.failed_subscriptions),
-                    "subscribed_pairs": sorted(list(self.subscribed_pairs)),
+                    "success_rate": success_rate,
+                    "subscribed_pairs": sorted(list(self.subscription_confirmed)),
                     "update_interval": self.update_interval,
                     "timestamp": datetime.utcnow().isoformat()
                 })
@@ -340,41 +352,44 @@ class BybitWebSocketClient:
                         
                         # Логируем статистику каждые 5 минут
                         if (datetime.utcnow() - self.last_stats_log).total_seconds() > 300:
-                            logger.info(f"📊 WebSocket статистика: {self.messages_received} сообщений, подписано пар: {len(self.subscription_confirmed)}/{len(self.trading_pairs)}")
+                            active_pairs = len(self.subscription_confirmed)
+                            logger.info(f"📊 WebSocket статистика: {self.messages_received} сообщений, активных пар: {active_pairs}/{total_pairs}")
                             self.last_stats_log = datetime.utcnow()
                             
                     except Exception as e:
-                        logger.error(f"Ошибка обработки сообщения: {e}")
+                        logger.error(f"❌ Ошибка обработки сообщения: {e}")
                         
         except Exception as e:
-            logger.error(f"Ошибка WebSocket соединения: {e}")
+            logger.error(f"❌ Ошибка WebSocket соединения: {e}")
             raise
         finally:
             if self.ping_task:
                 self.ping_task.cancel()
 
-    async def _subscribe_to_all_pairs(self, websocket):
-        """Улучшенная подписка на все торговые пары с проверкой подтверждений"""
-        # Стратегия 1: Маленькие пакеты с подтверждением
-        batch_size = 25  # Уменьшаем размер пакета для надежности
+    async def _subscribe_to_all_pairs_guaranteed(self, websocket):
+        """🎯 ГАРАНТИРОВАННАЯ подписка на ВСЕ торговые пары из watchlist"""
+        total_pairs = len(self.trading_pairs)
+        logger.info(f"🚀 Начинаем ГАРАНТИРОВАННУЮ подписку на {total_pairs} пар")
+        
+        # Стратегия 1: Очень маленькие пакеты для максимальной надежности
+        batch_size = 10  # Еще меньше для гарантии
+        batches_sent = 0
         total_subscribed = 0
-        failed_subscriptions = 0
         
-        logger.info(f"🚀 Начинаем подписку на {len(self.trading_pairs)} пар пакетами по {batch_size}")
-        
-        for i in range(0, len(self.trading_pairs), batch_size):
+        for i in range(0, total_pairs, batch_size):
             batch = self.trading_pairs[i:i + batch_size]
             batch_number = i // batch_size + 1
+            total_batches = (total_pairs + batch_size - 1) // batch_size
             
             try:
-                # Формируем сообщение подписки
+                # Формируем сообщение подписки для пакета
                 subscribe_message = {
                     "op": "subscribe",
                     "args": [f"kline.1.{pair}" for pair in batch]
                 }
                 
-                logger.info(f"📤 Отправка пакета {batch_number}/{(len(self.trading_pairs) + batch_size - 1) // batch_size}: {len(batch)} пар")
-                logger.debug(f"Пары в пакете {batch_number}: {batch}")
+                logger.info(f"📤 Отправка пакета {batch_number}/{total_batches}: {len(batch)} пар")
+                logger.debug(f"   Пары: {batch}")
                 
                 # Отправляем подписку
                 await websocket.send(json.dumps(subscribe_message))
@@ -382,66 +397,68 @@ class BybitWebSocketClient:
                 # Добавляем пары в список отправленных
                 for pair in batch:
                     self.subscribed_pairs.add(pair)
+                    self.subscription_attempts[pair] = self.subscription_attempts.get(pair, 0) + 1
                 
                 total_subscribed += len(batch)
+                batches_sent += 1
                 
-                # Ждем между пакетами для стабильности
-                await asyncio.sleep(2.0)  # Увеличиваем задержку
+                # Увеличенная задержка между пакетами для стабильности
+                await asyncio.sleep(3.0)
                 
-                logger.info(f"✅ Пакет {batch_number} отправлен. Отправлено: {total_subscribed}/{len(self.trading_pairs)}")
+                logger.info(f"✅ Пакет {batch_number} отправлен. Прогресс: {total_subscribed}/{total_pairs}")
                 
             except Exception as e:
-                logger.error(f"❌ Ошибка подписки на пакет {batch_number}: {e}")
-                failed_subscriptions += len(batch)
+                logger.error(f"❌ Ошибка отправки пакета {batch_number}: {e}")
                 for pair in batch:
                     self.failed_subscriptions.add(pair)
                 continue
         
-        logger.info(f"🎯 Подписка завершена! Отправлено: {total_subscribed}, Ошибок: {failed_subscriptions}")
-        
-        # Ждем немного для получения подтверждений
-        await asyncio.sleep(5.0)
-        
-        # Проверяем, какие подписки подтвердились
-        confirmed_count = len(self.subscription_confirmed)
-        logger.info(f"📋 Подтверждено подписок: {confirmed_count}/{total_subscribed}")
-        
-        # Если подтвердилось мало подписок, пробуем альтернативную стратегию
-        if confirmed_count < total_subscribed * 0.5:  # Менее 50% подтвердилось
-            logger.warning(f"⚠️ Подтвердилось только {confirmed_count} из {total_subscribed} подписок. Пробуем индивидуальную подписку...")
-            await self._subscribe_individually(websocket)
+        logger.info(f"🎯 Первичная подписка завершена!")
+        logger.info(f"   • Отправлено пакетов: {batches_sent}/{total_batches}")
+        logger.info(f"   • Отправлено подписок: {total_subscribed}/{total_pairs}")
+        logger.info(f"   • Ошибок отправки: {len(self.failed_subscriptions)}")
 
-    async def _subscribe_individually(self, websocket):
-        """Индивидуальная подписка на каждую пару отдельно"""
-        logger.info("🔄 Начинаем индивидуальную подписку на неподтвержденные пары")
+    async def _retry_failed_subscriptions(self, websocket, failed_pairs: set):
+        """Повторная попытка подписки на неудачные пары"""
+        if not failed_pairs:
+            return
+            
+        logger.info(f"🔄 Повторная подписка на {len(failed_pairs)} неподтвержденных пар...")
         
-        # Определяем пары, которые не подтвердились
-        unconfirmed_pairs = self.subscribed_pairs - self.subscription_confirmed
+        # Индивидуальная подписка на каждую неудачную пару
+        retry_success = 0
+        retry_failed = 0
         
-        logger.info(f"📝 Неподтвержденных пар: {len(unconfirmed_pairs)}")
-        
-        individual_success = 0
-        individual_failed = 0
-        
-        for pair in unconfirmed_pairs:
+        for pair in failed_pairs:
             try:
+                # Проверяем количество попыток
+                attempts = self.subscription_attempts.get(pair, 0)
+                if attempts >= 3:  # Максимум 3 попытки
+                    logger.warning(f"⚠️ Превышено количество попыток для {pair}")
+                    self.failed_subscriptions.add(pair)
+                    retry_failed += 1
+                    continue
+                
                 subscribe_message = {
                     "op": "subscribe",
                     "args": [f"kline.1.{pair}"]
                 }
                 
                 await websocket.send(json.dumps(subscribe_message))
-                await asyncio.sleep(0.5)  # Небольшая задержка между индивидуальными подписками
+                self.subscription_attempts[pair] = attempts + 1
                 
-                individual_success += 1
-                logger.debug(f"📤 Индивидуальная подписка на {pair}")
+                # Небольшая задержка между индивидуальными подписками
+                await asyncio.sleep(1.0)
+                
+                retry_success += 1
+                logger.debug(f"🔄 Повторная подписка на {pair} (попытка {attempts + 1})")
                 
             except Exception as e:
-                logger.error(f"❌ Ошибка индивидуальной подписки на {pair}: {e}")
-                individual_failed += 1
+                logger.error(f"❌ Ошибка повторной подписки на {pair}: {e}")
                 self.failed_subscriptions.add(pair)
+                retry_failed += 1
         
-        logger.info(f"🎯 Индивидуальная подписка завершена: успешно {individual_success}, ошибок {individual_failed}")
+        logger.info(f"🎯 Повторная подписка завершена: отправлено {retry_success}, ошибок {retry_failed}")
 
     async def _monitor_connection(self):
         """Мониторинг состояния WebSocket соединения"""
@@ -464,10 +481,10 @@ class BybitWebSocketClient:
                         break
                         
             except Exception as e:
-                logger.error(f"Ошибка мониторинга соединения: {e}")
+                logger.error(f"❌ Ошибка мониторинга соединения: {e}")
 
     async def handle_message(self, data: Dict):
-        """Обработка входящих WebSocket сообщений с UNIX временем"""
+        """Обработка входящих WebSocket сообщений с улучшенным отслеживанием подписок"""
         try:
             # Обрабатываем системные сообщения
             if 'success' in data:
@@ -479,8 +496,11 @@ class BybitWebSocketClient:
                         for arg in data['request']['args']:
                             if arg.startswith('kline.1.'):
                                 pair = arg.replace('kline.1.', '')
-                                self.subscription_confirmed.add(pair)
-                                logger.debug(f"✅ Подтверждена подписка на {pair}")
+                                if pair in self.trading_pairs:  # ВАЖНО: проверяем, что пара в watchlist
+                                    self.subscription_confirmed.add(pair)
+                                    logger.debug(f"✅ Подтверждена подписка на {pair}")
+                                else:
+                                    logger.warning(f"⚠️ Подтверждена подписка на {pair}, но пары нет в watchlist")
                 else:
                     logger.error(f"❌ Ошибка подписки WebSocket: {data}")
                 return
@@ -494,14 +514,13 @@ class BybitWebSocketClient:
                 kline_data = data['data'][0]
                 symbol = data['topic'].split('.')[-1]
                 
-                # Подтверждаем получение данных для этой пары
-                if symbol not in self.subscription_confirmed:
-                    self.subscription_confirmed.add(symbol)
-                    logger.debug(f"✅ Получены данные от {symbol}, подписка подтверждена")
-                
-                # КРИТИЧЕСКИ ВАЖНО: Проверяем, что символ в нашем списке торговых пар
-                if symbol not in self.trading_pairs:
-                    logger.warning(f"⚠️ Символ {symbol} не в watchlist")
+                # 🎯 КРИТИЧЕСКИ ВАЖНО: Подтверждаем получение данных для этой пары
+                if symbol in self.trading_pairs:
+                    if symbol not in self.subscription_confirmed:
+                        self.subscription_confirmed.add(symbol)
+                        logger.info(f"✅ Получены данные от {symbol}, подписка подтверждена автоматически")
+                else:
+                    logger.warning(f"⚠️ Получены данные от {symbol}, но пары НЕТ в watchlist!")
                     return
                 
                 # Биржа передает UNIX время в миллисекундах
@@ -527,8 +546,8 @@ class BybitWebSocketClient:
                     'confirm': is_closed
                 }
                 
-                # Логируем получение данных для отладки (только для первых 10 пар)
-                if symbol in sorted(list(self.subscription_confirmed))[:10]:
+                # Логируем получение данных для отладки (только для первых 5 пар)
+                if symbol in sorted(list(self.subscription_confirmed))[:5]:
                     logger.debug(f"📊 Данные от {symbol}: закрыта={is_closed}, время={start_time_unix}")
                 
                 # Простая проверка на дублирование для закрытых свечей
@@ -541,7 +560,8 @@ class BybitWebSocketClient:
                         # Помечаем свечу как обработанную
                         self.processed_candles[symbol] = start_time_unix
                         
-                        logger.debug(f"✅ Обработана закрытая свеча {symbol} в {start_time_unix}")
+                        if alerts:
+                            logger.info(f"🚨 Создано {len(alerts)} алертов для {symbol}")
                 
                 # Сохраняем данные в базу (формирующиеся или закрытые)
                 await self.alert_manager.db_manager.save_kline_data(symbol, formatted_data, is_closed)

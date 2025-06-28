@@ -12,7 +12,10 @@ import {
   Clock,
   WifiOff,
   Activity,
-  Zap
+  Zap,
+  CheckCircle,
+  AlertCircle,
+  XCircle
 } from 'lucide-react';
 import ChartModal from './components/ChartModal';
 import SmartMoneyChartModal from './components/SmartMoneyChartModal';
@@ -85,6 +88,14 @@ interface TimeSync {
   serverTime?: number;
 }
 
+interface ConnectionInfo {
+  subscribedCount: number;
+  confirmedCount: number;
+  failedCount: number;
+  successRate?: number;
+  subscribedPairs: string[];
+}
+
 interface Settings {
   volume_analyzer: {
     analysis_hours: number;
@@ -139,12 +150,12 @@ const App: React.FC = () => {
   const [lastDataUpdate, setLastDataUpdate] = useState<Date | null>(null);
   const [reconnectAttempts, setReconnectAttempts] = useState(0);
   const [dataActivity, setDataActivity] = useState<'active' | 'idle' | 'error'>('idle');
-  const [connectionInfo, setConnectionInfo] = useState<{
-    subscribedCount: number;
-    confirmedCount: number;
-    failedCount: number;
-    subscribedPairs: string[];
-  }>({ subscribedCount: 0, confirmedCount: 0, failedCount: 0, subscribedPairs: [] });
+  const [connectionInfo, setConnectionInfo] = useState<ConnectionInfo>({
+    subscribedCount: 0,
+    confirmedCount: 0,
+    failedCount: 0,
+    subscribedPairs: []
+  });
   
   // Refs для WebSocket и интервалов
   const wsRef = useRef<WebSocket | null>(null);
@@ -534,12 +545,13 @@ const App: React.FC = () => {
       case 'connection_status':
         setConnectionStatus(data.status === 'connected' ? 'connected' : 'disconnected');
         
-        // Обновляем информацию о подключении
+        // 🎯 НОВОЕ: Обновляем детальную информацию о подключении
         if (data.subscribed_count !== undefined) {
           setConnectionInfo({
             subscribedCount: data.subscribed_count || 0,
             confirmedCount: data.confirmed_count || 0,
             failedCount: data.failed_count || 0,
+            successRate: data.success_rate || 0,
             subscribedPairs: data.subscribed_pairs || []
           });
         }
@@ -549,6 +561,7 @@ const App: React.FC = () => {
           subscribedCount: data.subscribed_count,
           confirmedCount: data.confirmed_count,
           failedCount: data.failed_count,
+          successRate: data.success_rate,
           totalPairs: data.pairs_count
         });
         break;
@@ -732,15 +745,37 @@ const App: React.FC = () => {
   };
 
   const getConnectionStatusText = () => {
+    const totalPairs = watchlist.length;
+    const confirmedPairs = connectionInfo.confirmedCount;
+    const successRate = connectionInfo.successRate || 0;
+    
     switch (connectionStatus) {
       case 'connected':
-        return `Подключено (${connectionInfo.confirmedCount}/${watchlist.length})`;
+        return `Подключено (${confirmedPairs}/${totalPairs} пар, ${successRate.toFixed(1)}%)`;
       case 'connecting':
         return 'Подключение...';
       case 'disconnected':
         return reconnectAttempts > 0 ? `Переподключение (${reconnectAttempts})` : 'Отключено';
       default:
         return 'Неизвестно';
+    }
+  };
+
+  const getSubscriptionStatusIcon = () => {
+    const totalPairs = watchlist.length;
+    const confirmedPairs = connectionInfo.confirmedCount;
+    const successRate = (confirmedPairs / totalPairs) * 100;
+    
+    if (totalPairs === 0) {
+      return <AlertCircle className="w-4 h-4 text-gray-400" />;
+    }
+    
+    if (successRate >= 90) {
+      return <CheckCircle className="w-4 h-4 text-green-500" />;
+    } else if (successRate >= 70) {
+      return <AlertCircle className="w-4 h-4 text-yellow-500" />;
+    } else {
+      return <XCircle className="w-4 h-4 text-red-500" />;
     }
   };
 
@@ -907,6 +942,12 @@ const App: React.FC = () => {
         <div className="flex items-center space-x-3">
           <div className={`w-3 h-3 rounded-full ${item.is_active ? 'bg-green-500' : 'bg-red-500'}`}></div>
           <span className="font-bold text-lg text-gray-900">{item.symbol}</span>
+          {/* Показываем статус подписки для этой пары */}
+          {connectionInfo.subscribedPairs.includes(item.symbol) ? (
+            <CheckCircle className="w-4 h-4 text-green-500" title="Подписка активна" />
+          ) : (
+            <XCircle className="w-4 h-4 text-red-500" title="Подписка неактивна" />
+          )}
         </div>
         
         <button
@@ -967,6 +1008,13 @@ const App: React.FC = () => {
                 <span className="text-sm text-gray-600">
                   {getConnectionStatusText()}
                 </span>
+                {/* 🎯 НОВЫЙ индикатор статуса подписок */}
+                <div className="flex items-center space-x-1">
+                  {getSubscriptionStatusIcon()}
+                  <span className="text-xs text-gray-500">
+                    Подписки
+                  </span>
+                </div>
                 {/* Индикатор активности данных */}
                 <div className="flex items-center space-x-1">
                   {getDataActivityIcon()}
@@ -977,11 +1025,6 @@ const App: React.FC = () => {
                 {lastDataUpdate && (
                   <span className="text-xs text-gray-400">
                     • {formatLocalTime(lastDataUpdate)}
-                  </span>
-                )}
-                {connectionInfo.confirmedCount > 0 && (
-                  <span className="text-xs text-gray-400">
-                    • Подтверждено: {connectionInfo.confirmedCount}
                   </span>
                 )}
               </div>
@@ -1168,7 +1211,13 @@ const App: React.FC = () => {
         {activeTab === 'watchlist' && (
           <div>
             <div className="flex items-center justify-between mb-6">
-              <h2 className="text-2xl font-bold text-gray-900">Список торговых пар</h2>
+              <div>
+                <h2 className="text-2xl font-bold text-gray-900">Список торговых пар</h2>
+                <p className="text-sm text-gray-600 mt-1">
+                  Подтверждено подписок: {connectionInfo.confirmedCount}/{watchlist.length} 
+                  ({connectionInfo.successRate ? connectionInfo.successRate.toFixed(1) : '0'}%)
+                </p>
+              </div>
               <button
                 onClick={() => setShowWatchlistModal(true)}
                 className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors"
@@ -1228,6 +1277,12 @@ const App: React.FC = () => {
                           </span>
                           {item.is_closed && (
                             <span className="px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded-full">Закрыта</span>
+                          )}
+                          {/* Показываем статус подписки */}
+                          {connectionInfo.subscribedPairs.includes(item.symbol) ? (
+                            <CheckCircle className="w-3 h-3 text-green-500" title="Подписка активна" />
+                          ) : (
+                            <XCircle className="w-3 h-3 text-red-500" title="Подписка неактивна" />
                           )}
                         </div>
                       </div>
