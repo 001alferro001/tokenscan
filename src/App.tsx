@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   TrendingUp, 
   BarChart3, 
@@ -9,7 +9,8 @@ import {
   ExternalLink,
   Brain,
   RefreshCw,
-  Clock
+  Clock,
+  WifiOff
 } from 'lucide-react';
 import ChartModal from './components/ChartModal';
 import SmartMoneyChartModal from './components/SmartMoneyChartModal';
@@ -131,6 +132,14 @@ const App: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [currentTime, setCurrentTime] = useState<Date>(new Date());
   const [timeSync, setTimeSync] = useState<TimeSync | null>(null);
+  const [lastDataUpdate, setLastDataUpdate] = useState<Date | null>(null);
+  const [reconnectAttempts, setReconnectAttempts] = useState(0);
+  
+  // Refs для WebSocket и интервалов
+  const wsRef = useRef<WebSocket | null>(null);
+  const timeIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const syncIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     loadInitialData();
@@ -138,17 +147,28 @@ const App: React.FC = () => {
     requestNotificationPermission();
     
     // Обновляем время каждую секунду
-    const timeInterval = setInterval(() => {
+    timeIntervalRef.current = setInterval(() => {
       updateCurrentTime();
     }, 1000);
     
     // Загружаем информацию о синхронизации времени каждые 30 секунд
-    const syncInterval = setInterval(loadTimeSync, 30000);
+    syncIntervalRef.current = setInterval(loadTimeSync, 30000);
     loadTimeSync(); // Первоначальная загрузка
     
+    // Cleanup function
     return () => {
-      clearInterval(timeInterval);
-      clearInterval(syncInterval);
+      if (timeIntervalRef.current) {
+        clearInterval(timeIntervalRef.current);
+      }
+      if (syncIntervalRef.current) {
+        clearInterval(syncIntervalRef.current);
+      }
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
     };
   }, []);
 
@@ -259,29 +279,59 @@ const App: React.FC = () => {
   };
 
   const connectWebSocket = () => {
+    // Закрываем существующее соединение, если есть
+    if (wsRef.current) {
+      wsRef.current.close();
+    }
+
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}/ws`;
     
+    console.log('Подключение к WebSocket:', wsUrl);
+    setConnectionStatus('connecting');
+    
     const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
 
     ws.onopen = () => {
       setConnectionStatus('connected');
+      setReconnectAttempts(0);
       console.log('WebSocket подключен');
+      
+      // Отправляем ping для поддержания соединения
+      const pingInterval = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'ping' }));
+        } else {
+          clearInterval(pingInterval);
+        }
+      }, 30000); // Ping каждые 30 секунд
     };
 
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
+        setLastDataUpdate(new Date());
         handleWebSocketMessage(data);
       } catch (error) {
         console.error('Ошибка парсинга WebSocket сообщения:', error);
       }
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
+      console.log('WebSocket отключен:', event.code, event.reason);
       setConnectionStatus('disconnected');
-      console.log('WebSocket отключен, переподключение через 5 секунд...');
-      setTimeout(connectWebSocket, 5000);
+      
+      // Автоматическое переподключение с экспоненциальной задержкой
+      if (wsRef.current === ws) { // Проверяем, что это текущее соединение
+        const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000); // Максимум 30 секунд
+        console.log(`Переподключение через ${delay}мс (попытка ${reconnectAttempts + 1})`);
+        
+        reconnectTimeoutRef.current = setTimeout(() => {
+          setReconnectAttempts(prev => prev + 1);
+          connectWebSocket();
+        }, delay);
+      }
     };
 
     ws.onerror = (error) => {
@@ -292,11 +342,18 @@ const App: React.FC = () => {
 
   const handleWebSocketMessage = (data: any) => {
     switch (data.type) {
+      case 'pong':
+        // Ответ на ping - ничего не делаем
+        break;
+        
       case 'new_alert':
+      case 'alert_updated':
         const alert = data.alert;
         
-        // Показываем уведомление
-        showNotification(alert);
+        // Показываем уведомление только для новых алертов
+        if (data.type === 'new_alert') {
+          showNotification(alert);
+        }
         
         // Обновляем алерты без дублирования
         if (alert.alert_type === 'volume_spike') {
@@ -317,6 +374,13 @@ const App: React.FC = () => {
           });
         } else if (alert.alert_type === 'consecutive_long') {
           setConsecutiveAlerts(prev => {
+            const existing = prev.find(a => a.id === alert.id);
+            if (existing) {
+              const updated = prev.map(a => a.id === alert.id ? alert : a);
+              return updated.sort((a, b) => 
+                new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
+              );
+            }
             const newList = [alert, ...prev].slice(0, 100);
             return newList.sort((a, b) => 
               new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
@@ -324,6 +388,13 @@ const App: React.FC = () => {
           });
         } else if (alert.alert_type === 'priority') {
           setPriorityAlerts(prev => {
+            const existing = prev.find(a => a.id === alert.id);
+            if (existing) {
+              const updated = prev.map(a => a.id === alert.id ? alert : a);
+              return updated.sort((a, b) => 
+                new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
+              );
+            }
             const newList = [alert, ...prev].slice(0, 100);
             return newList.sort((a, b) => 
               new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
@@ -373,6 +444,25 @@ const App: React.FC = () => {
       case 'watchlist_updated':
         loadWatchlist();
         break;
+
+      case 'consecutive_update':
+        // Обновление счетчика последовательных свечей
+        console.log(`Обновление последовательности для ${data.symbol}: ${data.count} свечей`);
+        break;
+
+      case 'alerts_cleared':
+        // Очистка алертов
+        if (data.alert_type === 'volume_spike') {
+          setVolumeAlerts([]);
+        } else if (data.alert_type === 'consecutive_long') {
+          setConsecutiveAlerts([]);
+        } else if (data.alert_type === 'priority') {
+          setPriorityAlerts([]);
+        }
+        break;
+
+      default:
+        console.log('Неизвестный тип сообщения WebSocket:', data.type);
     }
   };
 
@@ -502,6 +592,32 @@ const App: React.FC = () => {
       timezone,
       offsetString: `UTC${offsetSign}${offsetHours.toString().padStart(2, '0')}:${offsetMinutes.toString().padStart(2, '0')}`
     };
+  };
+
+  const getConnectionStatusIcon = () => {
+    switch (connectionStatus) {
+      case 'connected':
+        return <Wifi className="w-5 h-5 text-green-500" />;
+      case 'connecting':
+        return <RefreshCw className="w-5 h-5 text-yellow-500 animate-spin" />;
+      case 'disconnected':
+        return <WifiOff className="w-5 h-5 text-red-500" />;
+      default:
+        return <WifiOff className="w-5 h-5 text-gray-500" />;
+    }
+  };
+
+  const getConnectionStatusText = () => {
+    switch (connectionStatus) {
+      case 'connected':
+        return 'Подключено';
+      case 'connecting':
+        return 'Подключение...';
+      case 'disconnected':
+        return reconnectAttempts > 0 ? `Переподключение (${reconnectAttempts})` : 'Отключено';
+      default:
+        return 'Неизвестно';
+    }
   };
 
   const renderAlertCard = (alert: Alert) => (
@@ -699,14 +815,15 @@ const App: React.FC = () => {
             <div className="flex items-center space-x-4">
               <h1 className="text-xl font-bold text-gray-900">Анализатор Объемов</h1>
               <div className="flex items-center space-x-2">
-                <div className={`w-2 h-2 rounded-full ${
-                  connectionStatus === 'connected' ? 'bg-green-500' : 
-                  connectionStatus === 'connecting' ? 'bg-yellow-500' : 'bg-red-500'
-                }`}></div>
+                {getConnectionStatusIcon()}
                 <span className="text-sm text-gray-600">
-                  {connectionStatus === 'connected' ? 'Подключено' : 
-                   connectionStatus === 'connecting' ? 'Подключение...' : 'Отключено'}
+                  {getConnectionStatusText()}
                 </span>
+                {lastDataUpdate && (
+                  <span className="text-xs text-gray-400">
+                    • Данные: {formatLocalTime(lastDataUpdate)}
+                  </span>
+                )}
               </div>
             </div>
             
@@ -925,6 +1042,18 @@ const App: React.FC = () => {
           <div>
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-2xl font-bold text-gray-900">Потоковые данные</h2>
+              <div className="flex items-center space-x-4">
+                <span className="text-sm text-gray-600">
+                  Обновлений: {streamData.length}
+                </span>
+                <button
+                  onClick={() => connectWebSocket()}
+                  className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors"
+                  disabled={connectionStatus === 'connecting'}
+                >
+                  {connectionStatus === 'connecting' ? 'Подключение...' : 'Переподключить'}
+                </button>
+              </div>
             </div>
             
             <div className="space-y-4">

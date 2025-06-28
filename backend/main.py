@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import uvicorn
+import json
 
 from database import DatabaseManager
 from alert_manager import AlertManager
@@ -69,7 +70,8 @@ class ConnectionManager:
 
     async def broadcast_json(self, data: dict):
         import json
-        await self.broadcast(json.dumps(data))
+        message = json.dumps(data, default=str)  # default=str для datetime объектов
+        await self.broadcast(message)
 
 manager = ConnectionManager()
 
@@ -172,10 +174,20 @@ async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         while True:
-            # Ожидаем сообщения от клиента (если нужно)
+            # Ожидаем сообщения от клиента
             data = await websocket.receive_text()
-            # Можно обрабатывать команды от клиента
+            try:
+                message = json.loads(data)
+                # Обрабатываем ping от клиента
+                if message.get('type') == 'ping':
+                    await websocket.send_text(json.dumps({'type': 'pong'}))
+            except json.JSONDecodeError:
+                # Игнорируем некорректные JSON сообщения
+                pass
     except WebSocketDisconnect:
+        manager.disconnect(websocket)
+    except Exception as e:
+        logger.error(f"WebSocket ошибка: {e}")
         manager.disconnect(websocket)
 
 # API endpoints
