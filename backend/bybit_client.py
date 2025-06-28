@@ -38,15 +38,11 @@ class BybitWebSocketClient:
         self.failed_subscriptions = set()
         self.subscription_attempts = {}  # symbol -> attempt_count
         
-        # 🚀 НОВОЕ: Таймер для отправки потоковых данных каждую секунду
-        self.stream_timer_task = None
-        self.latest_stream_data = {}  # symbol -> latest_data
-        
         # 🔧 ИСПРАВЛЕНИЕ: Ограничиваем количество пар для стабильности
         self.max_pairs_limit = 100  # Максимум 100 пар для стабильности WebSocket
 
     async def start(self):
-        """Запуск WebSocket соединения с проверкой целостности БД"""
+        """Запуск WebSocket соединения с интеллектуальной проверкой целостности БД"""
         self.is_running = True
         
         # Ограничиваем количество пар для стабильности
@@ -56,7 +52,7 @@ class BybitWebSocketClient:
             self.trading_pairs = sorted(self.trading_pairs)[:self.max_pairs_limit]
             logger.info(f"📊 Выбрано {len(self.trading_pairs)} пар для мониторинга")
         
-        # НОВОЕ: Интеллектуальная проверка и загрузка недостающих данных
+        # 🧠 НОВОЕ: Интеллектуальная проверка и загрузка недостающих данных
         await self.intelligent_data_check_and_load()
         
         # Затем подключаемся к WebSocket для real-time данных
@@ -74,8 +70,6 @@ class BybitWebSocketClient:
         self.is_running = False
         if self.ping_task:
             self.ping_task.cancel()
-        if self.stream_timer_task:
-            self.stream_timer_task.cancel()
         if self.websocket:
             await self.websocket.close()
 
@@ -293,7 +287,7 @@ class BybitWebSocketClient:
             return False
 
     async def connect_websocket(self):
-        """🎯 ИСПРАВЛЕННОЕ подключение к WebSocket с консервативной стратегией подписки"""
+        """🎯 КОНСЕРВАТИВНОЕ подключение к WebSocket с улучшенной стратегией подписки"""
         try:
             logger.info(f"🔗 Подключение к WebSocket: {self.ws_url}")
             logger.info(f"📊 Торговых пар для подписки: {len(self.trading_pairs)}")
@@ -303,7 +297,6 @@ class BybitWebSocketClient:
             self.subscription_confirmed.clear()
             self.failed_subscriptions.clear()
             self.subscription_attempts.clear()
-            self.latest_stream_data.clear()
             
             # 🔧 ИСПРАВЛЕНИЕ: Более консервативные настройки WebSocket
             async with websockets.connect(
@@ -319,9 +312,6 @@ class BybitWebSocketClient:
                 
                 # 🚀 КРИТИЧЕСКИ ВАЖНО: Консервативная подписка на пары
                 await self._subscribe_conservatively(websocket)
-                
-                # 🚀 НОВОЕ: Запускаем таймер для отправки потоковых данных каждую секунду
-                self.stream_timer_task = asyncio.create_task(self._stream_data_timer())
                 
                 # Ждем подтверждений подписок
                 await asyncio.sleep(15)  # Даем больше времени на получение подтверждений
@@ -385,8 +375,6 @@ class BybitWebSocketClient:
         finally:
             if self.ping_task:
                 self.ping_task.cancel()
-            if self.stream_timer_task:
-                self.stream_timer_task.cancel()
 
     async def _subscribe_conservatively(self, websocket):
         """🎯 КОНСЕРВАТИВНАЯ стратегия подписки для избежания таймаутов"""
@@ -439,39 +427,6 @@ class BybitWebSocketClient:
         logger.info(f"   • Отправлено пакетов: {batches_sent}/{total_batches}")
         logger.info(f"   • Отправлено подписок: {total_subscribed}/{total_pairs}")
         logger.info(f"   • Ошибок отправки: {len(self.failed_subscriptions)}")
-
-    async def _stream_data_timer(self):
-        """🚀 НОВОЕ: Таймер для отправки потоковых данных каждую секунду"""
-        logger.info("🕐 Запуск таймера потоковых данных (каждую секунду)")
-        
-        while self.is_running:
-            try:
-                await asyncio.sleep(1.0)  # Каждую секунду
-                
-                if self.latest_stream_data:
-                    # Отправляем последние данные для всех пар
-                    for symbol, stream_data in self.latest_stream_data.items():
-                        # Обновляем timestamp на текущий
-                        stream_data['timestamp'] = datetime.utcnow().isoformat()
-                        stream_data['server_timestamp'] = int(datetime.utcnow().timestamp() * 1000)
-                        
-                        # Отправляем обновление
-                        await self.connection_manager.broadcast_json({
-                            "type": "kline_update",
-                            "symbol": symbol,
-                            "data": stream_data['data'],
-                            "timestamp": stream_data['timestamp'],
-                            "is_closed": stream_data['is_closed'],
-                            "server_timestamp": stream_data['server_timestamp'],
-                            "realtime": True  # Маркер реального времени
-                        })
-                    
-                    logger.debug(f"📡 Отправлены потоковые данные для {len(self.latest_stream_data)} пар")
-                
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"❌ Ошибка таймера потоковых данных: {e}")
 
     async def _monitor_connection(self):
         """Мониторинг состояния WebSocket соединения"""
@@ -559,13 +514,9 @@ class BybitWebSocketClient:
                     'confirm': is_closed
                 }
                 
-                # 🚀 НОВОЕ: Сохраняем последние данные для таймера
-                self.latest_stream_data[symbol] = {
-                    'data': formatted_data,
-                    'is_closed': is_closed,
-                    'timestamp': datetime.utcnow().isoformat(),
-                    'server_timestamp': int(datetime.utcnow().timestamp() * 1000)
-                }
+                # Логируем временные метки для закрытых свечей
+                if is_closed:
+                    logger.debug(f"WebSocket kline_update: {symbol} закрытая свеча, timestamp={start_time_unix}")
                 
                 # Простая проверка на дублирование для закрытых свечей
                 if is_closed:
@@ -583,7 +534,20 @@ class BybitWebSocketClient:
                 # Сохраняем данные в базу (формирующиеся или закрытые)
                 await self.alert_manager.db_manager.save_kline_data(symbol, formatted_data, is_closed)
                 
-                # ПРИМЕЧАНИЕ: Отправка потоковых данных теперь происходит через таймер
+                # Отправляем обновление данных клиентам (потоковые данные)
+                stream_item = {
+                    "type": "kline_update",
+                    "symbol": symbol,
+                    "data": formatted_data,
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "is_closed": is_closed,
+                    "server_timestamp": self.alert_manager._get_current_timestamp_ms() if hasattr(self.alert_manager, '_get_current_timestamp_ms') else int(datetime.utcnow().timestamp() * 1000)
+                }
+                
+                # Логируем временные метки в WebSocket сообщениях
+                logger.debug(f"WebSocket отправка kline_update: {symbol}, server_timestamp={stream_item['server_timestamp']}")
+                
+                await self.connection_manager.broadcast_json(stream_item)
                 
         except Exception as e:
             logger.error(f"❌ Ошибка обработки kline данных: {e}")
