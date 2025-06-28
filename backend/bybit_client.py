@@ -59,7 +59,7 @@ class BybitWebSocketClient:
             await self.websocket.close()
 
     async def check_and_load_missing_data(self):
-        """Проверка и загрузка только недостающих данных"""
+        """Проверка и загрузка недостающих данных для всех пар"""
         logger.info("Проверка существующих данных...")
 
         # Получаем период хранения из настроек
@@ -109,7 +109,7 @@ class BybitWebSocketClient:
             logger.info("Все данные актуальны, загрузка не требуется")
 
     async def load_symbol_data(self, symbol: str, hours: int):
-        """Загрузка данных для одного символа с UNIX временем"""
+        """Загрузка данных для одного символа"""
         try:
             # Получаем информацию о недостающих периодах
             integrity_info = await self.alert_manager.db_manager.check_data_integrity(symbol, hours)
@@ -118,20 +118,20 @@ class BybitWebSocketClient:
                 logger.debug(f"{symbol}: Все данные уже загружены")
                 return
 
-            # Определяем период для загрузки в UNIX формате
-            end_time_unix = int(datetime.utcnow().timestamp() * 1000)
-            start_time_unix = end_time_unix - (hours * 60 * 60 * 1000)
+            # Определяем период для загрузки
+            end_time_ms = int(datetime.utcnow().timestamp() * 1000)
+            start_time_ms = end_time_ms - (hours * 60 * 60 * 1000)
 
             # Загружаем данные с биржи
-            await self._load_full_period(symbol, start_time_unix, end_time_unix)
+            await self._load_full_period(symbol, start_time_ms, end_time_ms)
 
         except Exception as e:
             logger.error(f"Ошибка загрузки данных для {symbol}: {e}")
 
-    async def _load_full_period(self, symbol: str, start_time_unix: int, end_time_unix: int):
-        """Загрузка полного периода данных с UNIX временем"""
+    async def _load_full_period(self, symbol: str, start_time_ms: int, end_time_ms: int):
+        """Загрузка полного периода данных"""
         try:
-            hours = (end_time_unix - start_time_unix) / (60 * 60 * 1000)
+            hours = (end_time_ms - start_time_ms) / (60 * 60 * 1000)
             limit = min(int(hours * 60) + 60, 1000)
 
             url = f"{self.rest_url}/v5/market/kline"
@@ -139,8 +139,8 @@ class BybitWebSocketClient:
                 'category': 'linear',
                 'symbol': symbol,
                 'interval': '1',
-                'start': start_time_unix,
-                'end': end_time_unix,
+                'start': start_time_ms,
+                'end': end_time_ms,
                 'limit': limit
             }
 
@@ -155,14 +155,14 @@ class BybitWebSocketClient:
                 skipped_count = 0
 
                 for kline in klines:
-                    # Биржа передает UNIX время в миллисекундах
-                    kline_timestamp_unix = int(kline[0])
+                    # Биржа передает время в миллисекундах
+                    kline_timestamp_ms = int(kline[0])
 
-                    # Для исторических данных округляем до минут с нулями (1687958700000)
-                    rounded_timestamp = (kline_timestamp_unix // 60000) * 60000
+                    # Для исторических данных округляем до минут
+                    rounded_timestamp = (kline_timestamp_ms // 60000) * 60000
 
                     kline_data = {
-                        'start': rounded_timestamp,  # Округленное время с нулями
+                        'start': rounded_timestamp,
                         'end': rounded_timestamp + 60000,
                         'open': kline[1],
                         'high': kline[2],
@@ -188,15 +188,15 @@ class BybitWebSocketClient:
         except Exception as e:
             logger.error(f"Ошибка загрузки полного периода для {symbol}: {e}")
 
-    async def _check_candle_exists(self, symbol: str, timestamp_unix: int) -> bool:
-        """Проверка существования свечи в базе данных по UNIX времени"""
+    async def _check_candle_exists(self, symbol: str, timestamp_ms: int) -> bool:
+        """Проверка существования свечи в базе данных"""
         try:
             cursor = self.alert_manager.db_manager.connection.cursor()
             cursor.execute("""
                 SELECT 1 FROM kline_data 
-                WHERE symbol = %s AND open_time_unix = %s
+                WHERE symbol = %s AND open_time_ms = %s
                 LIMIT 1
-            """, (symbol, timestamp_unix))
+            """, (symbol, timestamp_ms))
 
             result = cursor.fetchone()
             cursor.close()
@@ -212,7 +212,7 @@ class BybitWebSocketClient:
         try:
             logger.info(f"Подключение к WebSocket: {self.ws_url}")
             logger.info(
-                f"Подписка на {len(self.trading_pairs)} торговых пар: {self.trading_pairs[:10]}...")  # Показываем первые 10
+                f"Подписка на {len(self.trading_pairs)} торговых пар: {self.trading_pairs[:10]}...")
 
             async with websockets.connect(
                     self.ws_url,
@@ -305,7 +305,7 @@ class BybitWebSocketClient:
                 logger.error(f"Ошибка мониторинга соединения: {e}")
 
     async def handle_message(self, data: Dict):
-        """Обработка входящих WebSocket сообщений с UNIX временем"""
+        """Обработка входящих WebSocket сообщений"""
         try:
             # Обрабатываем системные сообщения
             if 'success' in data:
@@ -329,21 +329,21 @@ class BybitWebSocketClient:
                     logger.debug(f"Получены данные для символа {symbol}, которого нет в watchlist")
                     return
 
-                # Биржа передает UNIX время в миллисекундах
-                start_time_unix = int(kline_data['start'])
-                end_time_unix = int(kline_data['end'])
+                # Биржа передает время в миллисекундах
+                start_time_ms = int(kline_data['start'])
+                end_time_ms = int(kline_data['end'])
                 is_closed = kline_data.get('confirm', False)
 
                 # Для потоковых данных оставляем миллисекунды, но для закрытых свечей - округляем
                 if is_closed:
-                    # Закрытые свечи с нулями в конце (1687958700000)
-                    start_time_unix = (start_time_unix // 60000) * 60000
-                    end_time_unix = (end_time_unix // 60000) * 60000
+                    # Закрытые свечи с округлением до минут
+                    start_time_ms = (start_time_ms // 60000) * 60000
+                    end_time_ms = (end_time_ms // 60000) * 60000
 
                 # Преобразуем данные в нужный формат
                 formatted_data = {
-                    'start': start_time_unix,
-                    'end': end_time_unix,
+                    'start': start_time_ms,
+                    'end': end_time_ms,
                     'open': kline_data['open'],
                     'high': kline_data['high'],
                     'low': kline_data['low'],
@@ -354,19 +354,22 @@ class BybitWebSocketClient:
 
                 # Логируем временные метки для закрытых свечей
                 if is_closed:
-                    logger.debug(f"WebSocket kline_update: {symbol} закрытая свеча, timestamp={start_time_unix}")
+                    logger.debug(f"WebSocket kline_update: {symbol} закрытая свеча, timestamp={start_time_ms}")
 
                 # Простая проверка на дублирование для закрытых свечей
                 if is_closed:
                     last_processed = self.processed_candles.get(symbol, 0)
-                    if start_time_unix > last_processed:
+                    if start_time_ms > last_processed:
                         # Обрабатываем через менеджер алертов
                         alerts = await self.alert_manager.process_kline_data(symbol, formatted_data)
 
                         # Помечаем свечу как обработанную
-                        self.processed_candles[symbol] = start_time_unix
+                        self.processed_candles[symbol] = start_time_ms
 
-                        logger.debug(f"Обработана закрытая свеча {symbol} в {start_time_unix}")
+                        # НОВОЕ: Загружаем новые данные для поддержания диапазона
+                        await self._maintain_data_range(symbol)
+
+                        logger.debug(f"Обработана закрытая свеча {symbol} в {start_time_ms}")
 
                 # Сохраняем данные в базу (формирующиеся или закрытые)
                 await self.alert_manager.db_manager.save_kline_data(symbol, formatted_data, is_closed)
@@ -383,11 +386,29 @@ class BybitWebSocketClient:
                         datetime.utcnow().timestamp() * 1000)
                 }
 
-                # Логируем временные метки в WebSocket сообщениях
-                logger.debug(
-                    f"WebSocket отправка kline_update: {symbol}, server_timestamp={stream_item['server_timestamp']}")
-
                 await self.connection_manager.broadcast_json(stream_item)
 
         except Exception as e:
             logger.error(f"Ошибка обработки kline данных: {e}")
+
+    async def _maintain_data_range(self, symbol: str):
+        """Поддержание диапазона данных в заданных пределах"""
+        try:
+            # Получаем настройки диапазона
+            retention_hours = self.alert_manager.settings.get('data_retention_hours', 2)
+            analysis_hours = self.alert_manager.settings.get('analysis_hours', 1)
+            total_hours_needed = retention_hours + analysis_hours + 1
+
+            # Очищаем старые данные
+            await self.alert_manager.db_manager.cleanup_old_candles(symbol, total_hours_needed)
+
+            # Проверяем, нужно ли загрузить новые данные
+            integrity_info = await self.alert_manager.db_manager.check_data_integrity(symbol, total_hours_needed)
+            
+            # Если целостность низкая, загружаем недостающие данные
+            if integrity_info['integrity_percentage'] < 90 and integrity_info['missing_count'] > 5:
+                logger.info(f"Загрузка недостающих данных для {symbol}: {integrity_info['missing_count']} свечей")
+                await self.load_symbol_data(symbol, total_hours_needed)
+
+        except Exception as e:
+            logger.error(f"Ошибка поддержания диапазона данных для {symbol}: {e}")

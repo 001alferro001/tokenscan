@@ -210,7 +210,6 @@ class AlertManager:
             logger.debug(f"⏰ Используется биржевый timestamp: {timestamp}")
             return timestamp
         else:
-            # ИСПРАВЛЯЕМ: Правильный расчет UNIX времени в миллисекундах
             timestamp = int(datetime.utcnow().timestamp() * 1000)
             logger.debug(f"⏰ Используется UTC timestamp (fallback): {timestamp}")
             return timestamp
@@ -317,7 +316,7 @@ class AlertManager:
             if volume_ratio >= self.settings['volume_multiplier']:
                 current_price = float(kline_data['close'])
                 
-                # ИСПРАВЛЯЕМ: Используем правильное время
+                # Используем правильное время
                 close_time = self._get_current_time()
                 
                 # Создаем данные свечи для алерта
@@ -456,7 +455,7 @@ class AlertManager:
             
             # Проверяем, достигнуто ли нужное количество
             if consecutive_count >= self.settings['consecutive_long_count']:
-                # ИСПРАВЛЯЕМ: Используем правильное время
+                # Используем правильное время
                 close_time = self._get_current_time()
                 current_price = float(kline_data['close'])
                 
@@ -529,7 +528,7 @@ class AlertManager:
                         has_imbalance = True
                         imbalance_data = consecutive_alert.get('imbalance_data')
                     
-                    # ИСПРАВЛЯЕМ: Используем правильное время
+                    # Используем правильное время
                     close_time = self._get_current_time()
                     
                     priority_data = {

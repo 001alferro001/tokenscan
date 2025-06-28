@@ -12,7 +12,9 @@ import {
   Clock,
   WifiOff,
   Activity,
-  Zap
+  Zap,
+  Database,
+  AlertCircle
 } from 'lucide-react';
 import ChartModal from './components/ChartModal';
 import SmartMoneyChartModal from './components/SmartMoneyChartModal';
@@ -50,6 +52,16 @@ interface WatchlistItem {
   historical_price?: number;
   created_at: string;
   updated_at: string;
+  data_info?: {
+    symbol: string;
+    total_candles: number;
+    first_candle: string | null;
+    last_candle: string | null;
+    missing_candles: number;
+    data_range_hours: number;
+    expected_candles: number;
+    completeness_percentage: number;
+  };
 }
 
 interface StreamData {
@@ -663,7 +675,7 @@ const App: React.FC = () => {
 
   const getAlertStatusBadge = (alert: Alert) => {
     if (!alert.is_closed) {
-      return <span className="px-2 py-1 bg-yellow-100 text-yellow-800 text-xs rounded-full">В процессе</span>;
+      return <span className="px-2 py-1 bg-yellow-100 text-yellow-800 text-xs rounde-full">В процессе</span>;
     }
 
     if (alert.is_true_signal === true) {
@@ -916,7 +928,7 @@ const App: React.FC = () => {
       </div>
 
       {item.price_drop_percentage && (
-        <div className="grid grid-cols-2 gap-4 text-sm">
+        <div className="grid grid-cols-2 gap-4 text-sm mb-3">
           <div>
             <span className="text-gray-600">Падение цены:</span>
             <div className="font-semibold text-red-600">{item.price_drop_percentage.toFixed(2)}%</div>
@@ -926,6 +938,64 @@ const App: React.FC = () => {
             <div>
               <span className="text-gray-600">Текущая цена:</span>
               <div className="font-mono text-gray-900">${item.current_price.toFixed(8)}</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Новая секция с информацией о данных */}
+      {item.data_info && (
+        <div className="bg-gray-50 rounded-lg p-3 mb-3">
+          <div className="flex items-center space-x-2 mb-2">
+            <Database className="w-4 h-4 text-blue-600" />
+            <span className="text-sm font-medium text-gray-700">Данные в базе</span>
+          </div>
+          
+          <div className="grid grid-cols-2 gap-3 text-xs">
+            <div>
+              <span className="text-gray-600">Свечей:</span>
+              <div className="font-semibold text-gray-900">
+                {item.data_info.total_candles} / {item.data_info.expected_candles}
+              </div>
+            </div>
+            
+            <div>
+              <span className="text-gray-600">Полнота:</span>
+              <div className={`font-semibold ${
+                item.data_info.completeness_percentage >= 90 ? 'text-green-600' : 
+                item.data_info.completeness_percentage >= 70 ? 'text-yellow-600' : 'text-red-600'
+              }`}>
+                {item.data_info.completeness_percentage.toFixed(1)}%
+              </div>
+            </div>
+            
+            <div>
+              <span className="text-gray-600">Диапазон:</span>
+              <div className="text-gray-900">{item.data_info.data_range_hours.toFixed(1)}ч</div>
+            </div>
+            
+            <div>
+              <span className="text-gray-600">Пропущено:</span>
+              <div className={`font-semibold ${
+                item.data_info.missing_candles === 0 ? 'text-green-600' : 
+                item.data_info.missing_candles < 10 ? 'text-yellow-600' : 'text-red-600'
+              }`}>
+                {item.data_info.missing_candles}
+              </div>
+            </div>
+          </div>
+          
+          {item.data_info.first_candle && item.data_info.last_candle && (
+            <div className="mt-2 pt-2 border-t border-gray-200 text-xs text-gray-500">
+              <div>Первая: {formatTime(item.data_info.first_candle)}</div>
+              <div>Последняя: {formatTime(item.data_info.last_candle)}</div>
+            </div>
+          )}
+          
+          {item.data_info.missing_candles > 0 && (
+            <div className="mt-2 flex items-center space-x-1 text-xs text-orange-600">
+              <AlertCircle className="w-3 h-3" />
+              <span>Есть пропуски в данных</span>
             </div>
           )}
         </div>
