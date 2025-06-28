@@ -536,20 +536,38 @@ class DatabaseManager:
         try:
             cursor = self.connection.cursor()
             
+            # ИСПРАВЛЯЕМ: Правильно обрабатываем временные метки
+            current_time_unix = int(datetime.utcnow().timestamp() * 1000)
+            
             # Преобразуем datetime в UNIX время
-            alert_timestamp_unix = int(alert_data['timestamp'].timestamp() * 1000) if isinstance(alert_data['timestamp'], datetime) else int(alert_data['timestamp'])
+            if isinstance(alert_data['timestamp'], datetime):
+                alert_timestamp_unix = int(alert_data['timestamp'].timestamp() * 1000)
+            else:
+                # Если уже строка, парсим её
+                try:
+                    dt = datetime.fromisoformat(str(alert_data['timestamp']).replace('Z', '+00:00'))
+                    alert_timestamp_unix = int(dt.timestamp() * 1000)
+                except:
+                    alert_timestamp_unix = current_time_unix
+            
             close_timestamp_unix = None
             if alert_data.get('close_timestamp'):
                 if isinstance(alert_data['close_timestamp'], datetime):
                     close_timestamp_unix = int(alert_data['close_timestamp'].timestamp() * 1000)
                 else:
-                    close_timestamp_unix = int(alert_data['close_timestamp'])
+                    try:
+                        dt = datetime.fromisoformat(str(alert_data['close_timestamp']).replace('Z', '+00:00'))
+                        close_timestamp_unix = int(dt.timestamp() * 1000)
+                    except:
+                        close_timestamp_unix = alert_timestamp_unix
             
             # Создаем читаемые временные метки
             alert_timestamp_readable = self._unix_to_readable(alert_timestamp_unix)
             close_timestamp_readable = self._unix_to_readable(close_timestamp_unix) if close_timestamp_unix else None
-            current_time_unix = int(datetime.utcnow().timestamp() * 1000)
             created_at_readable = self._unix_to_readable(current_time_unix)
+            
+            # Логируем для отладки
+            logger.info(f"💾 Сохранение алерта {alert_data['symbol']}: alert_timestamp_unix={alert_timestamp_unix}, close_timestamp_unix={close_timestamp_unix}")
             
             # Подготавливаем JSON данные (исправляем проблему с парсингом)
             candle_data_json = None
@@ -616,17 +634,18 @@ class DatabaseManager:
                 preliminary_alert_json,
                 imbalance_data_json,
                 order_book_snapshot_json,
-                alert_data['timestamp'] if isinstance(alert_data['timestamp'], datetime) else datetime.utcfromtimestamp(alert_timestamp_unix / 1000),
-                alert_data.get('close_timestamp') if isinstance(alert_data.get('close_timestamp'), datetime) else (datetime.utcfromtimestamp(close_timestamp_unix / 1000) if close_timestamp_unix else None)
+                datetime.utcfromtimestamp(alert_timestamp_unix / 1000),
+                datetime.utcfromtimestamp(close_timestamp_unix / 1000) if close_timestamp_unix else None
             ))
 
             alert_id = cursor.fetchone()[0]
             cursor.close()
             
+            logger.info(f"✅ Алерт сохранен в БД с ID {alert_id}")
             return alert_id
 
         except Exception as e:
-            logger.error(f"Ошибка сохранения алерта: {e}")
+            logger.error(f"❌ Ошибка сохранения алерта: {e}")
             return None
 
     async def update_alert(self, alert_id: int, alert_data: Dict):

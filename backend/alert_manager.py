@@ -196,22 +196,22 @@ class AlertManager:
         """Получить текущее время (биржевое если синхронизировано, иначе UTC)"""
         if self.time_sync and self.time_sync.is_synced:
             exchange_time = self.time_sync.get_exchange_time()
-            logger.debug(f"Используется биржевое время: {exchange_time.isoformat()}")
+            logger.debug(f"⏰ Используется биржевое время: {exchange_time.isoformat()}")
             return exchange_time
         else:
             utc_time = datetime.utcnow()
-            logger.debug(f"Используется UTC время (fallback): {utc_time.isoformat()}")
+            logger.debug(f"⏰ Используется UTC время (fallback): {utc_time.isoformat()}")
             return utc_time
 
     def _get_current_timestamp_ms(self) -> int:
         """Получить текущий timestamp в миллисекундах (биржевое если синхронизировано)"""
         if self.time_sync and self.time_sync.is_synced:
             timestamp = self.time_sync.get_exchange_timestamp()
-            logger.debug(f"Используется биржевый timestamp: {timestamp}")
+            logger.debug(f"⏰ Используется биржевый timestamp: {timestamp}")
             return timestamp
         else:
             timestamp = int(datetime.utcnow().timestamp() * 1000)
-            logger.debug(f"Используется UTC timestamp (fallback): {timestamp}")
+            logger.debug(f"⏰ Используется UTC timestamp (fallback): {timestamp}")
             return timestamp
 
     async def process_kline_data(self, symbol: str, kline_data: Dict) -> List[Dict]:
@@ -220,16 +220,19 @@ class AlertManager:
         
         try:
             # Проверка закрытия свечи
-            if self.time_sync:
+            if self.time_sync and hasattr(self.time_sync, 'is_candle_closed'):
                 is_closed = self.time_sync.is_candle_closed(kline_data)
+                logger.debug(f"🕐 Проверка закрытия свечи {symbol} через time_sync: {is_closed}")
             else:
                 is_closed = kline_data.get('confirm', False)
+                logger.debug(f"🕐 Проверка закрытия свечи {symbol} через confirm: {is_closed}")
             
             # Сохраняем данные в базу
             await self.db_manager.save_kline_data(symbol, kline_data, is_closed)
             
             # Обрабатываем алерты только для закрытых свечей
             if is_closed:
+                logger.debug(f"📊 Обработка закрытой свечи {symbol}")
                 alerts = await self._process_closed_candle(symbol, kline_data)
             
             # Отправляем алерты
@@ -237,7 +240,7 @@ class AlertManager:
                 await self._send_alert(alert)
                 
         except Exception as e:
-            logger.error(f"Ошибка обработки данных свечи для {symbol}: {e}")
+            logger.error(f"❌ Ошибка обработки данных свечи для {symbol}: {e}")
         
         return alerts
 
@@ -265,7 +268,7 @@ class AlertManager:
                     alerts.append(priority_alert)
                     
         except Exception as e:
-            logger.error(f"Ошибка обработки закрытой свечи для {symbol}: {e}")
+            logger.error(f"❌ Ошибка обработки закрытой свечи для {symbol}: {e}")
         
         return alerts
 
@@ -312,6 +315,8 @@ class AlertManager:
             
             if volume_ratio >= self.settings['volume_multiplier']:
                 current_price = float(kline_data['close'])
+                
+                # ИСПРАВЛЯЕМ: Используем правильное время
                 close_time = self._get_current_time()
                 close_timestamp_ms = self._get_current_timestamp_ms()
                 
@@ -346,8 +351,6 @@ class AlertManager:
                     'average_volume_usdt': int(average_volume),
                     'timestamp': close_time,
                     'close_timestamp': close_time,
-                    'timestamp_ms': close_timestamp_ms,
-                    'close_timestamp_ms': close_timestamp_ms,
                     'is_closed': True,
                     'is_true_signal': True,  # Закрытая LONG свеча = истинный сигнал
                     'has_imbalance': has_imbalance,
@@ -360,13 +363,14 @@ class AlertManager:
                 # Обновляем кулдаун
                 self.alert_cooldowns[symbol] = self._get_current_time()
                 
-                logger.info(f"Создан алерт по объему для {symbol}: {volume_ratio:.2f}x (биржевое время: {self.time_sync.is_synced if self.time_sync else False})")
+                logger.info(f"✅ Создан алерт по объему для {symbol}: {volume_ratio:.2f}x (биржевое время: {self.time_sync.is_synced if self.time_sync else False})")
+                logger.info(f"⏰ Время алерта: {close_time.isoformat()}, timestamp: {close_timestamp_ms}")
                 return alert_data
             
             return None
             
         except Exception as e:
-            logger.error(f"Ошибка проверки алерта по объему для {symbol}: {e}")
+            logger.error(f"❌ Ошибка проверки алерта по объему для {symbol}: {e}")
             return None
 
     async def _analyze_imbalance(self, symbol: str) -> Optional[Dict]:
@@ -399,7 +403,7 @@ class AlertManager:
             return None
             
         except Exception as e:
-            logger.error(f"Ошибка анализа имбаланса для {symbol}: {e}")
+            logger.error(f"❌ Ошибка анализа имбаланса для {symbol}: {e}")
             return None
 
     async def _get_order_book_snapshot(self, symbol: str) -> Optional[Dict]:
@@ -430,7 +434,7 @@ class AlertManager:
             return None
             
         except Exception as e:
-            logger.error(f"Ошибка получения стакана для {symbol}: {e}")
+            logger.error(f"❌ Ошибка получения стакана для {symbol}: {e}")
             return None
 
     async def _check_consecutive_long_alert(self, symbol: str, kline_data: Dict) -> Optional[Dict]:
@@ -452,6 +456,7 @@ class AlertManager:
             
             # Проверяем, достигнуто ли нужное количество
             if consecutive_count >= self.settings['consecutive_long_count']:
+                # ИСПРАВЛЯЕМ: Используем правильное время
                 close_time = self._get_current_time()
                 close_timestamp_ms = self._get_current_timestamp_ms()
                 current_price = float(kline_data['close'])
@@ -476,8 +481,6 @@ class AlertManager:
                     'consecutive_count': consecutive_count,
                     'timestamp': close_time,
                     'close_timestamp': close_time,
-                    'timestamp_ms': close_timestamp_ms,
-                    'close_timestamp_ms': close_timestamp_ms,
                     'is_closed': True,
                     'has_imbalance': has_imbalance,
                     'imbalance_data': imbalance_data,
@@ -485,13 +488,14 @@ class AlertManager:
                     'message': f"{consecutive_count} подряд идущих LONG свечей (закрытых)"
                 }
                 
-                logger.info(f"Алерт по последовательности для {symbol}: {consecutive_count} LONG свечей (биржевое время: {self.time_sync.is_synced if self.time_sync else False})")
+                logger.info(f"✅ Алерт по последовательности для {symbol}: {consecutive_count} LONG свечей (биржевое время: {self.time_sync.is_synced if self.time_sync else False})")
+                logger.info(f"⏰ Время алерта: {close_time.isoformat()}, timestamp: {close_timestamp_ms}")
                 return alert_data
             
             return None
 
         except Exception as e:
-            logger.error(f"Ошибка проверки последовательных LONG свечей для {symbol}: {e}")
+            logger.error(f"❌ Ошибка проверки последовательных LONG свечей для {symbol}: {e}")
             return None
 
     async def _check_priority_signal(self, symbol: str, current_alerts: List[Dict]) -> Optional[Dict]:
@@ -526,6 +530,7 @@ class AlertManager:
                         has_imbalance = True
                         imbalance_data = consecutive_alert.get('imbalance_data')
                     
+                    # ИСПРАВЛЯЕМ: Используем правильное время
                     close_time = self._get_current_time()
                     close_timestamp_ms = self._get_current_timestamp_ms()
                     
@@ -536,8 +541,6 @@ class AlertManager:
                         'consecutive_count': consecutive_alert['consecutive_count'],
                         'timestamp': close_time,
                         'close_timestamp': close_time,
-                        'timestamp_ms': close_timestamp_ms,
-                        'close_timestamp_ms': close_timestamp_ms,
                         'is_closed': True,
                         'has_imbalance': has_imbalance,
                         'imbalance_data': imbalance_data,
@@ -552,13 +555,14 @@ class AlertManager:
                             'average_volume_usdt': volume_alert['average_volume_usdt']
                         })
                     
-                    logger.info(f"Приоритетный алерт для {symbol} (биржевое время: {self.time_sync.is_synced if self.time_sync else False})")
+                    logger.info(f"✅ Приоритетный алерт для {symbol} (биржевое время: {self.time_sync.is_synced if self.time_sync else False})")
+                    logger.info(f"⏰ Время алерта: {close_time.isoformat()}, timestamp: {close_timestamp_ms}")
                     return priority_data
             
             return None
             
         except Exception as e:
-            logger.error(f"Ошибка проверки приоритетного сигнала для {symbol}: {e}")
+            logger.error(f"❌ Ошибка проверки приоритетного сигнала для {symbol}: {e}")
             return None
 
     async def _check_recent_volume_alert(self, symbol: str, candles_back: int) -> bool:
@@ -573,16 +577,16 @@ class AlertManager:
             return len(recent_alerts) > 0
             
         except Exception as e:
-            logger.error(f"Ошибка проверки недавних объемных алертов для {symbol}: {e}")
+            logger.error(f"❌ Ошибка проверки недавних объемных алертов для {symbol}: {e}")
             return False
 
     async def _send_alert(self, alert_data: Dict):
         """Отправка алерта"""
         try:
             # Логируем временные метки алерта
-            logger.info(f"Отправка алерта {alert_data['alert_type']} для {alert_data['symbol']}: "
-                       f"timestamp={alert_data.get('timestamp_ms', 'N/A')}, "
-                       f"биржевое_время={self.time_sync.is_synced if self.time_sync else False}")
+            logger.info(f"📤 Отправка алерта {alert_data['alert_type']} для {alert_data['symbol']}")
+            logger.info(f"⏰ Время алерта: {alert_data.get('timestamp')}")
+            logger.info(f"🔄 Биржевое время: {self.time_sync.is_synced if self.time_sync else False}")
             
             # Сохраняем в базу данных
             alert_id = await self.db_manager.save_alert(alert_data)
@@ -608,10 +612,10 @@ class AlertManager:
                 elif alert_data['alert_type'] == AlertType.PRIORITY.value:
                     await self.telegram_bot.send_priority_alert(alert_data)
 
-            logger.info(f"Алерт отправлен: {alert_data['symbol']} - {alert_data['alert_type']}")
+            logger.info(f"✅ Алерт отправлен: {alert_data['symbol']} - {alert_data['alert_type']}")
 
         except Exception as e:
-            logger.error(f"Ошибка отправки алерта: {e}")
+            logger.error(f"❌ Ошибка отправки алерта: {e}")
 
     def _serialize_alert(self, alert_data: Dict) -> Dict:
         """Сериализация алерта для JSON"""
@@ -645,4 +649,4 @@ class AlertManager:
             logger.info("Очистка старых данных завершена")
             
         except Exception as e:
-            logger.error(f"Ошибка очистки старых данных: {e}")
+            logger.error(f"❌ Ошибка очистки старых данных: {e}")
