@@ -347,6 +347,10 @@ class BybitWebSocketClient:
                     'confirm': is_closed
                 }
                 
+                # Логируем временные метки для закрытых свечей
+                if is_closed:
+                    logger.debug(f"WebSocket kline_update: {symbol} закрытая свеча, timestamp={start_time_unix}")
+                
                 # Простая проверка на дублирование для закрытых свечей
                 if is_closed:
                     last_processed = self.processed_candles.get(symbol, 0)
@@ -368,8 +372,12 @@ class BybitWebSocketClient:
                     "symbol": symbol,
                     "data": formatted_data,
                     "timestamp": datetime.utcnow().isoformat(),
-                    "is_closed": is_closed
+                    "is_closed": is_closed,
+                    "server_timestamp": self.alert_manager._get_current_timestamp_ms() if hasattr(self.alert_manager, '_get_current_timestamp_ms') else int(datetime.utcnow().timestamp() * 1000)
                 }
+                
+                # Логируем временные метки в WebSocket сообщениях
+                logger.debug(f"WebSocket отправка kline_update: {symbol}, server_timestamp={stream_item['server_timestamp']}")
                 
                 await self.connection_manager.broadcast_json(stream_item)
                 

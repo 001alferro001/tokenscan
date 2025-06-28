@@ -161,8 +161,7 @@ class AlertManager:
         self.db_manager = db_manager
         self.telegram_bot = telegram_bot
         self.connection_manager = connection_manager
-        # ОТКЛЮЧАЕМ синхронизацию времени временно
-        self.time_sync = None  # time_sync
+        self.time_sync = time_sync  # Включаем синхронизацию времени
         self.imbalance_analyzer = ImbalanceAnalyzer()
         
         # Настройки из переменных окружения
@@ -191,19 +190,40 @@ class AlertManager:
         # Кэш для отслеживания состояния алертов
         self.alert_cooldowns = {}  # symbol -> last alert timestamp
         
-        logger.info("AlertManager инициализирован БЕЗ синхронизации времени")
+        logger.info(f"AlertManager инициализирован с синхронизацией времени: {self.time_sync is not None}")
 
     def _get_current_time(self) -> datetime:
-        """Получить текущее время (всегда UTC)"""
-        return datetime.utcnow()
+        """Получить текущее время (биржевое если синхронизировано, иначе UTC)"""
+        if self.time_sync and self.time_sync.is_synced:
+            exchange_time = self.time_sync.get_exchange_time()
+            logger.debug(f"Используется биржевое время: {exchange_time.isoformat()}")
+            return exchange_time
+        else:
+            utc_time = datetime.utcnow()
+            logger.debug(f"Используется UTC время (fallback): {utc_time.isoformat()}")
+            return utc_time
+
+    def _get_current_timestamp_ms(self) -> int:
+        """Получить текущий timestamp в миллисекундах (биржевое если синхронизировано)"""
+        if self.time_sync and self.time_sync.is_synced:
+            timestamp = self.time_sync.get_exchange_timestamp()
+            logger.debug(f"Используется биржевый timestamp: {timestamp}")
+            return timestamp
+        else:
+            timestamp = int(datetime.utcnow().timestamp() * 1000)
+            logger.debug(f"Используется UTC timestamp (fallback): {timestamp}")
+            return timestamp
 
     async def process_kline_data(self, symbol: str, kline_data: Dict) -> List[Dict]:
         """Обработка данных свечи и генерация алертов"""
         alerts = []
         
         try:
-            # Простая проверка закрытия свечи по confirm от биржи
-            is_closed = kline_data.get('confirm', False)
+            # Проверка закрытия свечи
+            if self.time_sync:
+                is_closed = self.time_sync.is_candle_closed(kline_data)
+            else:
+                is_closed = kline_data.get('confirm', False)
             
             # Сохраняем данные в базу
             await self.db_manager.save_kline_data(symbol, kline_data, is_closed)
@@ -264,7 +284,7 @@ class AlertManager:
             if current_volume_usdt < self.settings['min_volume_usdt']:
                 return None
             
-            # Проверяем кулдаун для повторных сигналов (простая проверка)
+            # Проверяем кулдаун для повторных сигналов
             if symbol in self.alert_cooldowns:
                 last_alert_time = self.alert_cooldowns[symbol]
                 current_time = self._get_current_time()
@@ -293,6 +313,7 @@ class AlertManager:
             if volume_ratio >= self.settings['volume_multiplier']:
                 current_price = float(kline_data['close'])
                 close_time = self._get_current_time()
+                close_timestamp_ms = self._get_current_timestamp_ms()
                 
                 # Создаем данные свечи для алерта
                 candle_data = {
@@ -325,6 +346,8 @@ class AlertManager:
                     'average_volume_usdt': int(average_volume),
                     'timestamp': close_time,
                     'close_timestamp': close_time,
+                    'timestamp_ms': close_timestamp_ms,
+                    'close_timestamp_ms': close_timestamp_ms,
                     'is_closed': True,
                     'is_true_signal': True,  # Закрытая LONG свеча = истинный сигнал
                     'has_imbalance': has_imbalance,
@@ -337,7 +360,7 @@ class AlertManager:
                 # Обновляем кулдаун
                 self.alert_cooldowns[symbol] = self._get_current_time()
                 
-                logger.info(f"Создан алерт по объему для {symbol}: {volume_ratio:.2f}x")
+                logger.info(f"Создан алерт по объему для {symbol}: {volume_ratio:.2f}x (биржевое время: {self.time_sync.is_synced if self.time_sync else False})")
                 return alert_data
             
             return None
@@ -430,6 +453,7 @@ class AlertManager:
             # Проверяем, достигнуто ли нужное количество
             if consecutive_count >= self.settings['consecutive_long_count']:
                 close_time = self._get_current_time()
+                close_timestamp_ms = self._get_current_timestamp_ms()
                 current_price = float(kline_data['close'])
                 
                 # Создаем данные свечи
@@ -452,6 +476,8 @@ class AlertManager:
                     'consecutive_count': consecutive_count,
                     'timestamp': close_time,
                     'close_timestamp': close_time,
+                    'timestamp_ms': close_timestamp_ms,
+                    'close_timestamp_ms': close_timestamp_ms,
                     'is_closed': True,
                     'has_imbalance': has_imbalance,
                     'imbalance_data': imbalance_data,
@@ -459,7 +485,7 @@ class AlertManager:
                     'message': f"{consecutive_count} подряд идущих LONG свечей (закрытых)"
                 }
                 
-                logger.info(f"Алерт по последовательности для {symbol}: {consecutive_count} LONG свечей")
+                logger.info(f"Алерт по последовательности для {symbol}: {consecutive_count} LONG свечей (биржевое время: {self.time_sync.is_synced if self.time_sync else False})")
                 return alert_data
             
             return None
@@ -500,13 +526,18 @@ class AlertManager:
                         has_imbalance = True
                         imbalance_data = consecutive_alert.get('imbalance_data')
                     
+                    close_time = self._get_current_time()
+                    close_timestamp_ms = self._get_current_timestamp_ms()
+                    
                     priority_data = {
                         'symbol': symbol,
                         'alert_type': AlertType.PRIORITY.value,
                         'price': consecutive_alert['price'],
                         'consecutive_count': consecutive_alert['consecutive_count'],
-                        'timestamp': consecutive_alert['timestamp'],
-                        'close_timestamp': consecutive_alert['close_timestamp'],
+                        'timestamp': close_time,
+                        'close_timestamp': close_time,
+                        'timestamp_ms': close_timestamp_ms,
+                        'close_timestamp_ms': close_timestamp_ms,
                         'is_closed': True,
                         'has_imbalance': has_imbalance,
                         'imbalance_data': imbalance_data,
@@ -521,6 +552,7 @@ class AlertManager:
                             'average_volume_usdt': volume_alert['average_volume_usdt']
                         })
                     
+                    logger.info(f"Приоритетный алерт для {symbol} (биржевое время: {self.time_sync.is_synced if self.time_sync else False})")
                     return priority_data
             
             return None
@@ -547,16 +579,25 @@ class AlertManager:
     async def _send_alert(self, alert_data: Dict):
         """Отправка алерта"""
         try:
+            # Логируем временные метки алерта
+            logger.info(f"Отправка алерта {alert_data['alert_type']} для {alert_data['symbol']}: "
+                       f"timestamp={alert_data.get('timestamp_ms', 'N/A')}, "
+                       f"биржевое_время={self.time_sync.is_synced if self.time_sync else False}")
+            
             # Сохраняем в базу данных
             alert_id = await self.db_manager.save_alert(alert_data)
             alert_data['id'] = alert_id
 
             # Отправляем в WebSocket
             if self.connection_manager:
-                await self.connection_manager.broadcast_json({
+                # Добавляем временные метки в WebSocket сообщение
+                websocket_data = {
                     'type': 'new_alert',
-                    'alert': self._serialize_alert(alert_data)
-                })
+                    'alert': self._serialize_alert(alert_data),
+                    'server_timestamp': self._get_current_timestamp_ms(),
+                    'exchange_synced': self.time_sync.is_synced if self.time_sync else False
+                }
+                await self.connection_manager.broadcast_json(websocket_data)
 
             # Отправляем в Telegram
             if self.telegram_bot:

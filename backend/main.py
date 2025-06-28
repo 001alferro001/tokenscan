@@ -17,8 +17,7 @@ from alert_manager import AlertManager
 from bybit_client import BybitWebSocketClient
 from price_filter import PriceFilter
 from telegram_bot import TelegramBot
-# Временно отключаем синхронизацию времени
-# from time_sync import ExchangeTimeSync
+from time_sync import ExchangeTimeSync
 
 # Настройка логирования
 logging.basicConfig(
@@ -33,7 +32,7 @@ alert_manager = None
 bybit_client = None
 price_filter = None
 telegram_bot = None
-# time_sync = None  # Отключено
+time_sync = None
 manager = None
 
 class ConnectionManager:
@@ -79,14 +78,15 @@ manager = ConnectionManager()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    global db_manager, alert_manager, bybit_client, price_filter, telegram_bot  # , time_sync
+    global db_manager, alert_manager, bybit_client, price_filter, telegram_bot, time_sync
     
     try:
         logger.info("Запуск системы анализа объемов...")
         
-        # Отключаем синхронизацию времени временно
-        # time_sync = ExchangeTimeSync()
-        # await time_sync.start()
+        # Инициализация синхронизации времени с биржей
+        time_sync = ExchangeTimeSync()
+        await time_sync.start()
+        logger.info("Синхронизация времени с биржей запущена")
         
         # Инициализация базы данных
         db_manager = DatabaseManager()
@@ -95,8 +95,8 @@ async def lifespan(app: FastAPI):
         # Инициализация Telegram бота
         telegram_bot = TelegramBot()
         
-        # Инициализация менеджера алертов БЕЗ синхронизации времени
-        alert_manager = AlertManager(db_manager, telegram_bot, manager, None)  # time_sync=None
+        # Инициализация менеджера алертов С синхронизацией времени
+        alert_manager = AlertManager(db_manager, telegram_bot, manager, time_sync)
         
         # Инициализация фильтра цен
         price_filter = PriceFilter(db_manager)
@@ -123,7 +123,7 @@ async def lifespan(app: FastAPI):
             # Запуск периодической очистки данных
             asyncio.create_task(periodic_cleanup())
             
-            logger.info("Система успешно запущена!")
+            logger.info("Система успешно запущена с синхронизацией времени!")
         else:
             logger.error("Не удалось получить торговые пары. Система не запущена.")
             
@@ -135,8 +135,8 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logger.info("Остановка системы...")
-    # if time_sync:
-    #     await time_sync.stop()
+    if time_sync:
+        await time_sync.stop()
     if bybit_client:
         await bybit_client.stop()
     if price_filter:
@@ -203,6 +203,11 @@ async def get_stats():
         watchlist = await db_manager.get_watchlist()
         alerts_data = await db_manager.get_all_alerts(limit=1000)
         
+        # Добавляем информацию о синхронизации времени
+        time_sync_info = {}
+        if time_sync:
+            time_sync_info = time_sync.get_sync_status()
+        
         return {
             "pairs_count": len(watchlist),
             "alerts_count": len(alerts_data.get('alerts', [])),
@@ -211,10 +216,7 @@ async def get_stats():
             "priority_alerts_count": len(alerts_data.get('priority_alerts', [])),
             "last_update": datetime.now().isoformat(),
             "system_status": "running",
-            "time_sync": {
-                "is_synced": False,
-                "status": "disabled_temporarily"
-            }
+            "time_sync": time_sync_info
         }
     except Exception as e:
         logger.error(f"Ошибка получения статистики: {e}")
@@ -222,19 +224,39 @@ async def get_stats():
 
 @app.get("/api/time")
 async def get_time_info():
-    """Получить информацию о времени"""
+    """Получить информацию о времени биржи"""
     try:
+        if time_sync and time_sync.is_synced:
+            # Возвращаем биржевое время
+            sync_status = time_sync.get_sync_status()
+            logger.info(f"API /api/time: Возвращаем биржевое время. serverTime={sync_status['serverTime']}, offset={sync_status['time_offset_ms']}мс")
+            return sync_status
+        else:
+            # Fallback на локальное время
+            current_time_ms = int(datetime.utcnow().timestamp() * 1000)
+            fallback_response = {
+                "is_synced": False,
+                "serverTime": current_time_ms,  # Ключевое поле для клиента
+                "local_time": datetime.utcnow().isoformat(),
+                "exchange_time": datetime.utcnow().isoformat(),
+                "time_offset_ms": 0,
+                "status": "not_synced"
+            }
+            logger.warning(f"API /api/time: Синхронизация недоступна, возвращаем fallback. serverTime={current_time_ms}")
+            return fallback_response
+    except Exception as e:
+        logger.error(f"Ошибка получения информации о времени: {e}")
+        # Аварийный fallback
         current_time_ms = int(datetime.utcnow().timestamp() * 1000)
         return {
             "is_synced": False,
-            "local_time": datetime.now().isoformat(),
-            "server_time": current_time_ms,
-            "exchange_time": current_time_ms,  # Для совместимости
-            "status": "Time sync temporarily disabled"
+            "serverTime": current_time_ms,
+            "local_time": datetime.utcnow().isoformat(),
+            "exchange_time": datetime.utcnow().isoformat(),
+            "time_offset_ms": 0,
+            "status": "error",
+            "error": str(e)
         }
-    except Exception as e:
-        logger.error(f"Ошибка получения информации о времени: {e}")
-        return {"error": str(e)}
 
 @app.get("/api/watchlist")
 async def get_watchlist():
@@ -342,6 +364,13 @@ async def get_chart_data(symbol: str, hours: int = 1, alert_time: Optional[str] 
     """Получить данные для графика"""
     try:
         chart_data = await db_manager.get_chart_data(symbol, hours, alert_time)
+        
+        # Логируем временные метки в данных графика
+        if chart_data:
+            logger.debug(f"API /api/chart-data: Возвращаем {len(chart_data)} свечей для {symbol}. "
+                        f"Первая свеча: {chart_data[0]['timestamp'] if chart_data else 'N/A'}, "
+                        f"Последняя свеча: {chart_data[-1]['timestamp'] if chart_data else 'N/A'}")
+        
         return {"chart_data": chart_data}
     except Exception as e:
         logger.error(f"Ошибка получения данных графика: {e}")
@@ -351,6 +380,11 @@ async def get_chart_data(symbol: str, hours: int = 1, alert_time: Optional[str] 
 async def get_settings():
     """Получить текущие настройки анализатора"""
     if alert_manager and price_filter:
+        # Добавляем информацию о синхронизации времени
+        time_sync_info = {}
+        if time_sync:
+            time_sync_info = time_sync.get_sync_status()
+        
         settings = {
             "volume_analyzer": alert_manager.get_settings(),
             "price_filter": price_filter.settings,
@@ -373,13 +407,12 @@ async def get_settings():
             "telegram": {
                 "enabled": telegram_bot.enabled if telegram_bot else False
             },
-            "time_sync": {
-                "is_synced": False,
-                "status": "disabled_temporarily"
-            }
+            "time_sync": time_sync_info
         }
         
         return settings
+    
+    # Fallback настройки
     return {
         "volume_analyzer": {
             "analysis_hours": 1,
@@ -414,7 +447,7 @@ async def get_settings():
         },
         "time_sync": {
             "is_synced": False,
-            "status": "disabled_temporarily"
+            "status": "not_initialized"
         }
     }
 
