@@ -194,18 +194,22 @@ class DatabaseManager:
             logger.error(f"Ошибка обновления таблиц: {e}")
 
     async def check_data_integrity(self, symbol: str, hours: int) -> Dict:
-        """Проверка целостности исторических данных"""
+        """Улучшенная проверка целостности исторических данных"""
         try:
             cursor = self.connection.cursor()
             
-            # Определяем временные границы
-            end_time = int(datetime.now().timestamp() * 1000)
+            # Определяем временные границы с учетом биржевого времени
+            # Используем UTC время и округляем до минут для точности
+            current_time = datetime.utcnow()
+            # Округляем до начала текущей минуты
+            current_minute = current_time.replace(second=0, microsecond=0)
+            end_time = int(current_minute.timestamp() * 1000)
             start_time = end_time - (hours * 60 * 60 * 1000)
             
             # Получаем существующие данные
             cursor.execute("""
                 SELECT open_time FROM kline_data 
-                WHERE symbol = %s AND open_time >= %s AND open_time <= %s
+                WHERE symbol = %s AND open_time >= %s AND open_time < %s
                 ORDER BY open_time
             """, (symbol, start_time, end_time))
             
@@ -214,20 +218,27 @@ class DatabaseManager:
             
             # Генерируем ожидаемые временные метки (каждую минуту)
             expected_times = []
-            current_time = start_time
-            while current_time <= end_time:
-                expected_times.append(current_time)
-                current_time += 60000  # +1 минута
+            current_time_ms = start_time
+            while current_time_ms < end_time:  # Исключаем текущую минуту
+                expected_times.append(current_time_ms)
+                current_time_ms += 60000  # +1 минута
             
             # Находим недостающие периоды
             missing_times = [t for t in expected_times if t not in existing_times]
             
+            # Исключаем самые последние 2-3 минуты, так как они могут еще формироваться
+            cutoff_time = end_time - (3 * 60 * 1000)  # 3 минуты назад
+            missing_times = [t for t in missing_times if t < cutoff_time]
+            
+            total_expected = len([t for t in expected_times if t < cutoff_time])
+            total_existing = len([t for t in existing_times if t < cutoff_time])
+            
             return {
-                'total_expected': len(expected_times),
-                'total_existing': len(existing_times),
+                'total_expected': total_expected,
+                'total_existing': total_existing,
                 'missing_count': len(missing_times),
                 'missing_periods': missing_times,
-                'integrity_percentage': (len(existing_times) / len(expected_times)) * 100 if expected_times else 100
+                'integrity_percentage': (total_existing / total_expected) * 100 if total_expected > 0 else 100
             }
             
         except Exception as e:
@@ -333,7 +344,7 @@ class DatabaseManager:
             logger.error(f"Ошибка удаления из watchlist: {e}")
 
     async def save_kline_data(self, symbol: str, kline_data: Dict):
-        """Сохранение данных свечи в базу данных"""
+        """Сохранение данных свечи в базу данных с улучшенной обработкой дублей"""
         try:
             cursor = self.connection.cursor()
 
@@ -391,7 +402,7 @@ class DatabaseManager:
                 """, (
                     alert_data['symbol'],
                     alert_data['alert_type'],
-                    alert_data['timestamp'] - timedelta(minutes=1) if isinstance(alert_data['timestamp'], datetime) else datetime.now() - timedelta(minutes=1)
+                    alert_data['timestamp'] - timedelta(minutes=1) if isinstance(alert_data['timestamp'], datetime) else datetime.utcnow() - timedelta(minutes=1)
                 ))
                 
                 existing = cursor.fetchone()
@@ -601,7 +612,8 @@ class DatabaseManager:
             cursor = self.connection.cursor()
 
             # Рассчитываем временные границы с учетом смещения
-            current_time = int(datetime.now().timestamp() * 1000)
+            # Используем UTC время для точности
+            current_time = int(datetime.utcnow().timestamp() * 1000)
             end_time = current_time - (offset_minutes * 60 * 1000)
             start_time = end_time - (hours * 60 * 60 * 1000)
 
@@ -640,7 +652,7 @@ class DatabaseManager:
             if alert_time:
                 end_time = int(datetime.fromisoformat(alert_time.replace('Z', '+00:00')).timestamp() * 1000)
             else:
-                end_time = int(datetime.now().timestamp() * 1000)
+                end_time = int(datetime.utcnow().timestamp() * 1000)
             
             start_time = end_time - (hours * 60 * 60 * 1000)
 
@@ -668,7 +680,7 @@ class DatabaseManager:
         try:
             cursor = self.connection.cursor(cursor_factory=RealDictCursor)
             
-            cutoff_time = datetime.now() - timedelta(minutes=minutes_back)
+            cutoff_time = datetime.utcnow() - timedelta(minutes=minutes_back)
             
             cursor.execute("""
                 SELECT * FROM alerts 
@@ -688,12 +700,12 @@ class DatabaseManager:
             return []
 
     async def cleanup_old_data(self, retention_hours: int = 2):
-        """Очистка старых данных"""
+        """Очистка старых данных с улучшенной логикой"""
         try:
             cursor = self.connection.cursor()
             
-            # Удаляем старые данные свечей
-            cutoff_time = int((datetime.now() - timedelta(hours=retention_hours)).timestamp() * 1000)
+            # Удаляем старые данные свечей (используем UTC время)
+            cutoff_time = int((datetime.utcnow() - timedelta(hours=retention_hours)).timestamp() * 1000)
             
             cursor.execute("""
                 DELETE FROM kline_data 
@@ -703,7 +715,7 @@ class DatabaseManager:
             deleted_klines = cursor.rowcount
             
             # Удаляем старые алерты (старше 24 часов)
-            alert_cutoff = datetime.now() - timedelta(hours=24)
+            alert_cutoff = datetime.utcnow() - timedelta(hours=24)
             cursor.execute("""
                 DELETE FROM alerts 
                 WHERE created_at < %s
