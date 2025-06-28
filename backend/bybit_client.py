@@ -38,11 +38,11 @@ class BybitWebSocketClient:
         self.failed_subscriptions = set()
 
     async def start(self):
-        """Запуск WebSocket соединения"""
+        """Запуск WebSocket соединения с проверкой целостности БД"""
         self.is_running = True
         
-        # Проверяем и загружаем недостающие исторические данные
-        await self.check_and_load_missing_data()
+        # НОВОЕ: Интеллектуальная проверка и загрузка недостающих данных
+        await self.intelligent_data_check_and_load()
         
         # Затем подключаемся к WebSocket для real-time данных
         while self.is_running:
@@ -62,78 +62,139 @@ class BybitWebSocketClient:
         if self.websocket:
             await self.websocket.close()
 
-    async def check_and_load_missing_data(self):
-        """Проверка и загрузка только недостающих данных"""
-        logger.info("Проверка существующих данных...")
+    async def intelligent_data_check_and_load(self):
+        """🧠 ИНТЕЛЛЕКТУАЛЬНАЯ проверка целостности БД и загрузка только недостающих данных"""
+        logger.info("🔍 Запуск интеллектуальной проверки целостности базы данных...")
         
         # Получаем период хранения из настроек
         retention_hours = self.alert_manager.settings.get('data_retention_hours', 2)
         analysis_hours = self.alert_manager.settings.get('analysis_hours', 1)
         total_hours_needed = retention_hours + analysis_hours + 1  # +1 час буфера
         
-        symbols_to_load = []
-        symbols_with_data = []
+        # Получаем сводку по всем символам
+        summary = await self.alert_manager.db_manager.get_missing_data_summary(
+            self.trading_pairs, total_hours_needed
+        )
         
-        for symbol in self.trading_pairs:
-            try:
-                # Проверяем целостность данных для символа
-                integrity_info = await self.alert_manager.db_manager.check_data_integrity(
-                    symbol, total_hours_needed
-                )
-                
-                # Если данных мало или целостность низкая - добавляем в список для загрузки
-                if integrity_info['integrity_percentage'] < 80 or integrity_info['total_existing'] < 60:
-                    symbols_to_load.append(symbol)
-                    logger.info(f"{symbol}: Требуется загрузка данных ({integrity_info['total_existing']}/{integrity_info['total_expected']} свечей, {integrity_info['integrity_percentage']:.1f}%)")
-                else:
-                    symbols_with_data.append(symbol)
-                    logger.debug(f"{symbol}: Данные актуальны ({integrity_info['total_existing']}/{integrity_info['total_expected']} свечей, {integrity_info['integrity_percentage']:.1f}%)")
-                        
-            except Exception as e:
-                logger.error(f"Ошибка проверки данных для {symbol}: {e}")
-                symbols_to_load.append(symbol)  # На всякий случай добавляем в загрузку
+        logger.info(f"📊 Сводка по данным:")
+        logger.info(f"   • Всего символов: {summary['total_symbols']}")
+        logger.info(f"   • С хорошими данными: {summary['symbols_with_good_data']}")
+        logger.info(f"   • Требуют загрузки: {summary['symbols_need_loading']}")
+        logger.info(f"   • Качество данных: {summary.get('quality_distribution', {})}")
         
-        logger.info(f"Найдено {len(symbols_with_data)} символов с актуальными данными, {len(symbols_to_load)} требуют загрузки")
-        
-        # Загружаем данные только для символов, которым это нужно
-        if symbols_to_load:
-            logger.info(f"Загрузка данных для {len(symbols_to_load)} символов...")
-            for symbol in symbols_to_load:
-                try:
-                    await self.load_symbol_data(symbol, total_hours_needed)
-                    await asyncio.sleep(0.1)  # Небольшая задержка между запросами
-                except Exception as e:
-                    logger.error(f"Ошибка загрузки данных для {symbol}: {e}")
-                    continue
-            logger.info("Загрузка недостающих данных завершена")
+        # Если большинство данных актуальны, загружаем только недостающие
+        if summary['symbols_with_good_data'] > summary['symbols_need_loading']:
+            logger.info("✅ Большинство данных актуальны. Загружаем только недостающие...")
+            await self._load_missing_data_optimized(summary['symbols_details'], total_hours_needed)
         else:
-            logger.info("Все данные актуальны, загрузка не требуется")
+            logger.info("⚠️ Много недостающих данных. Выполняем полную загрузку...")
+            await self._load_all_data_full(total_hours_needed)
+        
+        logger.info("🎯 Проверка целостности БД завершена!")
 
-    async def load_symbol_data(self, symbol: str, hours: int):
-        """Загрузка данных для одного символа с UNIX временем"""
-        try:
-            # Получаем информацию о недостающих периодах
-            integrity_info = await self.alert_manager.db_manager.check_data_integrity(symbol, hours)
+    async def _load_missing_data_optimized(self, symbols_details: List[Dict], hours: int):
+        """Оптимизированная загрузка только недостающих данных"""
+        symbols_to_load = [
+            detail for detail in symbols_details 
+            if detail['needs_loading']
+        ]
+        
+        if not symbols_to_load:
+            logger.info("✅ Все данные актуальны, загрузка не требуется")
+            return
+        
+        logger.info(f"📥 Загрузка недостающих данных для {len(symbols_to_load)} символов...")
+        
+        # Группируем символы по качеству данных для приоритизации
+        critical_symbols = [s for s in symbols_to_load if s['quality'] == 'critical']
+        poor_symbols = [s for s in symbols_to_load if s['quality'] == 'poor']
+        fair_symbols = [s for s in symbols_to_load if s['quality'] == 'fair']
+        
+        # Загружаем в порядке приоритета
+        for priority_group, group_name in [
+            (critical_symbols, "критических"),
+            (poor_symbols, "плохих"),
+            (fair_symbols, "удовлетворительных")
+        ]:
+            if priority_group:
+                logger.info(f"🔄 Загрузка {group_name} данных ({len(priority_group)} символов)...")
+                await self._load_symbols_batch(priority_group, hours)
+
+    async def _load_all_data_full(self, hours: int):
+        """Полная загрузка данных для всех символов"""
+        logger.info(f"📥 Полная загрузка данных для {len(self.trading_pairs)} символов...")
+        
+        symbols_details = [{'symbol': symbol} for symbol in self.trading_pairs]
+        await self._load_symbols_batch(symbols_details, hours)
+
+    async def _load_symbols_batch(self, symbols_details: List[Dict], hours: int):
+        """Загрузка данных для группы символов с оптимизацией"""
+        batch_size = 5  # Загружаем по 5 символов параллельно
+        
+        for i in range(0, len(symbols_details), batch_size):
+            batch = symbols_details[i:i + batch_size]
             
-            if integrity_info['missing_count'] == 0:
-                logger.debug(f"{symbol}: Все данные уже загружены")
+            # Создаем задачи для параллельной загрузки
+            tasks = []
+            for symbol_detail in batch:
+                symbol = symbol_detail['symbol']
+                task = self._load_symbol_data_optimized(symbol, hours)
+                tasks.append(task)
+            
+            # Выполняем загрузку параллельно
+            try:
+                await asyncio.gather(*tasks, return_exceptions=True)
+                logger.info(f"✅ Обработан пакет {i//batch_size + 1}/{(len(symbols_details) + batch_size - 1)//batch_size}")
+                
+                # Небольшая пауза между пакетами для снижения нагрузки на API
+                if i + batch_size < len(symbols_details):
+                    await asyncio.sleep(1.0)
+                    
+            except Exception as e:
+                logger.error(f"❌ Ошибка загрузки пакета: {e}")
+
+    async def _load_symbol_data_optimized(self, symbol: str, hours: int):
+        """Оптимизированная загрузка данных для одного символа"""
+        try:
+            # Получаем оптимизированный план загрузки
+            loading_periods = await self.alert_manager.db_manager.optimize_missing_data_loading(symbol, hours)
+            
+            if not loading_periods:
+                logger.debug(f"✅ {symbol}: Данные актуальны, загрузка не требуется")
                 return
             
-            # Определяем период для загрузки в UNIX формате
-            end_time_unix = int(datetime.utcnow().timestamp() * 1000)
-            start_time_unix = end_time_unix - (hours * 60 * 60 * 1000)
+            logger.info(f"📥 {symbol}: Загрузка {len(loading_periods)} периодов...")
             
-            # Загружаем данные с биржи
-            await self._load_full_period(symbol, start_time_unix, end_time_unix)
+            # Загружаем каждый период
+            for i, period in enumerate(loading_periods):
+                try:
+                    await self._load_period_from_exchange(
+                        symbol, 
+                        period['start_unix'], 
+                        period['end_unix']
+                    )
+                    
+                    logger.debug(f"✅ {symbol}: Период {i+1}/{len(loading_periods)} загружен")
+                    
+                    # Небольшая пауза между периодами
+                    if i < len(loading_periods) - 1:
+                        await asyncio.sleep(0.2)
+                        
+                except Exception as e:
+                    logger.error(f"❌ {symbol}: Ошибка загрузки периода {i+1}: {e}")
+                    continue
+            
+            logger.info(f"✅ {symbol}: Загрузка завершена")
                 
         except Exception as e:
-            logger.error(f"Ошибка загрузки данных для {symbol}: {e}")
+            logger.error(f"❌ Ошибка оптимизированной загрузки данных для {symbol}: {e}")
 
-    async def _load_full_period(self, symbol: str, start_time_unix: int, end_time_unix: int):
-        """Загрузка полного периода данных с UNIX временем"""
+    async def _load_period_from_exchange(self, symbol: str, start_time_unix: int, end_time_unix: int):
+        """Загрузка конкретного периода с биржи"""
         try:
-            hours = (end_time_unix - start_time_unix) / (60 * 60 * 1000)
-            limit = min(int(hours * 60) + 60, 1000)
+            # Рассчитываем количество минут в периоде
+            duration_minutes = (end_time_unix - start_time_unix) // 60000
+            limit = min(duration_minutes + 10, 1000)  # +10 для буфера, максимум 1000
             
             url = f"{self.rest_url}/v5/market/kline"
             params = {
@@ -145,7 +206,7 @@ class BybitWebSocketClient:
                 'limit': limit
             }
             
-            response = requests.get(url, params=params, timeout=10)
+            response = requests.get(url, params=params, timeout=15)
             data = response.json()
             
             if data.get('retCode') == 0:
@@ -159,11 +220,15 @@ class BybitWebSocketClient:
                     # Биржа передает UNIX время в миллисекундах
                     kline_timestamp_unix = int(kline[0])
                     
-                    # Для исторических данных округляем до минут с нулями (1687958700000)
+                    # Для исторических данных округляем до минут с нулями
                     rounded_timestamp = (kline_timestamp_unix // 60000) * 60000
                     
+                    # Проверяем, что время в нужном диапазоне
+                    if not (start_time_unix <= rounded_timestamp < end_time_unix):
+                        continue
+                    
                     kline_data = {
-                        'start': rounded_timestamp,  # Округленное время с нулями
+                        'start': rounded_timestamp,
                         'end': rounded_timestamp + 60000,
                         'open': kline[1],
                         'high': kline[2],
@@ -182,12 +247,26 @@ class BybitWebSocketClient:
                     else:
                         skipped_count += 1
                 
-                logger.info(f"{symbol}: Загружено {saved_count} новых свечей, пропущено {skipped_count} существующих")
+                if saved_count > 0:
+                    logger.debug(f"📊 {symbol}: Сохранено {saved_count} новых свечей, пропущено {skipped_count}")
+                    
             else:
-                logger.error(f"Ошибка API при загрузке данных для {symbol}: {data.get('retMsg')}")
+                logger.error(f"❌ API ошибка для {symbol}: {data.get('retMsg')}")
                     
         except Exception as e:
-            logger.error(f"Ошибка загрузки полного периода для {symbol}: {e}")
+            logger.error(f"❌ Ошибка загрузки периода для {symbol}: {e}")
+
+    async def load_symbol_data(self, symbol: str, hours: int):
+        """УСТАРЕВШИЙ метод - заменен на _load_symbol_data_optimized"""
+        await self._load_symbol_data_optimized(symbol, hours)
+
+    async def _load_full_period(self, symbol: str, start_time_unix: int, end_time_unix: int):
+        """УСТАРЕВШИЙ метод - заменен на _load_period_from_exchange"""
+        await self._load_period_from_exchange(symbol, start_time_unix, end_time_unix)
+
+    async def check_and_load_missing_data(self):
+        """УСТАРЕВШИЙ метод - заменен на intelligent_data_check_and_load"""
+        await self.intelligent_data_check_and_load()
 
     async def _check_candle_exists(self, symbol: str, timestamp_unix: int) -> bool:
         """Проверка существования свечи в базе данных по UNIX времени"""

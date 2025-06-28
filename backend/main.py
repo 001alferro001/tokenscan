@@ -81,16 +81,17 @@ async def lifespan(app: FastAPI):
     global db_manager, alert_manager, bybit_client, price_filter, telegram_bot, time_sync
     
     try:
-        logger.info("Запуск системы анализа объемов...")
+        logger.info("🚀 Запуск системы анализа объемов с проверкой целостности БД...")
         
         # Инициализация синхронизации времени с биржей
         time_sync = ExchangeTimeSync()
         await time_sync.start()
-        logger.info("Синхронизация времени с биржей запущена")
+        logger.info("✅ Синхронизация времени с биржей запущена")
         
         # Инициализация базы данных
         db_manager = DatabaseManager()
         await db_manager.initialize()
+        logger.info("✅ База данных инициализирована")
         
         # Инициализация Telegram бота
         telegram_bot = TelegramBot()
@@ -104,16 +105,34 @@ async def lifespan(app: FastAPI):
         # Получение списка торговых пар
         trading_pairs = await db_manager.get_watchlist()
         if not trading_pairs:
-            logger.warning("Нет торговых пар в watchlist. Запуск фильтра цен...")
+            logger.warning("⚠️ Нет торговых пар в watchlist. Запуск фильтра цен...")
             asyncio.create_task(price_filter.start())
             # Ждем немного для загрузки пар
             await asyncio.sleep(10)
             trading_pairs = await db_manager.get_watchlist()
         
         if trading_pairs:
-            logger.info(f"Найдено {len(trading_pairs)} торговых пар для мониторинга")
+            logger.info(f"📊 Найдено {len(trading_pairs)} торговых пар для мониторинга")
             
-            # Инициализация WebSocket клиента Bybit
+            # 🧠 НОВОЕ: Получаем сводку по целостности данных ПЕРЕД запуском WebSocket
+            retention_hours = alert_manager.settings.get('data_retention_hours', 2)
+            analysis_hours = alert_manager.settings.get('analysis_hours', 1)
+            total_hours_needed = retention_hours + analysis_hours + 1
+            
+            logger.info(f"🔍 Проверка целостности данных для {len(trading_pairs)} пар за {total_hours_needed}ч...")
+            summary = await db_manager.get_missing_data_summary(trading_pairs, total_hours_needed)
+            
+            logger.info(f"📈 Сводка по базе данных:")
+            logger.info(f"   • Всего символов: {summary['total_symbols']}")
+            logger.info(f"   • С актуальными данными: {summary['symbols_with_good_data']}")
+            logger.info(f"   • Требуют загрузки: {summary['symbols_need_loading']}")
+            
+            if summary['symbols_need_loading'] > 0:
+                logger.info(f"📥 Будет загружено данных для {summary['symbols_need_loading']} символов")
+            else:
+                logger.info("✅ Все данные актуальны!")
+            
+            # Инициализация WebSocket клиента Bybit (он сам проверит и загрузит недостающие данные)
             bybit_client = BybitWebSocketClient(trading_pairs, alert_manager, manager)
             
             # Запуск всех сервисов
@@ -123,18 +142,18 @@ async def lifespan(app: FastAPI):
             # Запуск периодической очистки данных
             asyncio.create_task(periodic_cleanup())
             
-            logger.info("Система успешно запущена с синхронизацией времени!")
+            logger.info("🎯 Система успешно запущена с проверкой целостности БД!")
         else:
-            logger.error("Не удалось получить торговые пары. Система не запущена.")
+            logger.error("❌ Не удалось получить торговые пары. Система не запущена.")
             
     except Exception as e:
-        logger.error(f"Ошибка запуска системы: {e}")
+        logger.error(f"❌ Ошибка запуска системы: {e}")
         raise
     
     yield
     
     # Shutdown
-    logger.info("Остановка системы...")
+    logger.info("🛑 Остановка системы...")
     if time_sync:
         await time_sync.stop()
     if bybit_client:
@@ -165,9 +184,9 @@ async def periodic_cleanup():
             if db_manager:
                 retention_hours = alert_manager.settings.get('data_retention_hours', 2) if alert_manager else 2
                 await db_manager.cleanup_old_data(retention_hours)
-            logger.info("Периодическая очистка данных выполнена")
+            logger.info("🧹 Периодическая очистка данных выполнена")
         except Exception as e:
-            logger.error(f"Ошибка периодической очистки: {e}")
+            logger.error(f"❌ Ошибка периодической очистки: {e}")
 
 # WebSocket endpoint
 @app.websocket("/ws")
@@ -208,6 +227,22 @@ async def get_stats():
         if time_sync:
             time_sync_info = time_sync.get_sync_status()
         
+        # 🆕 НОВОЕ: Добавляем информацию о целостности данных
+        data_integrity_info = {}
+        if watchlist:
+            retention_hours = alert_manager.settings.get('data_retention_hours', 2) if alert_manager else 2
+            analysis_hours = alert_manager.settings.get('analysis_hours', 1) if alert_manager else 1
+            total_hours_needed = retention_hours + analysis_hours + 1
+            
+            summary = await db_manager.get_missing_data_summary(watchlist, total_hours_needed)
+            data_integrity_info = {
+                'total_symbols': summary['total_symbols'],
+                'symbols_with_good_data': summary['symbols_with_good_data'],
+                'symbols_need_loading': summary['symbols_need_loading'],
+                'quality_distribution': summary.get('quality_distribution', {}),
+                'integrity_percentage': (summary['symbols_with_good_data'] / summary['total_symbols'] * 100) if summary['total_symbols'] > 0 else 100
+            }
+        
         return {
             "pairs_count": len(watchlist),
             "alerts_count": len(alerts_data.get('alerts', [])),
@@ -216,7 +251,8 @@ async def get_stats():
             "priority_alerts_count": len(alerts_data.get('priority_alerts', [])),
             "last_update": datetime.now().isoformat(),
             "system_status": "running",
-            "time_sync": time_sync_info
+            "time_sync": time_sync_info,
+            "data_integrity": data_integrity_info
         }
     except Exception as e:
         logger.error(f"Ошибка получения статистики: {e}")
@@ -257,6 +293,53 @@ async def get_time_info():
             "status": "error",
             "error": str(e)
         }
+
+# 🆕 НОВЫЙ API endpoint для проверки целостности данных
+@app.get("/api/data-integrity")
+async def get_data_integrity():
+    """Получить информацию о целостности данных"""
+    try:
+        if not db_manager or not alert_manager:
+            return {"error": "System not initialized"}
+        
+        watchlist = await db_manager.get_watchlist()
+        if not watchlist:
+            return {"error": "No symbols in watchlist"}
+        
+        retention_hours = alert_manager.settings.get('data_retention_hours', 2)
+        analysis_hours = alert_manager.settings.get('analysis_hours', 1)
+        total_hours_needed = retention_hours + analysis_hours + 1
+        
+        summary = await db_manager.get_missing_data_summary(watchlist, total_hours_needed)
+        
+        return {
+            "summary": summary,
+            "hours_analyzed": total_hours_needed,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Ошибка получения информации о целостности данных: {e}")
+        return {"error": str(e)}
+
+# 🆕 НОВЫЙ API endpoint для принудительной проверки и загрузки данных
+@app.post("/api/data-integrity/reload")
+async def force_data_reload():
+    """Принудительная проверка и загрузка недостающих данных"""
+    try:
+        if not bybit_client:
+            return {"error": "WebSocket client not initialized"}
+        
+        # Запускаем проверку целостности в фоновом режиме
+        asyncio.create_task(bybit_client.intelligent_data_check_and_load())
+        
+        return {
+            "status": "started",
+            "message": "Проверка целостности данных запущена в фоновом режиме",
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Ошибка принудительной загрузки данных: {e}")
+        return {"error": str(e)}
 
 @app.get("/api/watchlist")
 async def get_watchlist():
