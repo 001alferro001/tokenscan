@@ -19,7 +19,8 @@ import {
   Shield,
   Calculator,
   Brain,
-  Zap
+  Zap,
+  Plus
 } from 'lucide-react';
 import SettingsModal from './components/SettingsModal';
 import WatchlistModal from './components/WatchlistModal';
@@ -130,6 +131,7 @@ function App() {
   const [favorites, setFavorites] = useState<FavoriteItem[]>([]);
   const [activeTab, setActiveTab] = useState<'volume' | 'consecutive' | 'priority' | 'favorites'>('volume');
   const [socialRatings, setSocialRatings] = useState<{[symbol: string]: SocialRating}>({});
+  const [loadingRatings, setLoadingRatings] = useState<{[symbol: string]: boolean}>({});
   
   const { timeZone } = useTimeZone();
 
@@ -140,12 +142,6 @@ function App() {
     const interval = setInterval(loadStats, 30000);
     return () => clearInterval(interval);
   }, []);
-
-  useEffect(() => {
-    loadSocialRatings();
-    const interval = setInterval(loadSocialRatings, 300000); // Каждые 5 минут
-    return () => clearInterval(interval);
-  }, [watchlist, favorites]);
 
   const loadInitialData = async () => {
     await Promise.all([
@@ -217,23 +213,21 @@ function App() {
     }
   };
 
-  const loadSocialRatings = async () => {
+  const loadSocialRating = async (symbol: string) => {
+    if (loadingRatings[symbol] || socialRatings[symbol]) return;
+    
+    setLoadingRatings(prev => ({ ...prev, [symbol]: true }));
+    
     try {
-      // Получаем рейтинги для всех активных пар
-      const allSymbols = [...new Set([
-        ...watchlist.filter(w => w.is_active).map(w => w.symbol),
-        ...favorites.map(f => f.symbol)
-      ])];
-      
-      if (allSymbols.length === 0) return;
-      
-      const response = await fetch(`/api/social-ratings?symbols=${allSymbols.join(',')}`);
+      const response = await fetch(`/api/social-rating/${symbol}`);
       if (response.ok) {
         const data = await response.json();
-        setSocialRatings(data.ratings || {});
+        setSocialRatings(prev => ({ ...prev, [symbol]: data }));
       }
     } catch (error) {
-      console.error('Ошибка загрузки социальных рейтингов:', error);
+      console.error(`Ошибка загрузки рейтинга для ${symbol}:`, error);
+    } finally {
+      setLoadingRatings(prev => ({ ...prev, [symbol]: false }));
     }
   };
 
@@ -374,6 +368,17 @@ function App() {
 
   const getSocialRatingBadge = (symbol: string) => {
     const rating = socialRatings[symbol];
+    const isLoading = loadingRatings[symbol];
+    
+    if (isLoading) {
+      return (
+        <div className="flex items-center space-x-1 text-xs bg-gray-100 rounded-full px-2 py-1">
+          <div className="w-3 h-3 border border-gray-300 border-t-blue-500 rounded-full animate-spin"></div>
+          <span className="text-gray-500">Загрузка...</span>
+        </div>
+      );
+    }
+    
     if (!rating) return null;
 
     return (
@@ -390,40 +395,179 @@ function App() {
     );
   };
 
-  const renderAlertCard = (alert: Alert) => (
-    <div 
-      key={alert.id} 
-      className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 hover:shadow-md transition-all duration-200 cursor-pointer group"
-      onClick={() => setSelectedAlert(alert)}
-    >
-      <div className="flex items-start justify-between mb-4">
-        <div className="flex items-center space-x-3">
+  const renderAlertCard = (alert: Alert) => {
+    const isFavorite = favorites.some(f => f.symbol === alert.symbol);
+    
+    // Загружаем рейтинг при рендере карточки
+    React.useEffect(() => {
+      loadSocialRating(alert.symbol);
+    }, [alert.symbol]);
+
+    return (
+      <div 
+        key={alert.id} 
+        className="w-full bg-white rounded-lg shadow-sm border border-gray-200 p-6 hover:shadow-md transition-all duration-200 cursor-pointer"
+        onClick={() => setSelectedAlert(alert)}
+      >
+        <div className="flex items-start justify-between mb-4">
+          <div className="flex items-center space-x-3">
+            <div className="flex items-center space-x-2">
+              <span className="font-bold text-xl text-gray-900">{alert.symbol}</span>
+              <span className={`px-3 py-1 rounded-full text-xs font-medium ${
+                alert.alert_type === 'volume_spike' ? 'bg-orange-100 text-orange-700' :
+                alert.alert_type === 'consecutive_long' ? 'bg-green-100 text-green-700' :
+                alert.alert_type === 'priority' ? 'bg-purple-100 text-purple-700' :
+                'bg-gray-100 text-gray-700'
+              }`}>
+                {alert.alert_type === 'volume_spike' ? 'Объем' :
+                 alert.alert_type === 'consecutive_long' ? 'Последовательность' :
+                 alert.alert_type === 'priority' ? 'Приоритет' : alert.alert_type}
+              </span>
+              {getSocialRatingBadge(alert.symbol)}
+            </div>
+          </div>
+          
           <div className="flex items-center space-x-2">
-            <span className="font-bold text-xl text-gray-900">{alert.symbol}</span>
-            <span className={`px-3 py-1 rounded-full text-xs font-medium ${
-              alert.alert_type === 'volume_spike' ? 'bg-orange-100 text-orange-700' :
-              alert.alert_type === 'consecutive_long' ? 'bg-green-100 text-green-700' :
-              alert.alert_type === 'priority' ? 'bg-purple-100 text-purple-700' :
-              'bg-gray-100 text-gray-700'
-            }`}>
-              {alert.alert_type === 'volume_spike' ? 'Объем' :
-               alert.alert_type === 'consecutive_long' ? 'Последовательность' :
-               alert.alert_type === 'priority' ? 'Приоритет' : alert.alert_type}
-            </span>
+            {alert.has_imbalance && (
+              <div className="flex items-center space-x-1 bg-purple-100 text-purple-700 px-2 py-1 rounded-full text-xs">
+                <Brain className="w-3 h-3" />
+                <span>Smart Money</span>
+              </div>
+            )}
+            
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                handleToggleFavorite(alert.symbol, isFavorite);
+              }}
+              className={`p-2 rounded-lg transition-colors ${
+                isFavorite 
+                  ? 'text-yellow-600 hover:text-yellow-700 bg-yellow-50 hover:bg-yellow-100' 
+                  : 'text-gray-400 hover:text-yellow-600 hover:bg-yellow-50'
+              }`}
+              title={isFavorite ? "Удалить из избранного" : "Добавить в избранное"}
+            >
+              {isFavorite ? <Heart className="w-4 h-4 fill-current" /> : <Plus className="w-4 h-4" />}
+            </button>
+            
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                openTradingView(alert.symbol);
+              }}
+              className="text-blue-600 hover:text-blue-800 p-2 rounded-lg hover:bg-blue-50 transition-colors"
+              title="Открыть в TradingView"
+            >
+              <ExternalLink className="w-4 h-4" />
+            </button>
           </div>
         </div>
         
-        <div className="flex items-center space-x-2">
-          {alert.has_imbalance && (
-            <div className="flex items-center space-x-1 bg-purple-100 text-purple-700 px-2 py-1 rounded-full text-xs">
-              <Brain className="w-3 h-3" />
-              <span>Smart Money</span>
+        <div className="grid grid-cols-2 gap-4 mb-4">
+          <div className="bg-gray-50 rounded-lg p-3">
+            <span className="text-sm text-gray-600 block mb-1">Цена</span>
+            <div className="font-mono text-lg font-semibold text-gray-900">${alert.price.toFixed(8)}</div>
+          </div>
+          <div className="bg-gray-50 rounded-lg p-3">
+            <span className="text-sm text-gray-600 block mb-1">Время</span>
+            <div className="text-sm text-gray-900">
+              {formatTime(alert.close_timestamp || alert.timestamp, timeZone)}
+            </div>
+          </div>
+          
+          {alert.volume_ratio && (
+            <div className="bg-orange-50 rounded-lg p-3">
+              <span className="text-sm text-orange-600 block mb-1">Превышение</span>
+              <div className="font-semibold text-lg text-orange-700">{alert.volume_ratio}x</div>
             </div>
           )}
+          
+          {alert.consecutive_count && (
+            <div className="bg-green-50 rounded-lg p-3">
+              <span className="text-sm text-green-600 block mb-1">LONG свечей</span>
+              <div className="font-semibold text-lg text-green-700">{alert.consecutive_count}</div>
+            </div>
+          )}
+        </div>
+
+        {/* Социальный рейтинг */}
+        {socialRatings[alert.symbol] && (
+          <div className="mt-4 p-4 bg-gradient-to-r from-blue-50 to-purple-50 rounded-lg border border-blue-100">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center space-x-2">
+                <MessageCircle className="w-4 h-4 text-blue-600" />
+                <span className="text-sm font-medium text-blue-900">Социальные настроения</span>
+              </div>
+              <div className="flex items-center space-x-2">
+                <span className="text-lg">{socialRatings[alert.symbol].rating_emoji}</span>
+                <span className={`text-sm font-bold ${
+                  socialRatings[alert.symbol].overall_score > 0 ? 'text-green-600' : 
+                  socialRatings[alert.symbol].overall_score < 0 ? 'text-red-600' : 'text-gray-600'
+                }`}>
+                  {socialRatings[alert.symbol].overall_score > 0 ? '+' : ''}
+                  {socialRatings[alert.symbol].overall_score.toFixed(0)}/100
+                </span>
+              </div>
+            </div>
+            
+            <div className="grid grid-cols-3 gap-3 text-xs">
+              <div className="flex items-center space-x-1 bg-white rounded-lg p-2">
+                <ThumbsUp className="w-3 h-3 text-green-500" />
+                <span className="font-medium">{socialRatings[alert.symbol].positive_mentions}</span>
+              </div>
+              <div className="flex items-center space-x-1 bg-white rounded-lg p-2">
+                <ThumbsDown className="w-3 h-3 text-red-500" />
+                <span className="font-medium">{socialRatings[alert.symbol].negative_mentions}</span>
+              </div>
+              <div className="flex items-center space-x-1 bg-white rounded-lg p-2">
+                <Minus className="w-3 h-3 text-gray-500" />
+                <span className="font-medium">{socialRatings[alert.symbol].neutral_mentions}</span>
+              </div>
+            </div>
+          </div>
+        )}
+        
+        {alert.message && (
+          <div className="mt-4 text-sm text-blue-700 bg-blue-50 p-3 rounded-lg border border-blue-200">
+            {alert.message}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderFavoriteCard = (favorite: FavoriteItem) => {
+    // Загружаем рейтинг при рендере карточки
+    React.useEffect(() => {
+      loadSocialRating(favorite.symbol);
+    }, [favorite.symbol]);
+
+    return (
+      <div 
+        key={favorite.id}
+        className="w-full bg-white rounded-lg shadow-sm border border-gray-200 p-6 hover:shadow-md transition-all duration-200 cursor-pointer"
+        onClick={() => setSelectedAlert({
+          id: favorite.id,
+          symbol: favorite.symbol,
+          alert_type: 'favorite',
+          price: favorite.current_price || 0,
+          timestamp: favorite.favorite_added_at || new Date().toISOString()
+        } as Alert)}
+      >
+        <div className="flex items-start justify-between mb-4">
+          <div className="flex items-center space-x-3">
+            <div className="flex items-center space-x-2">
+              <Heart className="w-5 h-5 text-yellow-500 fill-yellow-500" />
+              <span className="font-bold text-xl text-gray-900">{favorite.symbol}</span>
+              <div className={`w-3 h-3 rounded-full ${favorite.is_active ? 'bg-green-500' : 'bg-red-500'}`}></div>
+              {getSocialRatingBadge(favorite.symbol)}
+            </div>
+          </div>
+          
           <button
             onClick={(e) => {
               e.stopPropagation();
-              openTradingView(alert.symbol);
+              openTradingView(favorite.symbol);
             }}
             className="text-blue-600 hover:text-blue-800 p-2 rounded-lg hover:bg-blue-50 transition-colors"
             title="Открыть в TradingView"
@@ -431,179 +575,74 @@ function App() {
             <ExternalLink className="w-4 h-4" />
           </button>
         </div>
-      </div>
-      
-      <div className="grid grid-cols-2 gap-4 mb-4">
-        <div className="bg-gray-50 rounded-lg p-3">
-          <span className="text-sm text-gray-600 block mb-1">Цена</span>
-          <div className="font-mono text-lg font-semibold text-gray-900">${alert.price.toFixed(8)}</div>
-        </div>
-        <div className="bg-gray-50 rounded-lg p-3">
-          <span className="text-sm text-gray-600 block mb-1">Время</span>
-          <div className="text-sm text-gray-900">
-            {formatTime(alert.close_timestamp || alert.timestamp, timeZone)}
-          </div>
-        </div>
         
-        {alert.volume_ratio && (
-          <div className="bg-orange-50 rounded-lg p-3">
-            <span className="text-sm text-orange-600 block mb-1">Превышение</span>
-            <div className="font-semibold text-lg text-orange-700">{alert.volume_ratio}x</div>
-          </div>
-        )}
-        
-        {alert.consecutive_count && (
-          <div className="bg-green-50 rounded-lg p-3">
-            <span className="text-sm text-green-600 block mb-1">LONG свечей</span>
-            <div className="font-semibold text-lg text-green-700">{alert.consecutive_count}</div>
-          </div>
-        )}
-      </div>
-
-      {/* Социальный рейтинг */}
-      {socialRatings[alert.symbol] && (
-        <div className="mt-4 p-4 bg-gradient-to-r from-blue-50 to-purple-50 rounded-lg border border-blue-100">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center space-x-2">
-              <MessageCircle className="w-4 h-4 text-blue-600" />
-              <span className="text-sm font-medium text-blue-900">Социальные настроения</span>
+        <div className="grid grid-cols-2 gap-4 mb-4">
+          {favorite.current_price && (
+            <div className="bg-gray-50 rounded-lg p-3">
+              <span className="text-sm text-gray-600 block mb-1">Текущая цена</span>
+              <div className="font-mono text-lg font-semibold text-gray-900">${favorite.current_price.toFixed(8)}</div>
             </div>
-            <div className="flex items-center space-x-2">
-              <span className="text-lg">{socialRatings[alert.symbol].rating_emoji}</span>
-              <span className={`text-sm font-bold ${
-                socialRatings[alert.symbol].overall_score > 0 ? 'text-green-600' : 
-                socialRatings[alert.symbol].overall_score < 0 ? 'text-red-600' : 'text-gray-600'
-              }`}>
-                {socialRatings[alert.symbol].overall_score > 0 ? '+' : ''}
-                {socialRatings[alert.symbol].overall_score.toFixed(0)}/100
-              </span>
-            </div>
-          </div>
+          )}
           
-          <div className="grid grid-cols-3 gap-3 text-xs">
-            <div className="flex items-center space-x-1 bg-white rounded-lg p-2">
-              <ThumbsUp className="w-3 h-3 text-green-500" />
-              <span className="font-medium">{socialRatings[alert.symbol].positive_mentions}</span>
+          {favorite.price_drop_percentage && (
+            <div className="bg-red-50 rounded-lg p-3">
+              <span className="text-sm text-red-600 block mb-1">Падение цены</span>
+              <div className="font-semibold text-lg text-red-700">{favorite.price_drop_percentage.toFixed(2)}%</div>
             </div>
-            <div className="flex items-center space-x-1 bg-white rounded-lg p-2">
-              <ThumbsDown className="w-3 h-3 text-red-500" />
-              <span className="font-medium">{socialRatings[alert.symbol].negative_mentions}</span>
-            </div>
-            <div className="flex items-center space-x-1 bg-white rounded-lg p-2">
-              <Minus className="w-3 h-3 text-gray-500" />
-              <span className="font-medium">{socialRatings[alert.symbol].neutral_mentions}</span>
-            </div>
-          </div>
+          )}
         </div>
-      )}
-      
-      {alert.message && (
-        <div className="mt-4 text-sm text-blue-700 bg-blue-50 p-3 rounded-lg border border-blue-200">
-          {alert.message}
-        </div>
-      )}
-    </div>
-  );
 
-  const renderFavoriteCard = (favorite: FavoriteItem) => (
-    <div 
-      key={favorite.id}
-      className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 hover:shadow-md transition-all duration-200 cursor-pointer group"
-      onClick={() => setSelectedAlert({
-        id: favorite.id,
-        symbol: favorite.symbol,
-        alert_type: 'favorite',
-        price: favorite.current_price || 0,
-        timestamp: favorite.favorite_added_at || new Date().toISOString()
-      } as Alert)}
-    >
-      <div className="flex items-start justify-between mb-4">
-        <div className="flex items-center space-x-3">
-          <div className="flex items-center space-x-2">
-            <Heart className="w-5 h-5 text-yellow-500 fill-yellow-500" />
-            <span className="font-bold text-xl text-gray-900">{favorite.symbol}</span>
-            <div className={`w-3 h-3 rounded-full ${favorite.is_active ? 'bg-green-500' : 'bg-red-500'}`}></div>
-          </div>
-        </div>
-        
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            openTradingView(favorite.symbol);
-          }}
-          className="text-blue-600 hover:text-blue-800 p-2 rounded-lg hover:bg-blue-50 transition-colors"
-          title="Открыть в TradingView"
-        >
-          <ExternalLink className="w-4 h-4" />
-        </button>
-      </div>
-      
-      <div className="grid grid-cols-2 gap-4 mb-4">
-        {favorite.current_price && (
-          <div className="bg-gray-50 rounded-lg p-3">
-            <span className="text-sm text-gray-600 block mb-1">Текущая цена</span>
-            <div className="font-mono text-lg font-semibold text-gray-900">${favorite.current_price.toFixed(8)}</div>
+        {/* Социальный рейтинг для избранных */}
+        {socialRatings[favorite.symbol] && (
+          <div className="mt-4 p-4 bg-gradient-to-r from-yellow-50 to-orange-50 rounded-lg border border-yellow-200">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center space-x-2">
+                <MessageCircle className="w-4 h-4 text-yellow-600" />
+                <span className="text-sm font-medium text-yellow-900">Социальные настроения</span>
+              </div>
+              <div className="flex items-center space-x-2">
+                <span className="text-lg">{socialRatings[favorite.symbol].rating_emoji}</span>
+                <span className={`text-sm font-bold ${
+                  socialRatings[favorite.symbol].overall_score > 0 ? 'text-green-600' : 
+                  socialRatings[favorite.symbol].overall_score < 0 ? 'text-red-600' : 'text-gray-600'
+                }`}>
+                  {socialRatings[favorite.symbol].overall_score > 0 ? '+' : ''}
+                  {socialRatings[favorite.symbol].overall_score.toFixed(0)}/100
+                </span>
+              </div>
+            </div>
+            
+            <div className="flex items-center justify-between text-xs">
+              <div className="flex items-center space-x-3">
+                <div className="flex items-center space-x-1">
+                  <ThumbsUp className="w-3 h-3 text-green-500" />
+                  <span>{socialRatings[favorite.symbol].positive_mentions}</span>
+                </div>
+                <div className="flex items-center space-x-1">
+                  <ThumbsDown className="w-3 h-3 text-red-500" />
+                  <span>{socialRatings[favorite.symbol].negative_mentions}</span>
+                </div>
+                <div className="flex items-center space-x-1">
+                  <Minus className="w-3 h-3 text-gray-500" />
+                  <span>{socialRatings[favorite.symbol].neutral_mentions}</span>
+                </div>
+              </div>
+              <div className="flex items-center space-x-1">
+                <span>Тренд:</span>
+                <span className="text-sm">{socialRatings[favorite.symbol].trend_emoji}</span>
+              </div>
+            </div>
           </div>
         )}
         
-        {favorite.price_drop_percentage && (
-          <div className="bg-red-50 rounded-lg p-3">
-            <span className="text-sm text-red-600 block mb-1">Падение цены</span>
-            <div className="font-semibold text-lg text-red-700">{favorite.price_drop_percentage.toFixed(2)}%</div>
+        {favorite.notes && (
+          <div className="mt-4 text-sm text-gray-700 bg-gray-50 p-3 rounded-lg border border-gray-200">
+            {favorite.notes}
           </div>
         )}
       </div>
-
-      {/* Социальный рейтинг для избранных */}
-      {socialRatings[favorite.symbol] && (
-        <div className="mt-4 p-4 bg-gradient-to-r from-yellow-50 to-orange-50 rounded-lg border border-yellow-200">
-          <div className="flex items-center justify-between mb-2">
-            <div className="flex items-center space-x-2">
-              <MessageCircle className="w-4 h-4 text-yellow-600" />
-              <span className="text-sm font-medium text-yellow-900">Социальные настроения</span>
-            </div>
-            <div className="flex items-center space-x-2">
-              <span className="text-lg">{socialRatings[favorite.symbol].rating_emoji}</span>
-              <span className={`text-sm font-bold ${
-                socialRatings[favorite.symbol].overall_score > 0 ? 'text-green-600' : 
-                socialRatings[favorite.symbol].overall_score < 0 ? 'text-red-600' : 'text-gray-600'
-              }`}>
-                {socialRatings[favorite.symbol].overall_score > 0 ? '+' : ''}
-                {socialRatings[favorite.symbol].overall_score.toFixed(0)}/100
-              </span>
-            </div>
-          </div>
-          
-          <div className="flex items-center justify-between text-xs">
-            <div className="flex items-center space-x-3">
-              <div className="flex items-center space-x-1">
-                <ThumbsUp className="w-3 h-3 text-green-500" />
-                <span>{socialRatings[favorite.symbol].positive_mentions}</span>
-              </div>
-              <div className="flex items-center space-x-1">
-                <ThumbsDown className="w-3 h-3 text-red-500" />
-                <span>{socialRatings[favorite.symbol].negative_mentions}</span>
-              </div>
-              <div className="flex items-center space-x-1">
-                <Minus className="w-3 h-3 text-gray-500" />
-                <span>{socialRatings[favorite.symbol].neutral_mentions}</span>
-              </div>
-            </div>
-            <div className="flex items-center space-x-1">
-              <span>Тренд:</span>
-              <span className="text-sm">{socialRatings[favorite.symbol].trend_emoji}</span>
-            </div>
-          </div>
-        </div>
-      )}
-      
-      {favorite.notes && (
-        <div className="mt-4 text-sm text-gray-700 bg-gray-50 p-3 rounded-lg border border-gray-200">
-          {favorite.notes}
-        </div>
-      )}
-    </div>
-  );
+    );
+  };
 
   // Запрашиваем разрешение на уведомления
   useEffect(() => {
@@ -613,27 +652,20 @@ function App() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
+    <div className="min-h-screen bg-gray-50">
       {/* Header */}
-      <header className="bg-white/80 backdrop-blur-md shadow-sm border-b border-gray-200 sticky top-0 z-40">
+      <header className="bg-white shadow-sm border-b border-gray-200">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-16">
             <div className="flex items-center space-x-4">
-              <div className="flex items-center space-x-3">
-                <div className="p-2 bg-gradient-to-r from-blue-600 to-purple-600 rounded-lg">
-                  <BarChart3 className="w-6 h-6 text-white" />
-                </div>
-                <div>
-                  <h1 className="text-xl font-bold text-gray-900">Анализатор Объемов</h1>
-                  <p className="text-xs text-gray-500">Профессиональная торговая система</p>
-                </div>
-              </div>
+              <BarChart3 className="w-8 h-8 text-blue-600" />
+              <h1 className="text-xl font-bold text-gray-900">Анализатор Объемов</h1>
               
-              <div className="flex items-center space-x-2 bg-gray-100 rounded-full px-3 py-1">
+              <div className="flex items-center space-x-2">
                 {connectionStatus === 'connected' ? (
-                  <Wifi className="w-4 h-4 text-green-500" />
+                  <Wifi className="w-5 h-5 text-green-500" />
                 ) : (
-                  <WifiOff className="w-4 h-4 text-red-500" />
+                  <WifiOff className="w-5 h-5 text-red-500" />
                 )}
                 <span className="text-sm text-gray-600">
                   {connectionStatus === 'connected' ? 'Подключено' : 
@@ -642,45 +674,39 @@ function App() {
               </div>
             </div>
             
-            <div className="flex items-center space-x-2">
+            <div className="flex items-center space-x-4">
               <TimeZoneToggle />
               
               <button
                 onClick={() => setShowStreamData(true)}
-                className="flex items-center space-x-2 text-gray-600 hover:text-gray-900 px-3 py-2 rounded-lg hover:bg-gray-100 transition-colors"
+                className="flex items-center space-x-2 text-gray-600 hover:text-gray-900"
               >
-                <Activity className="w-4 h-4" />
-                <span className="hidden sm:inline">Поток</span>
+                <Activity className="w-5 h-5" />
+                <span>Поток данных</span>
               </button>
               
               <button
                 onClick={() => setShowFavorites(true)}
-                className="flex items-center space-x-2 text-gray-600 hover:text-gray-900 px-3 py-2 rounded-lg hover:bg-gray-100 transition-colors"
+                className="flex items-center space-x-2 text-gray-600 hover:text-gray-900"
               >
-                <Heart className="w-4 h-4" />
-                <span className="hidden sm:inline">Избранное</span>
-                <span className="bg-yellow-100 text-yellow-800 px-2 py-1 rounded-full text-xs">
-                  {favorites.length}
-                </span>
+                <Heart className="w-5 h-5" />
+                <span>Избранное ({favorites.length})</span>
               </button>
               
               <button
                 onClick={() => setShowWatchlist(true)}
-                className="flex items-center space-x-2 text-gray-600 hover:text-gray-900 px-3 py-2 rounded-lg hover:bg-gray-100 transition-colors"
+                className="flex items-center space-x-2 text-gray-600 hover:text-gray-900"
               >
-                <List className="w-4 h-4" />
-                <span className="hidden sm:inline">Пары</span>
-                <span className="bg-blue-100 text-blue-800 px-2 py-1 rounded-full text-xs">
-                  {watchlist.length}
-                </span>
+                <List className="w-5 h-5" />
+                <span>Пары ({watchlist.length})</span>
               </button>
               
               <button
                 onClick={() => setShowSettings(true)}
-                className="flex items-center space-x-2 text-gray-600 hover:text-gray-900 px-3 py-2 rounded-lg hover:bg-gray-100 transition-colors"
+                className="flex items-center space-x-2 text-gray-600 hover:text-gray-900"
               >
-                <Settings className="w-4 h-4" />
-                <span className="hidden sm:inline">Настройки</span>
+                <Settings className="w-5 h-5" />
+                <span>Настройки</span>
               </button>
             </div>
           </div>
@@ -690,13 +716,11 @@ function App() {
       {/* Stats */}
       {stats && (
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-            <div className="bg-white/70 backdrop-blur-sm rounded-xl shadow-sm border border-gray-200 p-6">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+            <div className="bg-white rounded-lg shadow p-6">
               <div className="flex items-center">
                 <div className="flex-shrink-0">
-                  <div className="p-3 bg-blue-100 rounded-lg">
-                    <List className="w-6 h-6 text-blue-600" />
-                  </div>
+                  <List className="w-8 h-8 text-blue-600" />
                 </div>
                 <div className="ml-4">
                   <p className="text-sm font-medium text-gray-600">Торговых пар</p>
@@ -705,12 +729,10 @@ function App() {
               </div>
             </div>
             
-            <div className="bg-white/70 backdrop-blur-sm rounded-xl shadow-sm border border-gray-200 p-6">
+            <div className="bg-white rounded-lg shadow p-6">
               <div className="flex items-center">
                 <div className="flex-shrink-0">
-                  <div className="p-3 bg-green-100 rounded-lg">
-                    <Zap className="w-6 h-6 text-green-600" />
-                  </div>
+                  <TrendingUp className="w-8 h-8 text-green-600" />
                 </div>
                 <div className="ml-4">
                   <p className="text-sm font-medium text-gray-600">Всего алертов</p>
@@ -719,12 +741,10 @@ function App() {
               </div>
             </div>
             
-            <div className="bg-white/70 backdrop-blur-sm rounded-xl shadow-sm border border-gray-200 p-6">
+            <div className="bg-white rounded-lg shadow p-6">
               <div className="flex items-center">
                 <div className="flex-shrink-0">
-                  <div className="p-3 bg-yellow-100 rounded-lg">
-                    <Heart className="w-6 h-6 text-yellow-600" />
-                  </div>
+                  <Heart className="w-8 h-8 text-yellow-600" />
                 </div>
                 <div className="ml-4">
                   <p className="text-sm font-medium text-gray-600">Избранных</p>
@@ -733,12 +753,10 @@ function App() {
               </div>
             </div>
             
-            <div className="bg-white/70 backdrop-blur-sm rounded-xl shadow-sm border border-gray-200 p-6">
+            <div className="bg-white rounded-lg shadow p-6">
               <div className="flex items-center">
                 <div className="flex-shrink-0">
-                  <div className="p-3 bg-purple-100 rounded-lg">
-                    <MessageCircle className="w-6 h-6 text-purple-600" />
-                  </div>
+                  <MessageCircle className="w-8 h-8 text-purple-600" />
                 </div>
                 <div className="ml-4">
                   <p className="text-sm font-medium text-gray-600">Социальных упоминаний</p>
@@ -754,36 +772,26 @@ function App() {
 
       {/* Tabs */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="bg-white/70 backdrop-blur-sm rounded-xl shadow-sm border border-gray-200 p-2">
-          <nav className="flex space-x-2">
+        <div className="border-b border-gray-200">
+          <nav className="flex space-x-8">
             {[
-              { id: 'volume', label: 'Объем', count: alerts.volume_alerts.length, icon: TrendingUp, color: 'orange' },
-              { id: 'consecutive', label: 'Последовательность', count: alerts.consecutive_alerts.length, icon: BarChart3, color: 'green' },
-              { id: 'priority', label: 'Приоритет', count: alerts.priority_alerts.length, icon: Star, color: 'purple' },
-              { id: 'favorites', label: 'Избранное', count: favorites.length, icon: Heart, color: 'yellow' }
+              { id: 'volume', label: 'Объем', count: alerts.volume_alerts.length, icon: TrendingUp },
+              { id: 'consecutive', label: 'Последовательность', count: alerts.consecutive_alerts.length, icon: BarChart3 },
+              { id: 'priority', label: 'Приоритет', count: alerts.priority_alerts.length, icon: Star },
+              { id: 'favorites', label: 'Избранное', count: favorites.length, icon: Heart }
             ].map((tab) => (
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id as any)}
-                className={`flex items-center space-x-2 py-3 px-4 rounded-lg font-medium text-sm transition-all ${
+                className={`flex items-center space-x-2 py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
                   activeTab === tab.id
-                    ? tab.color === 'orange' ? 'bg-orange-100 text-orange-700 shadow-sm' :
-                      tab.color === 'green' ? 'bg-green-100 text-green-700 shadow-sm' :
-                      tab.color === 'purple' ? 'bg-purple-100 text-purple-700 shadow-sm' :
-                      'bg-yellow-100 text-yellow-700 shadow-sm'
-                    : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+                    ? 'border-blue-500 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
                 }`}
               >
                 <tab.icon className="w-4 h-4" />
                 <span>{tab.label}</span>
-                <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                  activeTab === tab.id 
-                    ? tab.color === 'orange' ? 'bg-orange-200 text-orange-800' :
-                      tab.color === 'green' ? 'bg-green-200 text-green-800' :
-                      tab.color === 'purple' ? 'bg-purple-200 text-purple-800' :
-                      'bg-yellow-200 text-yellow-800'
-                    : 'bg-gray-200 text-gray-600'
-                }`}>
+                <span className="bg-gray-100 text-gray-600 px-2 py-1 rounded-full text-xs">
                   {tab.count}
                 </span>
               </button>
@@ -797,29 +805,23 @@ function App() {
         {activeTab === 'volume' && (
           <div>
             <div className="flex items-center justify-between mb-6">
-              <div>
-                <h2 className="text-2xl font-bold text-gray-900">Алерты по объему</h2>
-                <p className="text-gray-600">Сигналы о превышении торгового объема</p>
-              </div>
+              <h2 className="text-2xl font-bold text-gray-900">Алерты по объему</h2>
               <button
                 onClick={() => clearAlerts('volume_spike')}
-                className="text-red-600 hover:text-red-800 text-sm bg-red-50 hover:bg-red-100 px-3 py-2 rounded-lg transition-colors"
+                className="text-red-600 hover:text-red-800 text-sm"
               >
                 Очистить все
               </button>
             </div>
             
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <div className="space-y-4">
               {alerts.volume_alerts.map(renderAlertCard)}
             </div>
             
             {alerts.volume_alerts.length === 0 && (
-              <div className="text-center py-16">
-                <div className="p-4 bg-orange-100 rounded-full w-16 h-16 mx-auto mb-4 flex items-center justify-center">
-                  <TrendingUp className="w-8 h-8 text-orange-600" />
-                </div>
-                <h3 className="text-lg font-medium text-gray-900 mb-2">Нет алертов по объему</h3>
-                <p className="text-gray-500">Алерты появятся при превышении объема торгов</p>
+              <div className="text-center py-12 text-gray-500">
+                <TrendingUp className="w-12 h-12 mx-auto mb-4 text-gray-300" />
+                <p>Нет алертов по объему</p>
               </div>
             )}
           </div>
@@ -828,29 +830,23 @@ function App() {
         {activeTab === 'consecutive' && (
           <div>
             <div className="flex items-center justify-between mb-6">
-              <div>
-                <h2 className="text-2xl font-bold text-gray-900">Алерты по последовательности</h2>
-                <p className="text-gray-600">Сигналы о подряд идущих LONG свечах</p>
-              </div>
+              <h2 className="text-2xl font-bold text-gray-900">Алерты по последовательности</h2>
               <button
                 onClick={() => clearAlerts('consecutive_long')}
-                className="text-red-600 hover:text-red-800 text-sm bg-red-50 hover:bg-red-100 px-3 py-2 rounded-lg transition-colors"
+                className="text-red-600 hover:text-red-800 text-sm"
               >
                 Очистить все
               </button>
             </div>
             
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <div className="space-y-4">
               {alerts.consecutive_alerts.map(renderAlertCard)}
             </div>
             
             {alerts.consecutive_alerts.length === 0 && (
-              <div className="text-center py-16">
-                <div className="p-4 bg-green-100 rounded-full w-16 h-16 mx-auto mb-4 flex items-center justify-center">
-                  <BarChart3 className="w-8 h-8 text-green-600" />
-                </div>
-                <h3 className="text-lg font-medium text-gray-900 mb-2">Нет алертов по последовательности</h3>
-                <p className="text-gray-500">Алерты появятся при формировании последовательных LONG свечей</p>
+              <div className="text-center py-12 text-gray-500">
+                <BarChart3 className="w-12 h-12 mx-auto mb-4 text-gray-300" />
+                <p>Нет алертов по последовательности</p>
               </div>
             )}
           </div>
@@ -859,29 +855,23 @@ function App() {
         {activeTab === 'priority' && (
           <div>
             <div className="flex items-center justify-between mb-6">
-              <div>
-                <h2 className="text-2xl font-bold text-gray-900">Приоритетные алерты</h2>
-                <p className="text-gray-600">Комбинированные сигналы высокого приоритета</p>
-              </div>
+              <h2 className="text-2xl font-bold text-gray-900">Приоритетные алерты</h2>
               <button
                 onClick={() => clearAlerts('priority')}
-                className="text-red-600 hover:text-red-800 text-sm bg-red-50 hover:bg-red-100 px-3 py-2 rounded-lg transition-colors"
+                className="text-red-600 hover:text-red-800 text-sm"
               >
                 Очистить все
               </button>
             </div>
             
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <div className="space-y-4">
               {alerts.priority_alerts.map(renderAlertCard)}
             </div>
             
             {alerts.priority_alerts.length === 0 && (
-              <div className="text-center py-16">
-                <div className="p-4 bg-purple-100 rounded-full w-16 h-16 mx-auto mb-4 flex items-center justify-center">
-                  <Star className="w-8 h-8 text-purple-600" />
-                </div>
-                <h3 className="text-lg font-medium text-gray-900 mb-2">Нет приоритетных алертов</h3>
-                <p className="text-gray-500">Приоритетные сигналы формируются при совпадении нескольких условий</p>
+              <div className="text-center py-12 text-gray-500">
+                <Star className="w-12 h-12 mx-auto mb-4 text-gray-300" />
+                <p>Нет приоритетных алертов</p>
               </div>
             )}
           </div>
@@ -890,32 +880,26 @@ function App() {
         {activeTab === 'favorites' && (
           <div>
             <div className="flex items-center justify-between mb-6">
-              <div>
-                <h2 className="text-2xl font-bold text-gray-900">Избранные торговые пары</h2>
-                <p className="text-gray-600">Ваши отслеживаемые торговые инструменты</p>
-              </div>
+              <h2 className="text-2xl font-bold text-gray-900">Избранные торговые пары</h2>
               <button
                 onClick={() => setShowFavorites(true)}
-                className="text-blue-600 hover:text-blue-800 text-sm bg-blue-50 hover:bg-blue-100 px-3 py-2 rounded-lg transition-colors"
+                className="text-blue-600 hover:text-blue-800 text-sm"
               >
                 Управление избранным
               </button>
             </div>
             
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <div className="space-y-4">
               {favorites.map(renderFavoriteCard)}
             </div>
             
             {favorites.length === 0 && (
-              <div className="text-center py-16">
-                <div className="p-4 bg-yellow-100 rounded-full w-16 h-16 mx-auto mb-4 flex items-center justify-center">
-                  <Heart className="w-8 h-8 text-yellow-600" />
-                </div>
-                <h3 className="text-lg font-medium text-gray-900 mb-2">Нет избранных торговых пар</h3>
-                <p className="text-gray-500 mb-4">Добавьте интересующие вас торговые пары в избранное</p>
+              <div className="text-center py-12 text-gray-500">
+                <Heart className="w-12 h-12 mx-auto mb-4 text-gray-300" />
+                <p>Нет избранных торговых пар</p>
                 <button
                   onClick={() => setShowWatchlist(true)}
-                  className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors"
+                  className="mt-4 text-blue-600 hover:text-blue-800"
                 >
                   Добавить из списка торговых пар
                 </button>

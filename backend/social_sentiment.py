@@ -9,6 +9,9 @@ from dataclasses import dataclass
 from enum import Enum
 import hashlib
 import time
+import requests
+from textblob import TextBlob
+import nltk
 
 logger = logging.getLogger(__name__)
 
@@ -51,27 +54,37 @@ class SocialSentimentAnalyzer:
         self.db_manager = db_manager
         self.session = None
         
+        # Инициализация NLTK
+        try:
+            nltk.download('punkt', quiet=True)
+            nltk.download('vader_lexicon', quiet=True)
+        except:
+            logger.warning("Не удалось загрузить NLTK данные")
+        
         # Ключевые слова для поиска
         self.crypto_keywords = {
             'positive': [
                 'moon', 'bullish', 'pump', 'rocket', 'gem', 'buy', 'long',
                 'breakout', 'rally', 'surge', 'explosion', 'massive', 'huge',
-                'profit', 'gains', 'winner', 'golden', 'diamond', 'fire'
+                'profit', 'gains', 'winner', 'golden', 'diamond', 'fire',
+                'bull', 'up', 'rise', 'green', 'lambo', 'hodl'
             ],
             'negative': [
                 'dump', 'crash', 'bearish', 'sell', 'short', 'scam', 'rug',
                 'dead', 'rip', 'loss', 'down', 'fall', 'drop', 'disaster',
-                'avoid', 'warning', 'danger', 'exit', 'liquidated'
+                'avoid', 'warning', 'danger', 'exit', 'liquidated', 'bear',
+                'red', 'panic', 'fear'
             ],
             'neutral': [
                 'analysis', 'chart', 'technical', 'support', 'resistance',
-                'volume', 'price', 'market', 'trading', 'hodl', 'dyor'
+                'volume', 'price', 'market', 'trading', 'hodl', 'dyor',
+                'watch', 'monitor', 'update'
             ]
         }
         
         # Настройки анализа
         self.analysis_period_hours = 72  # 3 дня
-        self.min_mentions_for_rating = 5
+        self.min_mentions_for_rating = 3
         self.cache_duration_minutes = 30
         
         # Кэш для избежания повторных запросов
@@ -107,27 +120,28 @@ class SocialSentimentAnalyzer:
             # Получаем упоминания из разных источников
             mentions = []
             
-            # Twitter/X (через публичные API или скрапинг)
-            twitter_mentions = await self._get_twitter_mentions(symbol)
-            mentions.extend(twitter_mentions)
+            # CoinGecko trending данные
+            coingecko_data = await self._get_coingecko_trending(symbol)
             
-            # Telegram (через публичные каналы)
-            telegram_mentions = await self._get_telegram_mentions(symbol)
-            mentions.extend(telegram_mentions)
-            
-            # Reddit
+            # Reddit данные (используем Reddit API)
             reddit_mentions = await self._get_reddit_mentions(symbol)
             mentions.extend(reddit_mentions)
             
-            # CoinGecko trending
-            coingecko_data = await self._get_coingecko_trending(symbol)
+            # Новостные данные (используем CryptoCompare)
+            news_mentions = await self._get_news_mentions(symbol)
+            mentions.extend(news_mentions)
+            
+            # Социальные данные из CoinGecko
+            social_mentions = await self._get_coingecko_social(symbol)
+            mentions.extend(social_mentions)
             
             if len(mentions) < self.min_mentions_for_rating:
                 logger.debug(f"Недостаточно упоминаний для {symbol}: {len(mentions)}")
-                return None
-
-            # Анализируем настроения
-            rating = await self._calculate_rating(symbol, mentions, coingecko_data)
+                # Создаем базовый рейтинг на основе CoinGecko
+                rating = self._create_basic_rating(symbol, coingecko_data)
+            else:
+                # Анализируем настроения
+                rating = await self._calculate_rating(symbol, mentions, coingecko_data)
             
             # Сохраняем в кэш
             self.ratings_cache[cache_key] = rating
@@ -142,74 +156,163 @@ class SocialSentimentAnalyzer:
             logger.error(f"Ошибка получения рейтинга для {symbol}: {e}")
             return None
 
-    async def _get_twitter_mentions(self, symbol: str) -> List[SocialMention]:
-        """Получение упоминаний из Twitter/X"""
-        mentions = []
-        try:
-            # Используем публичные источники или API
-            # Здесь можно интегрировать с Twitter API v2 или альтернативными сервисами
-            
-            # Пример поиска через альтернативные источники
-            search_terms = [
-                symbol,
-                symbol.replace('USDT', ''),
-                f"${symbol.replace('USDT', '')}",
-                f"#{symbol.replace('USDT', '')}"
-            ]
-            
-            for term in search_terms:
-                # Имитация получения данных (в реальности здесь будет API запрос)
-                mock_mentions = await self._mock_twitter_data(symbol, term)
-                mentions.extend(mock_mentions)
-                
-                # Задержка между запросами
-                await asyncio.sleep(0.5)
-
-        except Exception as e:
-            logger.error(f"Ошибка получения Twitter упоминаний для {symbol}: {e}")
+    def _create_basic_rating(self, symbol: str, coingecko_data: Dict) -> SocialRating:
+        """Создает базовый рейтинг на основе CoinGecko данных"""
+        trending_score = coingecko_data.get('trending_score', 0)
         
-        return mentions
-
-    async def _get_telegram_mentions(self, symbol: str) -> List[SocialMention]:
-        """Получение упоминаний из Telegram"""
-        mentions = []
-        try:
-            # Список популярных крипто каналов (публичные)
-            channels = [
-                '@cryptonews',
-                '@binance',
-                '@bybit_official',
-                '@coindesk',
-                '@cointelegraph'
-            ]
-            
-            # В реальности здесь будет интеграция с Telegram API
-            # Пока используем моковые данные
-            for channel in channels:
-                mock_mentions = await self._mock_telegram_data(symbol, channel)
-                mentions.extend(mock_mentions)
-                await asyncio.sleep(0.3)
-
-        except Exception as e:
-            logger.error(f"Ошибка получения Telegram упоминаний для {symbol}: {e}")
+        # Базовый рейтинг на основе трендов
+        overall_score = min(50, max(-50, trending_score * 10))
         
-        return mentions
+        return SocialRating(
+            symbol=symbol,
+            overall_score=overall_score,
+            mention_count=coingecko_data.get('mentions', 0),
+            positive_mentions=max(1, int(coingecko_data.get('mentions', 0) * 0.4)),
+            negative_mentions=max(1, int(coingecko_data.get('mentions', 0) * 0.2)),
+            neutral_mentions=max(1, int(coingecko_data.get('mentions', 0) * 0.4)),
+            trending_score=trending_score,
+            volume_score=min(100, trending_score * 20),
+            sentiment_trend='stable',
+            last_updated=datetime.now(timezone.utc),
+            top_mentions=[]
+        )
 
     async def _get_reddit_mentions(self, symbol: str) -> List[SocialMention]:
-        """Получение упоминаний из Reddit"""
+        """Получение упоминаний из Reddit через публичный API"""
         mentions = []
         try:
+            clean_symbol = symbol.replace('USDT', '').lower()
+            
             # Поиск в популярных крипто сабреддитах
             subreddits = ['cryptocurrency', 'CryptoMoonShots', 'altcoin', 'Bitcoin']
             
             for subreddit in subreddits:
-                # В реальности здесь будет Reddit API
-                mock_mentions = await self._mock_reddit_data(symbol, subreddit)
-                mentions.extend(mock_mentions)
-                await asyncio.sleep(0.4)
+                try:
+                    url = f"https://www.reddit.com/r/{subreddit}/search.json"
+                    params = {
+                        'q': clean_symbol,
+                        'sort': 'new',
+                        'limit': 10,
+                        't': 'week'
+                    }
+                    
+                    if self.session:
+                        async with self.session.get(url, params=params) as response:
+                            if response.status == 200:
+                                data = await response.json()
+                                
+                                for post in data.get('data', {}).get('children', []):
+                                    post_data = post.get('data', {})
+                                    
+                                    text = f"{post_data.get('title', '')} {post_data.get('selftext', '')}"
+                                    if clean_symbol.lower() in text.lower():
+                                        mention = SocialMention(
+                                            platform='reddit',
+                                            text=text[:200],
+                                            author=post_data.get('author', 'unknown'),
+                                            timestamp=datetime.fromtimestamp(post_data.get('created_utc', 0), timezone.utc),
+                                            url=f"https://reddit.com{post_data.get('permalink', '')}",
+                                            engagement=post_data.get('score', 0) + post_data.get('num_comments', 0),
+                                            sentiment_score=self._analyze_text_sentiment(text),
+                                            confidence=0.7
+                                        )
+                                        mentions.append(mention)
+                    
+                    await asyncio.sleep(1)  # Задержка между запросами
+                    
+                except Exception as e:
+                    logger.error(f"Ошибка получения данных из r/{subreddit}: {e}")
+                    continue
 
         except Exception as e:
             logger.error(f"Ошибка получения Reddit упоминаний для {symbol}: {e}")
+        
+        return mentions
+
+    async def _get_news_mentions(self, symbol: str) -> List[SocialMention]:
+        """Получение новостных упоминаний через CryptoCompare API"""
+        mentions = []
+        try:
+            clean_symbol = symbol.replace('USDT', '')
+            
+            url = "https://min-api.cryptocompare.com/data/v2/news/"
+            params = {
+                'lang': 'EN',
+                'sortOrder': 'latest',
+                'categories': f'{clean_symbol}',
+                'limit': 20
+            }
+            
+            if self.session:
+                async with self.session.get(url, params=params) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        
+                        for article in data.get('Data', []):
+                            text = f"{article.get('title', '')} {article.get('body', '')}"
+                            
+                            mention = SocialMention(
+                                platform='news',
+                                text=text[:300],
+                                author=article.get('source_info', {}).get('name', 'unknown'),
+                                timestamp=datetime.fromtimestamp(article.get('published_on', 0), timezone.utc),
+                                url=article.get('url', ''),
+                                engagement=1,  # Новости имеют базовый engagement
+                                sentiment_score=self._analyze_text_sentiment(text),
+                                confidence=0.8
+                            )
+                            mentions.append(mention)
+
+        except Exception as e:
+            logger.error(f"Ошибка получения новостей для {symbol}: {e}")
+        
+        return mentions
+
+    async def _get_coingecko_social(self, symbol: str) -> List[SocialMention]:
+        """Получение социальных данных из CoinGecko"""
+        mentions = []
+        try:
+            clean_symbol = symbol.replace('USDT', '').lower()
+            
+            # Поиск монеты
+            search_url = f"https://api.coingecko.com/api/v3/search?query={clean_symbol}"
+            
+            if self.session:
+                async with self.session.get(search_url) as response:
+                    if response.status == 200:
+                        search_data = await response.json()
+                        
+                        coin = None
+                        for c in search_data.get('coins', []):
+                            if c.get('symbol', '').lower() == clean_symbol:
+                                coin = c
+                                break
+                        
+                        if coin:
+                            # Получаем детальную информацию
+                            coin_url = f"https://api.coingecko.com/api/v3/coins/{coin['id']}"
+                            
+                            async with self.session.get(coin_url) as coin_response:
+                                if coin_response.status == 200:
+                                    coin_data = await coin_response.json()
+                                    
+                                    # Создаем упоминание на основе описания
+                                    description = coin_data.get('description', {}).get('en', '')
+                                    if description:
+                                        mention = SocialMention(
+                                            platform='coingecko',
+                                            text=description[:200],
+                                            author='CoinGecko',
+                                            timestamp=datetime.now(timezone.utc),
+                                            url=coin_data.get('links', {}).get('homepage', [''])[0],
+                                            engagement=coin_data.get('community_score', 0),
+                                            sentiment_score=self._analyze_text_sentiment(description),
+                                            confidence=0.6
+                                        )
+                                        mentions.append(mention)
+
+        except Exception as e:
+            logger.error(f"Ошибка получения CoinGecko социальных данных для {symbol}: {e}")
         
         return mentions
 
@@ -230,145 +333,58 @@ class SocialSentimentAnalyzer:
                     for coin in data.get('coins', []):
                         if coin.get('item', {}).get('symbol', '').lower() == clean_symbol:
                             return {
-                                'trending_rank': coin.get('item', {}).get('market_cap_rank', 0),
-                                'score': coin.get('item', {}).get('score', 0)
+                                'trending_score': min(10, coin.get('item', {}).get('score', 0) + 1),
+                                'mentions': coin.get('item', {}).get('score', 0) * 10
                             }
             
-            return {}
+            return {'trending_score': 0, 'mentions': 0}
 
         except Exception as e:
             logger.error(f"Ошибка получения CoinGecko данных для {symbol}: {e}")
-            return {}
-
-    async def _mock_twitter_data(self, symbol: str, term: str) -> List[SocialMention]:
-        """Моковые данные Twitter (заменить на реальный API)"""
-        mentions = []
-        
-        # Генерируем случайные упоминания для демонстрации
-        import random
-        
-        for i in range(random.randint(2, 8)):
-            sentiment_words = random.choice([
-                self.crypto_keywords['positive'],
-                self.crypto_keywords['negative'],
-                self.crypto_keywords['neutral']
-            ])
-            
-            word = random.choice(sentiment_words)
-            text = f"{term} is looking {word} today! #crypto #trading"
-            
-            mention = SocialMention(
-                platform='twitter',
-                text=text,
-                author=f"user_{random.randint(1000, 9999)}",
-                timestamp=datetime.now(timezone.utc) - timedelta(hours=random.randint(1, 72)),
-                url=f"https://twitter.com/user/status/{random.randint(1000000, 9999999)}",
-                engagement=random.randint(1, 100),
-                sentiment_score=self._analyze_text_sentiment(text),
-                confidence=random.uniform(0.6, 0.9)
-            )
-            mentions.append(mention)
-        
-        return mentions
-
-    async def _mock_telegram_data(self, symbol: str, channel: str) -> List[SocialMention]:
-        """Моковые данные Telegram"""
-        mentions = []
-        import random
-        
-        for i in range(random.randint(1, 5)):
-            sentiment_words = random.choice([
-                self.crypto_keywords['positive'],
-                self.crypto_keywords['negative'],
-                self.crypto_keywords['neutral']
-            ])
-            
-            word = random.choice(sentiment_words)
-            text = f"Analysis: {symbol} shows {word} signals"
-            
-            mention = SocialMention(
-                platform='telegram',
-                text=text,
-                author=channel,
-                timestamp=datetime.now(timezone.utc) - timedelta(hours=random.randint(1, 72)),
-                url=f"https://t.me/{channel.replace('@', '')}/{random.randint(100, 999)}",
-                engagement=random.randint(10, 500),
-                sentiment_score=self._analyze_text_sentiment(text),
-                confidence=random.uniform(0.7, 0.95)
-            )
-            mentions.append(mention)
-        
-        return mentions
-
-    async def _mock_reddit_data(self, symbol: str, subreddit: str) -> List[SocialMention]:
-        """Моковые данные Reddit"""
-        mentions = []
-        import random
-        
-        for i in range(random.randint(1, 4)):
-            sentiment_words = random.choice([
-                self.crypto_keywords['positive'],
-                self.crypto_keywords['negative'],
-                self.crypto_keywords['neutral']
-            ])
-            
-            word = random.choice(sentiment_words)
-            text = f"Discussion about {symbol}: {word} potential"
-            
-            mention = SocialMention(
-                platform='reddit',
-                text=text,
-                author=f"reddit_user_{random.randint(100, 999)}",
-                timestamp=datetime.now(timezone.utc) - timedelta(hours=random.randint(1, 72)),
-                url=f"https://reddit.com/r/{subreddit}/comments/{random.randint(100000, 999999)}",
-                engagement=random.randint(5, 200),
-                sentiment_score=self._analyze_text_sentiment(text),
-                confidence=random.uniform(0.5, 0.8)
-            )
-            mentions.append(mention)
-        
-        return mentions
+            return {'trending_score': 0, 'mentions': 0}
 
     def _analyze_text_sentiment(self, text: str) -> float:
-        """Анализ настроений текста"""
-        text_lower = text.lower()
-        
-        positive_score = 0
-        negative_score = 0
-        
-        # Подсчитываем позитивные слова
-        for word in self.crypto_keywords['positive']:
-            if word in text_lower:
-                positive_score += 1
-        
-        # Подсчитываем негативные слова
-        for word in self.crypto_keywords['negative']:
-            if word in text_lower:
-                negative_score += 1
-        
-        # Рассчитываем итоговый счет (-1 до 1)
-        total_words = positive_score + negative_score
-        if total_words == 0:
+        """Анализ настроений текста с использованием TextBlob"""
+        try:
+            # Используем TextBlob для анализа настроений
+            blob = TextBlob(text)
+            polarity = blob.sentiment.polarity  # от -1 до 1
+            
+            # Дополнительный анализ по ключевым словам
+            text_lower = text.lower()
+            
+            positive_score = 0
+            negative_score = 0
+            
+            # Подсчитываем позитивные слова
+            for word in self.crypto_keywords['positive']:
+                if word in text_lower:
+                    positive_score += 1
+            
+            # Подсчитываем негативные слова
+            for word in self.crypto_keywords['negative']:
+                if word in text_lower:
+                    negative_score += 1
+            
+            # Комбинируем результаты
+            keyword_sentiment = 0
+            total_keywords = positive_score + negative_score
+            if total_keywords > 0:
+                keyword_sentiment = (positive_score - negative_score) / total_keywords
+            
+            # Средневзвешенный результат
+            final_sentiment = (polarity * 0.7) + (keyword_sentiment * 0.3)
+            
+            return max(-1, min(1, final_sentiment))
+            
+        except Exception as e:
+            logger.error(f"Ошибка анализа настроений: {e}")
             return 0.0
-        
-        return (positive_score - negative_score) / total_words
 
     async def _calculate_rating(self, symbol: str, mentions: List[SocialMention], coingecko_data: Dict) -> SocialRating:
         """Расчет итогового рейтинга"""
         if not mentions:
-            return SocialRating(
-                symbol=symbol,
-                overall_score=0,
-                mention_count=0,
-                positive_mentions=0,
-                negative_mentions=0,
-                neutral_mentions=0,
-                trending_score=0,
-                volume_score=0,
-                sentiment_trend='stable',
-                last_updated=datetime.now(timezone.utc),
-                top_mentions=[]
-            )
+            return self._create_basic_rating(symbol, coingecko_data)
 
         # Подсчитываем типы упоминаний
         positive_count = len([m for m in mentions if m.sentiment_score > 0.2])
@@ -381,13 +397,10 @@ class SocialSentimentAnalyzer:
         overall_score = max(-100, min(100, avg_sentiment * 100))
 
         # Рассчитываем trending score
-        trending_score = 0
-        if coingecko_data.get('trending_rank'):
-            # Чем выше ранг, тем больше trending score
-            trending_score = max(0, 100 - coingecko_data['trending_rank'])
+        trending_score = coingecko_data.get('trending_score', 0) * 10
 
         # Рассчитываем volume score на основе количества упоминаний
-        volume_score = min(100, (len(mentions) / 50) * 100)
+        volume_score = min(100, (len(mentions) / 20) * 100)
 
         # Определяем тренд настроений
         recent_mentions = [m for m in mentions if 
@@ -478,14 +491,14 @@ class SocialSentimentAnalyzer:
         ratings = {}
         
         # Ограничиваем количество одновременных запросов
-        semaphore = asyncio.Semaphore(5)
+        semaphore = asyncio.Semaphore(3)
         
         async def get_rating_with_semaphore(symbol):
             async with semaphore:
                 rating = await self.get_symbol_rating(symbol)
                 if rating:
                     ratings[symbol] = rating
-                await asyncio.sleep(0.2)  # Задержка между запросами
+                await asyncio.sleep(0.5)  # Задержка между запросами
         
         # Запускаем задачи параллельно
         tasks = [get_rating_with_semaphore(symbol) for symbol in symbols]

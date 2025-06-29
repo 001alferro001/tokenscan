@@ -380,61 +380,6 @@ async def get_time_info():
 
 
 # API для социальных рейтингов
-@app.get("/api/social-ratings")
-async def get_social_ratings(symbols: str = ""):
-    """Получить социальные рейтинги для торговых пар"""
-    try:
-        if not social_analyzer:
-            return {"error": "Social analyzer not initialized"}
-        
-        if symbols:
-            symbol_list = [s.strip().upper() for s in symbols.split(',') if s.strip()]
-        else:
-            # Получаем все активные пары
-            watchlist = await db_manager.get_watchlist()
-            symbol_list = [pair for pair in watchlist]
-        
-        if not symbol_list:
-            return {"ratings": {}}
-        
-        # Получаем рейтинги
-        ratings_dict = await social_analyzer.get_ratings_for_symbols(symbol_list)
-        
-        # Преобразуем в формат для API
-        api_ratings = {}
-        for symbol, rating in ratings_dict.items():
-            api_ratings[symbol] = {
-                "overall_score": rating.overall_score,
-                "mention_count": rating.mention_count,
-                "positive_mentions": rating.positive_mentions,
-                "negative_mentions": rating.negative_mentions,
-                "neutral_mentions": rating.neutral_mentions,
-                "trending_score": rating.trending_score,
-                "volume_score": rating.volume_score,
-                "sentiment_trend": rating.sentiment_trend,
-                "last_updated": rating.last_updated.isoformat(),
-                "rating_emoji": social_analyzer.get_rating_emoji(rating.overall_score),
-                "trend_emoji": social_analyzer.get_trend_emoji(rating.sentiment_trend),
-                "top_mentions": [
-                    {
-                        "platform": mention.platform,
-                        "text": mention.text[:100] + "..." if len(mention.text) > 100 else mention.text,
-                        "author": mention.author,
-                        "engagement": mention.engagement,
-                        "sentiment_score": mention.sentiment_score,
-                        "timestamp": mention.timestamp.isoformat()
-                    }
-                    for mention in rating.top_mentions[:3]
-                ]
-            }
-        
-        return {"ratings": api_ratings}
-        
-    except Exception as e:
-        logger.error(f"Ошибка получения социальных рейтингов: {e}")
-        return {"error": str(e)}
-
-
 @app.get("/api/social-rating/{symbol}")
 async def get_social_rating(symbol: str):
     """Получить детальный социальный рейтинг для конкретной пары"""
