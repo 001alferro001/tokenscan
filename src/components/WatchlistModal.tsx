@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Plus, Trash2, Edit, Save, Ambulance as Cancel, Heart, HeartOff } from 'lucide-react';
+import { X, Plus, Trash2, Edit, Save, Ambulance as Cancel, Heart, HeartOff, Search } from 'lucide-react';
 
 interface WatchlistItem {
   id: number;
@@ -33,6 +33,7 @@ const WatchlistModal: React.FC<WatchlistModalProps> = ({
   const [editingSymbol, setEditingSymbol] = useState('');
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState<'all' | 'active' | 'inactive' | 'favorites'>('all');
+  const [searchQuery, setSearchQuery] = useState('');
 
   const addSymbol = async () => {
     if (!newSymbol.trim()) return;
@@ -166,43 +167,50 @@ const WatchlistModal: React.FC<WatchlistModalProps> = ({
     }
   };
 
-  // Фильтрация списка
+  // Фильтрация и поиск
   const filteredWatchlist = watchlist.filter(item => {
-    if (filter === 'active') return item.is_active;
-    if (filter === 'inactive') return !item.is_active;
-    if (filter === 'favorites') return item.is_favorite;
-    return true; // 'all'
+    // Фильтр по статусу
+    let statusMatch = true;
+    if (filter === 'active') statusMatch = item.is_active;
+    if (filter === 'inactive') statusMatch = !item.is_active;
+    if (filter === 'favorites') statusMatch = item.is_favorite;
+
+    // Поиск по символу
+    const searchMatch = searchQuery === '' || 
+      item.symbol.toLowerCase().includes(searchQuery.toLowerCase());
+
+    return statusMatch && searchMatch;
   });
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-      <div className="bg-gray-800 rounded-lg w-full max-w-4xl max-h-[90vh] flex flex-col">
+      <div className="bg-white rounded-lg w-full max-w-4xl max-h-[90vh] flex flex-col">
         {/* Header */}
-        <div className="flex items-center justify-between p-6 border-b border-gray-700">
-          <h2 className="text-2xl font-bold text-white">Управление торговыми парами</h2>
+        <div className="flex items-center justify-between p-6 border-b border-gray-200">
+          <h2 className="text-2xl font-bold text-gray-900">Управление торговыми парами</h2>
           <button
             onClick={onClose}
-            className="text-gray-400 hover:text-white p-2"
+            className="text-gray-400 hover:text-gray-600 p-2"
           >
             <X className="w-6 h-6" />
           </button>
         </div>
 
         {/* Add new symbol */}
-        <div className="p-6 border-b border-gray-700">
+        <div className="p-6 border-b border-gray-200">
           <div className="flex space-x-3">
             <input
               type="text"
               value={newSymbol}
               onChange={(e) => setNewSymbol(e.target.value.toUpperCase())}
               placeholder="Введите символ (например, BTCUSDT)"
-              className="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-white placeholder-gray-400"
+              className="flex-1 border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
               onKeyPress={(e) => e.key === 'Enter' && addSymbol()}
             />
             <button
               onClick={addSymbol}
               disabled={loading || !newSymbol.trim()}
-              className="flex items-center space-x-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 px-4 py-2 rounded-lg transition-colors"
+              className="flex items-center space-x-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white px-4 py-2 rounded-lg transition-colors"
             >
               <Plus className="w-4 h-4" />
               <span>Добавить</span>
@@ -210,15 +218,30 @@ const WatchlistModal: React.FC<WatchlistModalProps> = ({
           </div>
         </div>
 
-        {/* Filters */}
-        <div className="p-4 border-b border-gray-700 bg-gray-750">
+        {/* Search and Filters */}
+        <div className="p-4 border-b border-gray-200 bg-gray-50">
+          {/* Search */}
+          <div className="mb-4">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Поиск по символу..."
+                className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              />
+            </div>
+          </div>
+
+          {/* Filters */}
           <div className="flex space-x-2">
             <button
               onClick={() => setFilter('all')}
               className={`px-3 py-1 rounded-lg text-sm ${
                 filter === 'all' 
                   ? 'bg-blue-600 text-white' 
-                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                  : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
               }`}
             >
               Все ({watchlist.length})
@@ -228,7 +251,7 @@ const WatchlistModal: React.FC<WatchlistModalProps> = ({
               className={`px-3 py-1 rounded-lg text-sm ${
                 filter === 'active' 
                   ? 'bg-green-600 text-white' 
-                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                  : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
               }`}
             >
               Активные ({watchlist.filter(w => w.is_active).length})
@@ -238,7 +261,7 @@ const WatchlistModal: React.FC<WatchlistModalProps> = ({
               className={`px-3 py-1 rounded-lg text-sm ${
                 filter === 'inactive' 
                   ? 'bg-red-600 text-white' 
-                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                  : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
               }`}
             >
               Неактивные ({watchlist.filter(w => !w.is_active).length})
@@ -248,7 +271,7 @@ const WatchlistModal: React.FC<WatchlistModalProps> = ({
               className={`px-3 py-1 rounded-lg text-sm ${
                 filter === 'favorites' 
                   ? 'bg-yellow-600 text-white' 
-                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                  : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
               }`}
             >
               Избранные ({watchlist.filter(w => w.is_favorite).length})
@@ -259,20 +282,34 @@ const WatchlistModal: React.FC<WatchlistModalProps> = ({
         {/* Watchlist */}
         <div className="flex-1 overflow-y-auto p-6">
           {filteredWatchlist.length === 0 ? (
-            <div className="text-center py-12 text-gray-400">
-              <p>Нет торговых пар в списке</p>
+            <div className="text-center py-12 text-gray-500">
+              {searchQuery ? (
+                <div>
+                  <Search className="w-12 h-12 mx-auto mb-4 text-gray-300" />
+                  <p>Нет результатов по запросу "{searchQuery}"</p>
+                  <button
+                    onClick={() => setSearchQuery('')}
+                    className="mt-2 text-blue-600 hover:text-blue-800"
+                  >
+                    Очистить поиск
+                  </button>
+                </div>
+              ) : (
+                <p>Нет торговых пар в списке</p>
+              )}
             </div>
           ) : (
             <div className="space-y-3">
               {filteredWatchlist.map((item) => (
-                <div key={item.id} className="bg-gray-700 rounded-lg p-4 flex items-center justify-between">
+                <div key={item.id} className="bg-gray-50 rounded-lg p-4 flex items-center justify-between hover:bg-gray-100 transition-colors">
                   <div className="flex items-center space-x-4">
                     <button
                       onClick={() => toggleActive(item)}
                       disabled={loading}
                       className={`w-4 h-4 rounded-full ${
-                        item.is_active ? 'bg-green-400' : 'bg-red-400'
+                        item.is_active ? 'bg-green-500' : 'bg-red-500'
                       } transition-colors`}
+                      title={item.is_active ? 'Деактивировать' : 'Активировать'}
                     />
                     
                     {editingId === item.id ? (
@@ -280,13 +317,13 @@ const WatchlistModal: React.FC<WatchlistModalProps> = ({
                         type="text"
                         value={editingSymbol}
                         onChange={(e) => setEditingSymbol(e.target.value.toUpperCase())}
-                        className="bg-gray-600 border border-gray-500 rounded px-3 py-1 text-white"
+                        className="bg-white border border-gray-300 rounded px-3 py-1 text-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                         onKeyPress={(e) => e.key === 'Enter' && saveEdit()}
                       />
                     ) : (
                       <div className="flex items-center space-x-2">
-                        <span className="font-semibold text-white">{item.symbol}</span>
-                        <span className="text-sm text-gray-400">
+                        <span className="font-semibold text-gray-900">{item.symbol}</span>
+                        <span className="text-sm text-gray-500">
                           {item.is_active ? 'Активна' : 'Неактивна'}
                         </span>
                         {item.is_favorite && (
@@ -299,11 +336,11 @@ const WatchlistModal: React.FC<WatchlistModalProps> = ({
                   <div className="flex items-center space-x-4">
                     {item.price_drop_percentage && (
                       <div className="text-right text-sm">
-                        <div className="text-red-400">
+                        <div className="text-red-600">
                           Падение: {item.price_drop_percentage.toFixed(2)}%
                         </div>
                         {item.current_price && (
-                          <div className="text-gray-400">
+                          <div className="text-gray-500">
                             ${item.current_price.toFixed(8)}
                           </div>
                         )}
@@ -317,13 +354,13 @@ const WatchlistModal: React.FC<WatchlistModalProps> = ({
                         disabled={loading}
                         className={`p-1 ${
                           item.is_favorite 
-                            ? 'text-yellow-400 hover:text-yellow-300' 
-                            : 'text-gray-400 hover:text-yellow-400'
+                            ? 'text-yellow-500 hover:text-yellow-600' 
+                            : 'text-gray-400 hover:text-yellow-500'
                         }`}
                         title={item.is_favorite ? "Удалить из избранного" : "Добавить в избранное"}
                       >
                         {item.is_favorite ? (
-                          <HeartOff className="w-4 h-4" />
+                          <Heart className="w-4 h-4 fill-current" />
                         ) : (
                           <Heart className="w-4 h-4" />
                         )}
@@ -334,14 +371,16 @@ const WatchlistModal: React.FC<WatchlistModalProps> = ({
                           <button
                             onClick={saveEdit}
                             disabled={loading}
-                            className="text-green-400 hover:text-green-300 p-1"
+                            className="text-green-600 hover:text-green-700 p-1"
+                            title="Сохранить"
                           >
                             <Save className="w-4 h-4" />
                           </button>
                           <button
                             onClick={cancelEdit}
                             disabled={loading}
-                            className="text-gray-400 hover:text-gray-300 p-1"
+                            className="text-gray-500 hover:text-gray-600 p-1"
+                            title="Отменить"
                           >
                             <Cancel className="w-4 h-4" />
                           </button>
@@ -351,14 +390,16 @@ const WatchlistModal: React.FC<WatchlistModalProps> = ({
                           <button
                             onClick={() => startEdit(item)}
                             disabled={loading}
-                            className="text-blue-400 hover:text-blue-300 p-1"
+                            className="text-blue-600 hover:text-blue-700 p-1"
+                            title="Редактировать"
                           >
                             <Edit className="w-4 h-4" />
                           </button>
                           <button
                             onClick={() => deleteItem(item.id)}
                             disabled={loading}
-                            className="text-red-400 hover:text-red-300 p-1"
+                            className="text-red-600 hover:text-red-700 p-1"
+                            title="Удалить"
                           >
                             <Trash2 className="w-4 h-4" />
                           </button>
@@ -373,11 +414,16 @@ const WatchlistModal: React.FC<WatchlistModalProps> = ({
         </div>
 
         {/* Footer */}
-        <div className="p-6 border-t border-gray-700">
-          <div className="flex justify-between items-center text-sm text-gray-400">
-            <span>Всего пар: {watchlist.length}</span>
-            <span>Активных: {watchlist.filter(w => w.is_active).length}</span>
-            <span>Избранных: {watchlist.filter(w => w.is_favorite).length}</span>
+        <div className="p-6 border-t border-gray-200 bg-gray-50">
+          <div className="flex justify-between items-center text-sm text-gray-600">
+            <span>
+              Показано: {filteredWatchlist.length} из {watchlist.length} пар
+              {searchQuery && ` (поиск: "${searchQuery}")`}
+            </span>
+            <div className="flex space-x-4">
+              <span>Активных: {watchlist.filter(w => w.is_active).length}</span>
+              <span>Избранных: {watchlist.filter(w => w.is_favorite).length}</span>
+            </div>
           </div>
         </div>
       </div>
