@@ -188,7 +188,8 @@ class AlertManager:
             'imbalance_enabled': True,
             'fair_value_gap_enabled': True,
             'order_block_enabled': True,
-            'breaker_block_enabled': True
+            'breaker_block_enabled': True,
+            'pairs_check_interval_minutes': int(os.getenv('PAIRS_CHECK_INTERVAL_MINUTES', 30))
         }
 
         # Кэш для отслеживания состояния алертов (timestamp в миллисекундах UTC)
@@ -220,9 +221,6 @@ class AlertManager:
             else:
                 is_closed = kline_data.get('confirm', False)
                 logger.debug(f"🕐 Проверка закрытия свечи {symbol} через confirm: {is_closed}")
-
-            # Сохраняем данные в базу
-            await self.db_manager.save_kline_data(symbol, kline_data, is_closed)
 
             # Обрабатываем алерты только для закрытых свечей
             if is_closed:
@@ -614,7 +612,7 @@ class AlertManager:
     def update_settings(self, new_settings: Dict):
         """Обновление настроек"""
         self.settings.update(new_settings)
-        logger.info(f"Настройки AlertManager обновлены: {self.settings}")
+        logger.info(f"⚙️ Настройки AlertManager обновлены: {self.settings}")
 
     def get_settings(self) -> Dict:
         """Получение текущих настроек"""
@@ -631,7 +629,7 @@ class AlertManager:
                 if self.alert_cooldowns[symbol] < cooldown_cutoff_ms:
                     del self.alert_cooldowns[symbol]
 
-            logger.info("Очистка старых данных завершена")
+            logger.info("🧹 Очистка старых данных завершена")
 
         except Exception as e:
             logger.error(f"❌ Ошибка очистки старых данных: {e}")

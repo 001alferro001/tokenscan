@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Calculator, TrendingUp, TrendingDown, DollarSign, Target, AlertTriangle, BarChart3, Settings, Plus, Minus, Percent } from 'lucide-react';
+import { X, Calculator, TrendingUp, TrendingDown, DollarSign, Target, AlertTriangle, BarChart3, Settings, Plus, Minus, Repeat } from 'lucide-react';
 import { formatTime } from '../utils/timeUtils';
 import { useTimeZone } from '../contexts/TimeZoneContext';
 
@@ -103,11 +103,8 @@ const PaperTradingModal: React.FC<PaperTradingModalProps> = ({
   const [exitReason, setExitReason] = useState<string>('MANUAL');
   const [stopLossPercentage, setStopLossPercentage] = useState<number>(2);
   const [takeProfitPercentage, setTakeProfitPercentage] = useState<number>(6);
-  
-  // Новые состояния для расчета по риск-прибыли
   const [calculationMode, setCalculationMode] = useState<'risk' | 'risk_reward'>('risk');
-  const [riskRewardRatio, setRiskRewardRatio] = useState<number>(3);
-  const [fixedRiskAmount, setFixedRiskAmount] = useState<number>(100);
+  const [targetRiskRewardRatio, setTargetRiskRewardRatio] = useState<number>(3);
   
   const { timeZone } = useTimeZone();
 
@@ -128,13 +125,9 @@ const PaperTradingModal: React.FC<PaperTradingModalProps> = ({
 
   useEffect(() => {
     if (settings && entryPrice > 0) {
-      if (calculationMode === 'risk_reward') {
-        calculateByRiskReward();
-      } else {
-        calculateRisk();
-      }
+      calculateRisk();
     }
-  }, [settings, entryPrice, stopLoss, takeProfit, riskAmount, riskPercentage, tradeType, calculationMode, riskRewardRatio, fixedRiskAmount]);
+  }, [settings, entryPrice, stopLoss, takeProfit, riskAmount, riskPercentage, tradeType, calculationMode, targetRiskRewardRatio]);
 
   const loadSettings = async () => {
     try {
@@ -192,67 +185,6 @@ const PaperTradingModal: React.FC<PaperTradingModalProps> = ({
     }
   };
 
-  const calculateByRiskReward = () => {
-    if (!entryPrice || !stopLoss || !settings) {
-      return;
-    }
-
-    try {
-      // Рассчитываем размер риска
-      const riskPerToken = tradeType === 'LONG' ? 
-        entryPrice - stopLoss : 
-        stopLoss - entryPrice;
-
-      if (riskPerToken <= 0) {
-        setError('Некорректные уровни стоп-лосса');
-        return;
-      }
-
-      // Рассчитываем количество на основе фиксированного риска
-      const calculatedQuantity = fixedRiskAmount / riskPerToken;
-      
-      // Рассчитываем тейк-профит на основе риск-прибыли
-      const profitPerToken = riskPerToken * riskRewardRatio;
-      const calculatedTakeProfit = tradeType === 'LONG' ? 
-        entryPrice + profitPerToken : 
-        entryPrice - profitPerToken;
-
-      // Обновляем состояния
-      setQuantity(calculatedQuantity);
-      setTakeProfit(parseFloat(calculatedTakeProfit.toFixed(8)));
-      setRiskAmount(fixedRiskAmount);
-      
-      // Рассчитываем процент риска
-      const riskPercent = (fixedRiskAmount / settings.account_balance) * 100;
-      setRiskPercentage(parseFloat(riskPercent.toFixed(2)));
-
-      // Создаем объект расчета
-      const newCalculation: RiskCalculation = {
-        entry_price: entryPrice,
-        stop_loss: stopLoss,
-        take_profit: calculatedTakeProfit,
-        trade_type: tradeType,
-        account_balance: settings.account_balance,
-        risk_amount: fixedRiskAmount,
-        risk_percentage: riskPercent,
-        quantity: calculatedQuantity,
-        position_size: calculatedQuantity * entryPrice,
-        potential_profit: calculatedQuantity * profitPerToken,
-        potential_profit_percentage: (profitPerToken / entryPrice) * 100,
-        potential_loss: fixedRiskAmount,
-        potential_loss_percentage: (riskPerToken / entryPrice) * 100,
-        risk_reward_ratio: riskRewardRatio
-      };
-
-      setCalculation(newCalculation);
-      setError(null);
-
-    } catch (error) {
-      console.error('Ошибка расчета по риск-прибыли:', error);
-      setError('Ошибка расчета по риск-прибыли');
-    }
-  };
-
   const calculateRisk = async () => {
     if (!entryPrice) {
       setError('Введите цену входа');
@@ -262,6 +194,27 @@ const PaperTradingModal: React.FC<PaperTradingModalProps> = ({
     try {
       setLoading(true);
       setError(null);
+      
+      // Если выбран режим риск-прибыль и нет стоп-лосса, рассчитываем его
+      if (calculationMode === 'risk_reward' && !stopLoss) {
+        if (tradeType === 'LONG') {
+          setStopLoss(parseFloat((entryPrice * (1 - stopLossPercentage / 100)).toFixed(8)));
+        } else {
+          setStopLoss(parseFloat((entryPrice * (1 + stopLossPercentage / 100)).toFixed(8)));
+        }
+      }
+      
+      // Если выбран режим риск-прибыль, рассчитываем тейк-профит на основе риск-прибыли
+      if (calculationMode === 'risk_reward' && stopLoss) {
+        const slDiff = Math.abs(entryPrice - stopLoss);
+        const tpDiff = slDiff * targetRiskRewardRatio;
+        
+        if (tradeType === 'LONG') {
+          setTakeProfit(parseFloat((entryPrice + tpDiff).toFixed(8)));
+        } else {
+          setTakeProfit(parseFloat((entryPrice - tpDiff).toFixed(8)));
+        }
+      }
       
       const requestData = {
         entry_price: entryPrice,
@@ -569,38 +522,29 @@ const PaperTradingModal: React.FC<PaperTradingModalProps> = ({
       </div>
 
       {/* Режим расчета */}
-      <div className="bg-gray-50 p-4 rounded-lg">
-        <h4 className="font-medium text-gray-900 mb-3">Режим расчета</h4>
-        <div className="flex space-x-4">
-          <button
-            onClick={() => setCalculationMode('risk')}
-            className={`flex-1 py-3 px-4 rounded-lg flex items-center justify-center space-x-2 ${
-              calculationMode === 'risk' 
-                ? 'bg-blue-600 text-white' 
-                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-            }`}
-          >
-            <DollarSign className="w-5 h-5" />
-            <span className="font-medium">По риску</span>
-          </button>
-          <button
-            onClick={() => setCalculationMode('risk_reward')}
-            className={`flex-1 py-3 px-4 rounded-lg flex items-center justify-center space-x-2 ${
-              calculationMode === 'risk_reward' 
-                ? 'bg-purple-600 text-white' 
-                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-            }`}
-          >
-            <Percent className="w-5 h-5" />
-            <span className="font-medium">По риск-прибыли</span>
-          </button>
-        </div>
-        <p className="text-sm text-gray-600 mt-2">
-          {calculationMode === 'risk' 
-            ? 'Расчет количества на основе заданного риска и уровней SL/TP'
-            : 'Расчет количества и TP на основе фиксированного риска и соотношения риск-прибыль'
-          }
-        </p>
+      <div className="flex space-x-4">
+        <button
+          onClick={() => setCalculationMode('risk')}
+          className={`flex-1 py-3 px-4 rounded-lg flex items-center justify-center space-x-2 ${
+            calculationMode === 'risk' 
+              ? 'bg-blue-600 text-white' 
+              : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+          }`}
+        >
+          <Target className="w-5 h-5" />
+          <span className="font-medium">По риску</span>
+        </button>
+        <button
+          onClick={() => setCalculationMode('risk_reward')}
+          className={`flex-1 py-3 px-4 rounded-lg flex items-center justify-center space-x-2 ${
+            calculationMode === 'risk_reward' 
+              ? 'bg-purple-600 text-white' 
+              : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+          }`}
+        >
+          <Repeat className="w-5 h-5" />
+          <span className="font-medium">По риск-прибыли</span>
+        </button>
       </div>
 
       {/* Тип сделки */}
@@ -659,37 +603,35 @@ const PaperTradingModal: React.FC<PaperTradingModalProps> = ({
         </div>
       </div>
 
-      {/* Стоп-лосс */}
-      <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">
-          Стоп-лосс
-        </label>
-        <div className="flex space-x-2">
-          <input
-            type="number"
-            step="0.00000001"
-            value={stopLoss || ''}
-            onChange={(e) => handleStopLossChange(parseFloat(e.target.value))}
-            className="flex-1 border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-            placeholder="Уровень стоп-лосса"
-          />
-          <div className="relative">
+      {/* Стоп-лосс и тейк-профит */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">
+            Стоп-лосс
+          </label>
+          <div className="flex space-x-2">
             <input
               type="number"
-              step="0.1"
-              min="0.1"
-              max="50"
-              value={stopLossPercentage}
-              onChange={(e) => handleStopLossPercentageChange(parseFloat(e.target.value))}
-              className="w-20 border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              step="0.00000001"
+              value={stopLoss || ''}
+              onChange={(e) => handleStopLossChange(parseFloat(e.target.value))}
+              className="flex-1 border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              placeholder="Уровень стоп-лосса"
             />
-            <span className="absolute right-3 top-2 text-gray-500">%</span>
+            <div className="relative">
+              <input
+                type="number"
+                step="0.1"
+                min="0.1"
+                max="50"
+                value={stopLossPercentage}
+                onChange={(e) => handleStopLossPercentageChange(parseFloat(e.target.value))}
+                className="w-20 border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              />
+              <span className="absolute right-3 top-2 text-gray-500">%</span>
+            </div>
           </div>
         </div>
-      </div>
-
-      {/* Тейк-профит (только для режима риска) */}
-      {calculationMode === 'risk' && (
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">
             Тейк-профит
@@ -717,93 +659,81 @@ const PaperTradingModal: React.FC<PaperTradingModalProps> = ({
             </div>
           </div>
         </div>
+      </div>
+
+      {/* Риск-прибыль соотношение (только для режима risk_reward) */}
+      {calculationMode === 'risk_reward' && (
+        <div className="bg-purple-50 p-4 rounded-lg">
+          <label className="block text-sm font-medium text-purple-700 mb-2">
+            Соотношение риск:прибыль
+          </label>
+          <div className="flex items-center space-x-2">
+            <span className="text-purple-700">1:</span>
+            <input
+              type="number"
+              step="0.1"
+              min="0.5"
+              max="10"
+              value={targetRiskRewardRatio}
+              onChange={(e) => setTargetRiskRewardRatio(parseFloat(e.target.value))}
+              className="w-20 border border-purple-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+            />
+            <span className="text-sm text-purple-700">
+              (Стоп-лосс: {stopLossPercentage}%, Тейк-профит: {(stopLossPercentage * targetRiskRewardRatio).toFixed(2)}%)
+            </span>
+          </div>
+          <p className="text-xs text-purple-600 mt-1">
+            Система автоматически рассчитает тейк-профит на основе стоп-лосса и заданного соотношения
+          </p>
+        </div>
       )}
 
-      {/* Параметры риска */}
-      {calculationMode === 'risk' ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Риск в деньгах
-            </label>
-            <div className="relative">
-              <span className="absolute left-3 top-2 text-gray-500">$</span>
-              <input
-                type="number"
-                step="1"
-                min="1"
-                value={riskAmount}
-                onChange={(e) => {
-                  setRiskAmount(parseFloat(e.target.value));
-                  if (settings?.account_balance) {
-                    setRiskPercentage(parseFloat(((parseFloat(e.target.value) / settings.account_balance) * 100).toFixed(2)));
-                  }
-                }}
-                className="w-full border border-gray-300 rounded-lg pl-8 pr-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              />
-            </div>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Риск в процентах
-            </label>
-            <div className="relative">
-              <input
-                type="number"
-                step="0.1"
-                min="0.1"
-                max="100"
-                value={riskPercentage}
-                onChange={(e) => {
-                  setRiskPercentage(parseFloat(e.target.value));
-                  if (settings?.account_balance) {
-                    setRiskAmount(parseFloat(((settings.account_balance * parseFloat(e.target.value)) / 100).toFixed(2)));
-                  }
-                }}
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              />
-              <span className="absolute right-3 top-2 text-gray-500">%</span>
-            </div>
+      {/* Риск */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">
+            Риск в деньгах
+          </label>
+          <div className="relative">
+            <span className="absolute left-3 top-2 text-gray-500">$</span>
+            <input
+              type="number"
+              step="1"
+              min="1"
+              value={riskAmount}
+              onChange={(e) => {
+                setRiskAmount(parseFloat(e.target.value));
+                if (settings?.account_balance) {
+                  setRiskPercentage(parseFloat(((parseFloat(e.target.value) / settings.account_balance) * 100).toFixed(2)));
+                }
+              }}
+              className="w-full border border-gray-300 rounded-lg pl-8 pr-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            />
           </div>
         </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Фиксированный риск
-            </label>
-            <div className="relative">
-              <span className="absolute left-3 top-2 text-gray-500">$</span>
-              <input
-                type="number"
-                step="1"
-                min="1"
-                value={fixedRiskAmount}
-                onChange={(e) => setFixedRiskAmount(parseFloat(e.target.value))}
-                className="w-full border border-gray-300 rounded-lg pl-8 pr-3 py-2 focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
-              />
-            </div>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Соотношение риск:прибыль
-            </label>
-            <div className="relative">
-              <input
-                type="number"
-                step="0.1"
-                min="0.1"
-                max="20"
-                value={riskRewardRatio}
-                onChange={(e) => setRiskRewardRatio(parseFloat(e.target.value))}
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
-              />
-              <span className="absolute right-3 top-2 text-gray-500">:1</span>
-            </div>
-            <p className="text-xs text-gray-500 mt-1">Например, 3 означает 1:3 (риск $100 = прибыль $300)</p>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">
+            Риск в процентах
+          </label>
+          <div className="relative">
+            <input
+              type="number"
+              step="0.1"
+              min="0.1"
+              max="100"
+              value={riskPercentage}
+              onChange={(e) => {
+                setRiskPercentage(parseFloat(e.target.value));
+                if (settings?.account_balance) {
+                  setRiskAmount(parseFloat(((settings.account_balance * parseFloat(e.target.value)) / 100).toFixed(2)));
+                }
+              }}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            />
+            <span className="absolute right-3 top-2 text-gray-500">%</span>
           </div>
         </div>
-      )}
+      </div>
 
       {/* Размер позиции */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -818,11 +748,7 @@ const PaperTradingModal: React.FC<PaperTradingModalProps> = ({
             onChange={(e) => setQuantity(parseFloat(e.target.value))}
             className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             placeholder="Количество токенов"
-            readOnly={calculationMode === 'risk_reward'}
           />
-          {calculationMode === 'risk_reward' && (
-            <p className="text-xs text-gray-500 mt-1">Рассчитывается автоматически</p>
-          )}
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -839,26 +765,6 @@ const PaperTradingModal: React.FC<PaperTradingModalProps> = ({
           </div>
         </div>
       </div>
-
-      {/* Тейк-профит для режима риск-прибыли */}
-      {calculationMode === 'risk_reward' && (
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
-            Тейк-профит (рассчитан автоматически)
-          </label>
-          <input
-            type="number"
-            step="0.00000001"
-            value={takeProfit || ''}
-            readOnly
-            className="w-full border border-gray-300 rounded-lg px-3 py-2 bg-gray-50"
-            placeholder="Рассчитывается автоматически"
-          />
-          <p className="text-xs text-gray-500 mt-1">
-            Рассчитан на основе соотношения риск:прибыль {riskRewardRatio}:1
-          </p>
-        </div>
-      )}
 
       {/* Заметки */}
       <div>
@@ -927,7 +833,7 @@ const PaperTradingModal: React.FC<PaperTradingModalProps> = ({
       {/* Кнопки действий */}
       <div className="flex space-x-4">
         <button
-          onClick={calculationMode === 'risk_reward' ? calculateByRiskReward : calculateRisk}
+          onClick={calculateRisk}
           disabled={loading || !entryPrice}
           className="flex-1 flex items-center justify-center space-x-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white py-3 px-4 rounded-lg transition-colors"
         >

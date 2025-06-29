@@ -13,6 +13,7 @@ interface Settings {
     update_interval_seconds: number;
     notification_enabled: boolean;
     volume_type: 'all' | 'long' | 'short';
+    pairs_check_interval_minutes: number;
   };
   alerts: {
     volume_alerts_enabled: boolean;
@@ -78,6 +79,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ settings, onClose, onSave
           update_interval_seconds: 1,
           notification_enabled: true,
           volume_type: 'long',
+          pairs_check_interval_minutes: 30,
           ...settings.volume_analyzer
         },
         alerts: {
@@ -423,6 +425,21 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ settings, onClose, onSave
                     className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                   />
                   <p className="text-xs text-gray-500 mt-1">Сколько часов хранить исторические данные</p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Интервал проверки пар (минуты)
+                  </label>
+                  <input
+                    type="number"
+                    min="5"
+                    max="1440"
+                    value={localSettings.volume_analyzer.pairs_check_interval_minutes}
+                    onChange={(e) => updateVolumeSettings('pairs_check_interval_minutes', parseInt(e.target.value))}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">Как часто проверять список торговых пар на бирже</p>
                 </div>
               </div>
 

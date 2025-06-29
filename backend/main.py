@@ -148,12 +148,12 @@ async def lifespan(app: FastAPI):
     global db_manager, alert_manager, bybit_client, price_filter, telegram_bot, time_sync
 
     try:
-        logger.info("Запуск системы анализа объемов...")
+        logger.info("🚀 Запуск системы анализа объемов...")
 
         # Инициализация синхронизации времени с биржей
         time_sync = ExchangeTimeSync()
         await time_sync.start()
-        logger.info("Синхронизация времени с биржей запущена")
+        logger.info("⏰ Синхронизация времени с биржей запущена")
 
         # Инициализация базы данных
         db_manager = DatabaseManager()
@@ -168,40 +168,31 @@ async def lifespan(app: FastAPI):
         # Инициализация фильтра цен
         price_filter = PriceFilter(db_manager)
 
-        # Получение списка торговых пар
-        trading_pairs = await db_manager.get_watchlist()
-        if not trading_pairs:
-            logger.warning("Нет торговых пар в watchlist. Запуск фильтра цен...")
-            asyncio.create_task(price_filter.start())
-            # Ждем немного для загрузки пар
-            await asyncio.sleep(10)
-            trading_pairs = await db_manager.get_watchlist()
+        # Инициализация WebSocket клиента Bybit (без торговых пар - они загрузятся автоматически)
+        bybit_client = BybitWebSocketClient([], alert_manager, manager)
 
-        if trading_pairs:
-            logger.info(f"Найдено {len(trading_pairs)} торговых пар для мониторинга")
+        # Запуск всех сервисов в правильном порядке
+        logger.info("🔄 Запуск сервисов...")
+        
+        # Сначала запускаем фильтр цен для формирования списка пар
+        asyncio.create_task(price_filter.start())
+        
+        # Затем запускаем WebSocket клиент (он сам загрузит пары и данные)
+        asyncio.create_task(bybit_client.start())
 
-            # Инициализация WebSocket клиента Bybit
-            bybit_client = BybitWebSocketClient(trading_pairs, alert_manager, manager)
+        # Запуск периодической очистки данных
+        asyncio.create_task(periodic_cleanup())
 
-            # Запуск всех сервисов
-            asyncio.create_task(bybit_client.start())
-            asyncio.create_task(price_filter.start())
-
-            # Запуск периодической очистки данных
-            asyncio.create_task(periodic_cleanup())
-
-            logger.info("Система успешно запущена с синхронизацией времени!")
-        else:
-            logger.error("Не удалось получить торговые пары. Система не запущена.")
+        logger.info("✅ Система успешно запущена с правильной очередностью!")
 
     except Exception as e:
-        logger.error(f"Ошибка запуска системы: {e}")
+        logger.error(f"❌ Ошибка запуска системы: {e}")
         raise
 
     yield
 
     # Shutdown
-    logger.info("Остановка системы...")
+    logger.info("🛑 Остановка системы...")
     if time_sync:
         await time_sync.stop()
     if bybit_client:
@@ -225,9 +216,9 @@ async def periodic_cleanup():
             if db_manager:
                 retention_hours = alert_manager.settings.get('data_retention_hours', 2) if alert_manager else 2
                 await db_manager.cleanup_old_data(retention_hours)
-            logger.info("Периодическая очистка данных выполнена")
+            logger.info("🧹 Периодическая очистка данных выполнена")
         except Exception as e:
-            logger.error(f"Ошибка периодической очистки: {e}")
+            logger.error(f"❌ Ошибка периодической очистки: {e}")
 
 
 # WebSocket endpoint
@@ -272,6 +263,11 @@ async def get_stats():
         if time_sync:
             time_sync_info = time_sync.get_sync_status()
 
+        # Добавляем статистику подписок
+        subscription_stats = {}
+        if bybit_client:
+            subscription_stats = bybit_client.get_subscription_stats()
+
         return {
             "pairs_count": len(watchlist),
             "favorites_count": len(favorites),
@@ -280,6 +276,7 @@ async def get_stats():
             "consecutive_alerts_count": len(alerts_data.get('consecutive_alerts', [])),
             "priority_alerts_count": len(alerts_data.get('priority_alerts', [])),
             "trading_stats": trading_stats,
+            "subscription_stats": subscription_stats,
             "last_update": datetime.now(timezone.utc).isoformat(),
             "system_status": "running",
             "time_sync": time_sync_info
@@ -860,7 +857,8 @@ async def get_settings():
             "data_retention_hours": 2,
             "update_interval_seconds": 1,
             "notification_enabled": True,
-            "volume_type": "long"
+            "volume_type": "long",
+            "pairs_check_interval_minutes": 30
         },
         "alerts": {
             "volume_alerts_enabled": True,

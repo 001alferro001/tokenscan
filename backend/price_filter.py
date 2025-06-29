@@ -17,14 +17,15 @@ class PriceFilter:
         self.settings = {
             'price_check_interval_minutes': int(os.getenv('PRICE_CHECK_INTERVAL_MINUTES', 5)),
             'price_history_days': int(os.getenv('PRICE_HISTORY_DAYS', 30)),
-            'price_drop_percentage': float(os.getenv('PRICE_DROP_PERCENTAGE', 10.0))
+            'price_drop_percentage': float(os.getenv('PRICE_DROP_PERCENTAGE', 10.0)),
+            'pairs_check_interval_minutes': int(os.getenv('PAIRS_CHECK_INTERVAL_MINUTES', 30))
         }
         self.is_running = False
 
     async def start(self):
         """Запуск периодической проверки торговых пар"""
         self.is_running = True
-        logger.info("Запуск фильтрации по цене")
+        logger.info("🔍 Запуск фильтрации торговых пар по цене")
         
         # Первоначальное обновление
         await self.update_watchlist()
@@ -32,16 +33,21 @@ class PriceFilter:
         # Периодическое обновление
         while self.is_running:
             try:
-                await asyncio.sleep(self.settings['price_check_interval_minutes'] * 60)
+                # Используем настройку из конфигурации
+                interval_minutes = self.settings['pairs_check_interval_minutes']
+                await asyncio.sleep(interval_minutes * 60)
+                
                 if self.is_running:
+                    logger.info(f"🔄 Периодическая проверка торговых пар (каждые {interval_minutes} мин)")
                     await self.update_watchlist()
             except Exception as e:
-                logger.error(f"Ошибка при обновлении watchlist: {e}")
+                logger.error(f"❌ Ошибка при обновлении watchlist: {e}")
                 await asyncio.sleep(60)  # Ждем минуту перед повторной попыткой
 
     async def stop(self):
         """Остановка фильтрации"""
         self.is_running = False
+        logger.info("🛑 Фильтрация торговых пар остановлена")
 
     async def get_perpetual_pairs(self) -> List[str]:
         """Получение списка бессрочных фьючерсных контрактов"""
@@ -60,10 +66,10 @@ class PriceFilter:
                         pairs.append(instrument['symbol'])
                 return pairs
             else:
-                logger.error(f"Ошибка получения пар: {data.get('retMsg')}")
+                logger.error(f"❌ Ошибка получения пар: {data.get('retMsg')}")
                 return []
         except Exception as e:
-            logger.error(f"Ошибка запроса пар: {e}")
+            logger.error(f"❌ Ошибка запроса пар: {e}")
             return []
 
     async def get_historical_price(self, symbol: str, days_ago: int) -> float:
@@ -86,7 +92,7 @@ class PriceFilter:
                 return float(data['result']['list'][0][4])  # Закрытие свечи
             return 0.0
         except Exception as e:
-            logger.error(f"Ошибка получения исторической цены для {symbol}: {e}")
+            logger.error(f"❌ Ошибка получения исторической цены для {symbol}: {e}")
             return 0.0
 
     async def get_current_price(self, symbol: str) -> float:
@@ -101,18 +107,20 @@ class PriceFilter:
                 return float(data['result']['list'][0]['lastPrice'])
             return 0.0
         except Exception as e:
-            logger.error(f"Ошибка получения текущей цены для {symbol}: {e}")
+            logger.error(f"❌ Ошибка получения текущей цены для {symbol}: {e}")
             return 0.0
 
     async def update_watchlist(self):
         """Обновление watchlist на основе критериев цены"""
         try:
-            logger.info("Начало обновления watchlist...")
+            logger.info("🔍 Начало обновления watchlist...")
             pairs = await self.get_perpetual_pairs()
             current_watchlist = await self.db_manager.get_watchlist()
             new_watchlist = []
+            added_count = 0
+            removed_count = 0
             
-            logger.info(f"Проверка {len(pairs)} торговых пар...")
+            logger.info(f"📊 Проверка {len(pairs)} торговых пар...")
 
             for i, symbol in enumerate(pairs):
                 try:
@@ -128,11 +136,8 @@ class PriceFilter:
                                 await self.db_manager.add_to_watchlist(
                                     symbol, price_drop, current_price, historical_price
                                 )
-                                logger.info(f"Добавлена пара {symbol} в watchlist (падение цены: {price_drop:.2f}%)")
-                        else:
-                            if symbol in current_watchlist:
-                                await self.db_manager.remove_from_watchlist(symbol)
-                                logger.info(f"Удалена пара {symbol} из watchlist (падение цены: {price_drop:.2f}%)")
+                                added_count += 1
+                                logger.info(f"➕ Добавлена пара {symbol} в watchlist (падение цены: {price_drop:.2f}%)")
 
                     # Задержка для избежания ограничений API
                     if i % 10 == 0:  # Каждые 10 запросов
@@ -141,17 +146,24 @@ class PriceFilter:
                         await asyncio.sleep(0.1)
                         
                 except Exception as e:
-                    logger.error(f"Ошибка обработки пары {symbol}: {e}")
+                    logger.error(f"❌ Ошибка обработки пары {symbol}: {e}")
                     continue
 
-            logger.info(f"Watchlist обновлен: {len(new_watchlist)} активных пар")
+            # Удаляем пары, которые больше не соответствуют критериям
+            for symbol in current_watchlist:
+                if symbol not in new_watchlist:
+                    await self.db_manager.remove_from_watchlist(symbol)
+                    removed_count += 1
+                    logger.info(f"➖ Удалена пара {symbol} из watchlist (не соответствует критериям)")
+
+            logger.info(f"✅ Watchlist обновлен: {len(new_watchlist)} активных пар (+{added_count}, -{removed_count})")
             return new_watchlist
             
         except Exception as e:
-            logger.error(f"Ошибка обновления watchlist: {e}")
+            logger.error(f"❌ Ошибка обновления watchlist: {e}")
             return []
 
     def update_settings(self, new_settings: Dict):
         """Обновление настроек фильтра"""
         self.settings.update(new_settings)
-        logger.info(f"Настройки фильтра обновлены: {self.settings}")
+        logger.info(f"⚙️ Настройки фильтра обновлены: {self.settings}")
