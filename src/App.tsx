@@ -14,13 +14,13 @@ import {
   Activity,
   Zap
 } from 'lucide-react';
-import ChartModal from './components/ChartModal';
+import ChartSelector from './components/ChartSelector';
 import SmartMoneyChartModal from './components/SmartMoneyChartModal';
 import WatchlistModal from './components/WatchlistModal';
 import StreamDataModal from './components/StreamDataModal';
 import SettingsModal from './components/SettingsModal';
 import { TimeZoneProvider } from './contexts/TimeZoneContext';
-import { formatTime, getTimezoneInfo } from './utils/timeUtils';
+import { formatTime } from './utils/timeUtils';
 
 interface Alert {
   id: number;
@@ -36,8 +36,8 @@ interface Alert {
   has_imbalance?: boolean;
   imbalance_data?: any;
   message: string;
-  timestamp: number | string;  // UTC timestamp в миллисекундах или ISO строка
-  close_timestamp?: number | string;
+  timestamp: string;
+  close_timestamp?: string;
   candle_data?: any;
   preliminary_alert?: Alert;
   order_book_snapshot?: any;
@@ -54,11 +54,8 @@ interface WatchlistItem {
   updated_at: string;
   data_info?: {
     total_candles: number;
-    missing_candles: number;
-    completeness_percentage: number;
     data_range_hours: number;
-    first_candle?: string;
-    last_candle?: string;
+    completeness_percentage: number;
   };
 }
 
@@ -68,7 +65,7 @@ interface StreamData {
   volume: number;
   volume_usdt: number;
   is_long: boolean;
-  timestamp: number | string;  // UTC timestamp в миллисекундах
+  timestamp: string;
   is_closed?: boolean;
 }
 
@@ -79,7 +76,7 @@ interface SmartMoneyAlert {
   direction: 'bullish' | 'bearish';
   strength: number;
   price: number;
-  timestamp: number | string;  // UTC timestamp в миллисекундах
+  timestamp: string;
   top?: number;
   bottom?: number;
   related_alert_id?: number;
@@ -88,11 +85,11 @@ interface SmartMoneyAlert {
 interface TimeSync {
   is_synced: boolean;
   last_sync?: string;
-  time_offset_ms?: number;
+  time_offset_ms: number;
   utc_time: number;
   utc_time_iso: string;
   sync_method: string;
-  serverTime: number;  // UTC timestamp в миллисекундах
+  serverTime?: number;
   status: string;
 }
 
@@ -127,6 +124,12 @@ interface Settings {
     enabled: boolean;
   };
   time_sync?: TimeSync;
+  subscriptions?: {
+    total_pairs: number;
+    subscribed_pairs: number;
+    pending_pairs: number;
+    subscription_rate: number;
+  };
 }
 
 const App: React.FC = () => {
@@ -247,36 +250,16 @@ const App: React.FC = () => {
       if (alertsResponse.ok) {
         const alertsData = await alertsResponse.json();
 
-        // Обновляем алерты с сортировкой по UTC timestamp
-        setVolumeAlerts((alertsData.volume_alerts || []).sort((a: Alert, b: Alert) => {
-          const timeA = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
-                       typeof a.timestamp === 'number' ? a.timestamp : 
-                       new Date(a.close_timestamp || a.timestamp).getTime();
-          const timeB = typeof b.close_timestamp === 'number' ? b.close_timestamp : 
-                       typeof b.timestamp === 'number' ? b.timestamp : 
-                       new Date(b.close_timestamp || b.timestamp).getTime();
-          return timeB - timeA;
-        }));
-        
-        setConsecutiveAlerts((alertsData.consecutive_alerts || []).sort((a: Alert, b: Alert) => {
-          const timeA = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
-                       typeof a.timestamp === 'number' ? a.timestamp : 
-                       new Date(a.close_timestamp || a.timestamp).getTime();
-          const timeB = typeof b.close_timestamp === 'number' ? b.close_timestamp : 
-                       typeof b.timestamp === 'number' ? b.timestamp : 
-                       new Date(b.close_timestamp || b.timestamp).getTime();
-          return timeB - timeA;
-        }));
-        
-        setPriorityAlerts((alertsData.priority_alerts || []).sort((a: Alert, b: Alert) => {
-          const timeA = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
-                       typeof a.timestamp === 'number' ? a.timestamp : 
-                       new Date(a.close_timestamp || a.timestamp).getTime();
-          const timeB = typeof b.close_timestamp === 'number' ? b.close_timestamp : 
-                       typeof b.timestamp === 'number' ? b.timestamp : 
-                       new Date(b.close_timestamp || b.timestamp).getTime();
-          return timeB - timeA;
-        }));
+        // Обновляем алерты с сортировкой
+        setVolumeAlerts((alertsData.volume_alerts || []).sort((a: Alert, b: Alert) =>
+          new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
+        ));
+        setConsecutiveAlerts((alertsData.consecutive_alerts || []).sort((a: Alert, b: Alert) =>
+          new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
+        ));
+        setPriorityAlerts((alertsData.priority_alerts || []).sort((a: Alert, b: Alert) =>
+          new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
+        ));
 
         console.log('Данные обновлены:', {
           volume: alertsData.volume_alerts?.length || 0,
@@ -342,36 +325,16 @@ const App: React.FC = () => {
       const alertsResponse = await fetch('/api/alerts/all');
       if (alertsResponse.ok) {
         const alertsData = await alertsResponse.json();
-        // Сортируем по UTC timestamp (новые сверху)
-        setVolumeAlerts((alertsData.volume_alerts || []).sort((a: Alert, b: Alert) => {
-          const timeA = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
-                       typeof a.timestamp === 'number' ? a.timestamp : 
-                       new Date(a.close_timestamp || a.timestamp).getTime();
-          const timeB = typeof b.close_timestamp === 'number' ? b.close_timestamp : 
-                       typeof b.timestamp === 'number' ? b.timestamp : 
-                       new Date(b.close_timestamp || b.timestamp).getTime();
-          return timeB - timeA;
-        }));
-        
-        setConsecutiveAlerts((alertsData.consecutive_alerts || []).sort((a: Alert, b: Alert) => {
-          const timeA = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
-                       typeof a.timestamp === 'number' ? a.timestamp : 
-                       new Date(a.close_timestamp || a.timestamp).getTime();
-          const timeB = typeof b.close_timestamp === 'number' ? b.close_timestamp : 
-                       typeof b.timestamp === 'number' ? b.timestamp : 
-                       new Date(b.close_timestamp || b.timestamp).getTime();
-          return timeB - timeA;
-        }));
-        
-        setPriorityAlerts((alertsData.priority_alerts || []).sort((a: Alert, b: Alert) => {
-          const timeA = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
-                       typeof a.timestamp === 'number' ? a.timestamp : 
-                       new Date(a.close_timestamp || a.timestamp).getTime();
-          const timeB = typeof b.close_timestamp === 'number' ? b.close_timestamp : 
-                       typeof b.timestamp === 'number' ? b.timestamp : 
-                       new Date(b.close_timestamp || b.timestamp).getTime();
-          return timeB - timeA;
-        }));
+        // Сортируем по времени закрытия (новые сверху)
+        setVolumeAlerts((alertsData.volume_alerts || []).sort((a: Alert, b: Alert) =>
+          new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
+        ));
+        setConsecutiveAlerts((alertsData.consecutive_alerts || []).sort((a: Alert, b: Alert) =>
+          new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
+        ));
+        setPriorityAlerts((alertsData.priority_alerts || []).sort((a: Alert, b: Alert) =>
+          new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
+        ));
 
         console.log('Алерты загружены:', {
           volume: alertsData.volume_alerts?.length || 0,
@@ -503,79 +466,43 @@ const App: React.FC = () => {
             if (existing) {
               // Обновляем существующий алерт
               const updated = prev.map(a => a.id === alert.id ? alert : a);
-              return updated.sort((a, b) => {
-                const timeA = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
-                             typeof a.timestamp === 'number' ? a.timestamp : 
-                             new Date(a.close_timestamp || a.timestamp).getTime();
-                const timeB = typeof b.close_timestamp === 'number' ? b.close_timestamp : 
-                             typeof b.timestamp === 'number' ? b.timestamp : 
-                             new Date(b.close_timestamp || b.timestamp).getTime();
-                return timeB - timeA;
-              });
+              return updated.sort((a, b) =>
+                new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
+              );
             }
             // Добавляем новый алерт
             const newList = [alert, ...prev].slice(0, 100);
-            return newList.sort((a, b) => {
-              const timeA = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
-                           typeof a.timestamp === 'number' ? a.timestamp : 
-                           new Date(a.close_timestamp || a.timestamp).getTime();
-              const timeB = typeof b.close_timestamp === 'number' ? b.close_timestamp : 
-                           typeof b.timestamp === 'number' ? b.timestamp : 
-                           new Date(b.close_timestamp || b.timestamp).getTime();
-              return timeB - timeA;
-            });
+            return newList.sort((a, b) =>
+              new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
+            );
           });
         } else if (alert.alert_type === 'consecutive_long') {
           setConsecutiveAlerts(prev => {
             const existing = prev.find(a => a.id === alert.id);
             if (existing) {
               const updated = prev.map(a => a.id === alert.id ? alert : a);
-              return updated.sort((a, b) => {
-                const timeA = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
-                             typeof a.timestamp === 'number' ? a.timestamp : 
-                             new Date(a.close_timestamp || a.timestamp).getTime();
-                const timeB = typeof b.close_timestamp === 'number' ? b.close_timestamp : 
-                             typeof b.timestamp === 'number' ? b.timestamp : 
-                             new Date(b.close_timestamp || b.timestamp).getTime();
-                return timeB - timeA;
-              });
+              return updated.sort((a, b) =>
+                new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
+              );
             }
             const newList = [alert, ...prev].slice(0, 100);
-            return newList.sort((a, b) => {
-              const timeA = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
-                           typeof a.timestamp === 'number' ? a.timestamp : 
-                           new Date(a.close_timestamp || a.timestamp).getTime();
-              const timeB = typeof b.close_timestamp === 'number' ? b.close_timestamp : 
-                           typeof b.timestamp === 'number' ? b.timestamp : 
-                           new Date(b.close_timestamp || b.timestamp).getTime();
-              return timeB - timeA;
-            });
+            return newList.sort((a, b) =>
+              new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
+            );
           });
         } else if (alert.alert_type === 'priority') {
           setPriorityAlerts(prev => {
             const existing = prev.find(a => a.id === alert.id);
             if (existing) {
               const updated = prev.map(a => a.id === alert.id ? alert : a);
-              return updated.sort((a, b) => {
-                const timeA = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
-                             typeof a.timestamp === 'number' ? a.timestamp : 
-                             new Date(a.close_timestamp || a.timestamp).getTime();
-                const timeB = typeof b.close_timestamp === 'number' ? b.close_timestamp : 
-                             typeof b.timestamp === 'number' ? b.timestamp : 
-                             new Date(b.close_timestamp || b.timestamp).getTime();
-                return timeB - timeA;
-              });
+              return updated.sort((a, b) =>
+                new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
+              );
             }
             const newList = [alert, ...prev].slice(0, 100);
-            return newList.sort((a, b) => {
-              const timeA = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
-                           typeof a.timestamp === 'number' ? a.timestamp : 
-                           new Date(a.close_timestamp || a.timestamp).getTime();
-              const timeB = typeof b.close_timestamp === 'number' ? b.close_timestamp : 
-                           typeof b.timestamp === 'number' ? b.timestamp : 
-                           new Date(b.close_timestamp || b.timestamp).getTime();
-              return timeB - timeA;
-            });
+            return newList.sort((a, b) =>
+              new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
+            );
           });
         }
 
@@ -605,7 +532,7 @@ const App: React.FC = () => {
           volume: parseFloat(data.data.volume),
           volume_usdt: parseFloat(data.data.volume) * parseFloat(data.data.close),
           is_long: parseFloat(data.data.close) > parseFloat(data.data.open),
-          timestamp: data.server_timestamp || Date.now(),  // Используем server_timestamp в UTC
+          timestamp: data.timestamp,
           is_closed: data.is_closed || false
         };
 
@@ -635,6 +562,21 @@ const App: React.FC = () => {
           failedCount: data.failed_count,
           totalPairs: data.pairs_count
         });
+        break;
+
+      case 'subscription_updated':
+        // Обновление подписок
+        console.log('📡 Подписки обновлены:', {
+          total: data.total_pairs,
+          subscribed: data.subscribed_pairs,
+          new: data.new_pairs?.length || 0,
+          removed: data.removed_pairs?.length || 0
+        });
+        
+        setConnectionInfo(prev => ({
+          ...prev,
+          subscribedCount: data.subscribed_pairs || prev.subscribedCount
+        }));
         break;
 
       case 'watchlist_updated':
@@ -744,7 +686,7 @@ const App: React.FC = () => {
       return { color: 'text-yellow-500', text: 'Не синхронизировано', icon: '🟡' };
     }
 
-    return { color: 'text-green-500', text: 'Синхронизировано UTC', icon: '🟢' };
+    return { color: 'text-green-500', text: 'Синхронизировано', icon: '🟢' };
   };
 
   const formatLocalTime = (date: Date) => {
@@ -762,6 +704,19 @@ const App: React.FC = () => {
       month: '2-digit',
       day: '2-digit'
     });
+  };
+
+  const getTimezoneInfo = () => {
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const offset = new Date().getTimezoneOffset();
+    const offsetHours = Math.abs(Math.floor(offset / 60));
+    const offsetMinutes = Math.abs(offset % 60);
+    const offsetSign = offset <= 0 ? '+' : '-';
+
+    return {
+      timezone,
+      offsetString: `UTC${offsetSign}${offsetHours.toString().padStart(2, '0')}:${offsetMinutes.toString().padStart(2, '0')}`
+    };
   };
 
   const getConnectionStatusIcon = () => {
@@ -982,24 +937,31 @@ const App: React.FC = () => {
 
       {/* Информация о данных */}
       {item.data_info && (
-        <div className="mt-3 p-3 bg-gray-50 rounded-lg">
-          <div className="text-sm font-medium text-gray-700 mb-2">Данные в базе:</div>
-          <div className="grid grid-cols-2 gap-2 text-xs text-gray-600">
-            <div>Свечей: {item.data_info.total_candles}</div>
-            <div>Пропущено: {item.data_info.missing_candles}</div>
-            <div>Полнота: {item.data_info.completeness_percentage.toFixed(1)}%</div>
-            <div>Период: {item.data_info.data_range_hours.toFixed(1)}ч</div>
-          </div>
-          {item.data_info.first_candle && item.data_info.last_candle && (
-            <div className="mt-2 text-xs text-gray-500">
-              <div>От: {formatTime(item.data_info.first_candle, 'local', { includeSeconds: false })}</div>
-              <div>До: {formatTime(item.data_info.last_candle, 'local', { includeSeconds: false })}</div>
+        <div className="bg-gray-50 rounded-lg p-3 mb-3">
+          <div className="text-xs text-gray-600 mb-1">Данные в системе:</div>
+          <div className="grid grid-cols-3 gap-2 text-xs">
+            <div>
+              <span className="text-gray-500">Свечей:</span>
+              <div className="font-semibold">{item.data_info.total_candles}</div>
             </div>
-          )}
+            <div>
+              <span className="text-gray-500">Период:</span>
+              <div className="font-semibold">{item.data_info.data_range_hours.toFixed(1)}ч</div>
+            </div>
+            <div>
+              <span className="text-gray-500">Полнота:</span>
+              <div className={`font-semibold ${
+                item.data_info.completeness_percentage >= 90 ? 'text-green-600' :
+                item.data_info.completeness_percentage >= 70 ? 'text-yellow-600' : 'text-red-600'
+              }`}>
+                {item.data_info.completeness_percentage.toFixed(0)}%
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
-      <div className="mt-3 pt-3 border-t border-gray-200 text-xs text-gray-500">
+      <div className="text-xs text-gray-500">
         Обновлено: {formatTime(item.updated_at, 'local')}
       </div>
     </div>
@@ -1334,7 +1296,7 @@ const App: React.FC = () => {
 
         {/* Modals */}
         {selectedAlert && (
-          <ChartModal
+          <ChartSelector
             alert={selectedAlert}
             onClose={() => setSelectedAlert(null)}
           />
