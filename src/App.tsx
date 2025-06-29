@@ -129,7 +129,7 @@ function App() {
   const [streamData, setStreamData] = useState<StreamData[]>([]);
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
   const [favorites, setFavorites] = useState<FavoriteItem[]>([]);
-  const [activeTab, setActiveTab] = useState<'volume' | 'consecutive' | 'priority' | 'favorites'>('volume');
+  const [activeTab, setActiveTab] = useState<'volume' | 'consecutive' | 'priority' | 'smart_money' | 'favorites'>('volume');
   const [socialRatings, setSocialRatings] = useState<{[symbol: string]: SocialRating}>({});
   const [loadingRatings, setLoadingRatings] = useState<{[symbol: string]: boolean}>({});
   
@@ -644,6 +644,19 @@ function App() {
     );
   };
 
+  // Получаем Smart Money алерты (алерты с имбалансом)
+  const getSmartMoneyAlerts = () => {
+    const allAlerts = [
+      ...alerts.volume_alerts,
+      ...alerts.consecutive_alerts,
+      ...alerts.priority_alerts
+    ];
+    
+    return allAlerts.filter(alert => alert.has_imbalance);
+  };
+
+  const smartMoneyAlerts = getSmartMoneyAlerts();
+
   // Запрашиваем разрешение на уведомления
   useEffect(() => {
     if (Notification.permission === 'default') {
@@ -744,11 +757,11 @@ function App() {
             <div className="bg-white rounded-lg shadow p-6">
               <div className="flex items-center">
                 <div className="flex-shrink-0">
-                  <Heart className="w-8 h-8 text-yellow-600" />
+                  <Brain className="w-8 h-8 text-purple-600" />
                 </div>
                 <div className="ml-4">
-                  <p className="text-sm font-medium text-gray-600">Избранных</p>
-                  <p className="text-2xl font-bold text-gray-900">{stats.favorites_count}</p>
+                  <p className="text-sm font-medium text-gray-600">Smart Money</p>
+                  <p className="text-2xl font-bold text-gray-900">{smartMoneyAlerts.length}</p>
                 </div>
               </div>
             </div>
@@ -756,7 +769,7 @@ function App() {
             <div className="bg-white rounded-lg shadow p-6">
               <div className="flex items-center">
                 <div className="flex-shrink-0">
-                  <MessageCircle className="w-8 h-8 text-purple-600" />
+                  <MessageCircle className="w-8 h-8 text-orange-600" />
                 </div>
                 <div className="ml-4">
                   <p className="text-sm font-medium text-gray-600">Социальных упоминаний</p>
@@ -778,6 +791,7 @@ function App() {
               { id: 'volume', label: 'Объем', count: alerts.volume_alerts.length, icon: TrendingUp },
               { id: 'consecutive', label: 'Последовательность', count: alerts.consecutive_alerts.length, icon: BarChart3 },
               { id: 'priority', label: 'Приоритет', count: alerts.priority_alerts.length, icon: Star },
+              { id: 'smart_money', label: 'Smart Money', count: smartMoneyAlerts.length, icon: Brain },
               { id: 'favorites', label: 'Избранное', count: favorites.length, icon: Heart }
             ].map((tab) => (
               <button
@@ -872,6 +886,39 @@ function App() {
               <div className="text-center py-12 text-gray-500">
                 <Star className="w-12 h-12 mx-auto mb-4 text-gray-300" />
                 <p>Нет приоритетных алертов</p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'smart_money' && (
+          <div>
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h2 className="text-2xl font-bold text-gray-900">Smart Money Concepts</h2>
+                <p className="text-gray-600">Сигналы на основе концепций институциональной торговли</p>
+              </div>
+            </div>
+            
+            <div className="space-y-4">
+              {smartMoneyAlerts.map(renderAlertCard)}
+            </div>
+            
+            {smartMoneyAlerts.length === 0 && (
+              <div className="text-center py-12 text-gray-500">
+                <Brain className="w-12 h-12 mx-auto mb-4 text-gray-300" />
+                <h3 className="text-lg font-medium text-gray-900 mb-2">Нет Smart Money сигналов</h3>
+                <p className="text-gray-500 mb-4">
+                  Smart Money сигналы появляются при обнаружении имбалансов: Fair Value Gaps, Order Blocks, Breaker Blocks
+                </p>
+                <div className="bg-purple-50 p-4 rounded-lg max-w-md mx-auto">
+                  <h4 className="font-medium text-purple-900 mb-2">🧠 Что такое Smart Money?</h4>
+                  <ul className="text-sm text-purple-700 space-y-1 text-left">
+                    <li>• <strong>Fair Value Gap</strong> - разрывы в ценах между свечами</li>
+                    <li>• <strong>Order Block</strong> - зоны накопления институциональных заявок</li>
+                    <li>• <strong>Breaker Block</strong> - пробитые уровни поддержки/сопротивления</li>
+                  </ul>
+                </div>
               </div>
             )}
           </div>
