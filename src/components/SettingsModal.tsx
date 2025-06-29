@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Save, RefreshCw } from 'lucide-react';
+import { X, Save, RefreshCw, DollarSign, Settings as SettingsIcon, Shield, AlertTriangle } from 'lucide-react';
 
 interface Settings {
   volume_analyzer: {
@@ -33,6 +33,20 @@ interface Settings {
   telegram: {
     enabled: boolean;
   };
+  trading: {
+    account_balance: number;
+    max_risk_per_trade: number;
+    max_open_trades: number;
+    default_stop_loss_percentage: number;
+    default_take_profit_percentage: number;
+    auto_calculate_quantity: boolean;
+    api_key?: string;
+    api_secret?: string;
+    enable_real_trading?: boolean;
+    default_leverage?: number;
+    default_margin_type?: 'isolated' | 'cross';
+    confirm_trades?: boolean;
+  };
 }
 
 interface SettingsModalProps {
@@ -44,7 +58,10 @@ interface SettingsModalProps {
 const SettingsModal: React.FC<SettingsModalProps> = ({ settings, onClose, onSave }) => {
   const [localSettings, setLocalSettings] = useState<Settings | null>(null);
   const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<'volume' | 'alerts' | 'imbalance' | 'orderbook'>('volume');
+  const [activeTab, setActiveTab] = useState<'volume' | 'alerts' | 'imbalance' | 'orderbook' | 'trading'>('volume');
+  const [showApiSecret, setShowApiSecret] = useState(false);
+  const [testApiStatus, setTestApiStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [testApiMessage, setTestApiMessage] = useState('');
 
   useEffect(() => {
     if (settings) {
@@ -85,6 +102,19 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ settings, onClose, onSave
         telegram: {
           enabled: false,
           ...settings.telegram
+        },
+        trading: {
+          account_balance: 10000,
+          max_risk_per_trade: 2,
+          max_open_trades: 5,
+          default_stop_loss_percentage: 2,
+          default_take_profit_percentage: 6,
+          auto_calculate_quantity: true,
+          enable_real_trading: false,
+          default_leverage: 1,
+          default_margin_type: 'isolated',
+          confirm_trades: true,
+          ...settings.trading
         }
       };
       
@@ -163,6 +193,55 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ settings, onClose, onSave
     });
   };
 
+  const updateTradingSettings = (key: string, value: any) => {
+    if (!localSettings) return;
+    setLocalSettings({
+      ...localSettings,
+      trading: {
+        ...localSettings.trading,
+        [key]: value
+      }
+    });
+  };
+
+  const testApiConnection = async () => {
+    if (!localSettings?.trading.api_key || !localSettings?.trading.api_secret) {
+      setTestApiStatus('error');
+      setTestApiMessage('API ключ и секрет должны быть заполнены');
+      return;
+    }
+
+    setTestApiStatus('loading');
+    setTestApiMessage('Проверка подключения...');
+
+    try {
+      const response = await fetch('/api/trading/test-connection', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          api_key: localSettings.trading.api_key,
+          api_secret: localSettings.trading.api_secret
+        }),
+      });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        setTestApiStatus('success');
+        setTestApiMessage(`Подключение успешно! Баланс: $${data.balance.toFixed(2)}`);
+      } else {
+        setTestApiStatus('error');
+        setTestApiMessage(`Ошибка: ${data.error || 'Не удалось подключиться к API'}`);
+      }
+    } catch (error) {
+      console.error('Ошибка проверки API:', error);
+      setTestApiStatus('error');
+      setTestApiMessage('Ошибка соединения с сервером');
+    }
+  };
+
   if (!localSettings) {
     return (
       <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
@@ -197,7 +276,8 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ settings, onClose, onSave
               { id: 'volume', label: 'Анализ объемов' },
               { id: 'alerts', label: 'Алерты' },
               { id: 'imbalance', label: 'Smart Money' },
-              { id: 'orderbook', label: 'Стакан заявок' }
+              { id: 'orderbook', label: 'Стакан заявок' },
+              { id: 'trading', label: 'Торговля' }
             ].map((tab) => (
               <button
                 key={tab.id}
@@ -616,6 +696,279 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ settings, onClose, onSave
                   <li>• Анализ дисбаланса спроса и предложения</li>
                   <li>• Дополнительный контекст для принятия решений</li>
                 </ul>
+              </div>
+            </div>
+          )}
+
+          {/* Trading Settings */}
+          {activeTab === 'trading' && (
+            <div className="space-y-6">
+              <h3 className="text-lg font-semibold text-gray-900">Настройки торговли</h3>
+              
+              <div className="p-4 bg-green-50 rounded-lg mb-6">
+                <h4 className="font-medium text-green-900 mb-2 flex items-center">
+                  <DollarSign className="w-5 h-5 mr-2" />
+                  Настройки торговли
+                </h4>
+                <p className="text-sm text-green-700">
+                  Настройте параметры бумажной и реальной торговли. Бумажная торговля позволяет практиковаться без риска реальных денег.
+                </p>
+              </div>
+              
+              {/* Бумажная торговля */}
+              <div className="border border-gray-200 rounded-lg p-4">
+                <h4 className="font-medium text-gray-900 mb-4">Бумажная торговля</h4>
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Баланс аккаунта
+                    </label>
+                    <div className="relative">
+                      <span className="absolute left-3 top-2 text-gray-500">$</span>
+                      <input
+                        type="number"
+                        step="1"
+                        min="100"
+                        value={localSettings.trading.account_balance}
+                        onChange={(e) => updateTradingSettings('account_balance', parseFloat(e.target.value))}
+                        className="w-full border border-gray-300 rounded-lg pl-8 pr-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      />
+                    </div>
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Максимальный риск на сделку (%)
+                    </label>
+                    <div className="relative">
+                      <input
+                        type="number"
+                        step="0.1"
+                        min="0.1"
+                        max="100"
+                        value={localSettings.trading.max_risk_per_trade}
+                        onChange={(e) => updateTradingSettings('max_risk_per_trade', parseFloat(e.target.value))}
+                        className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      />
+                      <span className="absolute right-3 top-2 text-gray-500">%</span>
+                    </div>
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Максимум открытых сделок
+                    </label>
+                    <input
+                      type="number"
+                      step="1"
+                      min="1"
+                      max="100"
+                      value={localSettings.trading.max_open_trades}
+                      onChange={(e) => updateTradingSettings('max_open_trades', parseInt(e.target.value))}
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    />
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Стоп-лосс по умолчанию (%)
+                    </label>
+                    <div className="relative">
+                      <input
+                        type="number"
+                        step="0.1"
+                        min="0.1"
+                        max="50"
+                        value={localSettings.trading.default_stop_loss_percentage}
+                        onChange={(e) => updateTradingSettings('default_stop_loss_percentage', parseFloat(e.target.value))}
+                        className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      />
+                      <span className="absolute right-3 top-2 text-gray-500">%</span>
+                    </div>
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Тейк-профит по умолчанию (%)
+                    </label>
+                    <div className="relative">
+                      <input
+                        type="number"
+                        step="0.1"
+                        min="0.1"
+                        max="100"
+                        value={localSettings.trading.default_take_profit_percentage}
+                        onChange={(e) => updateTradingSettings('default_take_profit_percentage', parseFloat(e.target.value))}
+                        className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      />
+                      <span className="absolute right-3 top-2 text-gray-500">%</span>
+                    </div>
+                  </div>
+                  
+                  <div className="flex items-center space-x-3 pt-2">
+                    <input
+                      type="checkbox"
+                      id="auto_calculate"
+                      checked={localSettings.trading.auto_calculate_quantity}
+                      onChange={(e) => updateTradingSettings('auto_calculate_quantity', e.target.checked)}
+                      className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                    />
+                    <label htmlFor="auto_calculate" className="text-sm text-gray-700">
+                      Автоматически рассчитывать количество на основе риска
+                    </label>
+                  </div>
+                </div>
+              </div>
+              
+              {/* Реальная торговля */}
+              <div className="border border-gray-200 rounded-lg p-4">
+                <div className="flex items-center justify-between mb-4">
+                  <h4 className="font-medium text-gray-900">Реальная торговля</h4>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={localSettings.trading.enable_real_trading}
+                      onChange={(e) => updateTradingSettings('enable_real_trading', e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-red-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-red-600"></div>
+                  </label>
+                </div>
+                
+                {localSettings.trading.enable_real_trading && (
+                  <div className="bg-red-50 p-4 rounded-lg mb-4">
+                    <div className="flex items-start space-x-3">
+                      <AlertTriangle className="w-5 h-5 text-red-600 mt-0.5" />
+                      <div>
+                        <h5 className="font-medium text-red-900">Внимание! Реальная торговля включена</h5>
+                        <p className="text-sm text-red-700 mt-1">
+                          Вы включили режим реальной торговли с использованием API ключей. 
+                          Это означает, что система сможет открывать и закрывать сделки с реальными деньгами.
+                          Убедитесь, что вы понимаете риски и правильно настроили параметры торговли.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      API ключ Bybit
+                    </label>
+                    <input
+                      type="text"
+                      value={localSettings.trading.api_key || ''}
+                      onChange={(e) => updateTradingSettings('api_key', e.target.value)}
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      placeholder="Введите API ключ"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">API ключ от вашего аккаунта Bybit</p>
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      API секрет Bybit
+                    </label>
+                    <div className="relative">
+                      <input
+                        type={showApiSecret ? "text" : "password"}
+                        value={localSettings.trading.api_secret || ''}
+                        onChange={(e) => updateTradingSettings('api_secret', e.target.value)}
+                        className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                        placeholder="Введите API секрет"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowApiSecret(!showApiSecret)}
+                        className="absolute right-3 top-2 text-gray-500 hover:text-gray-700"
+                      >
+                        {showApiSecret ? 'Скрыть' : 'Показать'}
+                      </button>
+                    </div>
+                    <p className="text-xs text-gray-500 mt-1">API секрет от вашего аккаунта Bybit</p>
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Кредитное плечо по умолчанию
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="100"
+                      value={localSettings.trading.default_leverage || 1}
+                      onChange={(e) => updateTradingSettings('default_leverage', parseInt(e.target.value))}
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">Кредитное плечо для новых сделок</p>
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Тип маржи по умолчанию
+                    </label>
+                    <select
+                      value={localSettings.trading.default_margin_type || 'isolated'}
+                      onChange={(e) => updateTradingSettings('default_margin_type', e.target.value)}
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    >
+                      <option value="isolated">Изолированная</option>
+                      <option value="cross">Кросс</option>
+                    </select>
+                    <p className="text-xs text-gray-500 mt-1">Тип маржи для новых сделок</p>
+                  </div>
+                </div>
+                
+                <div className="mt-4 flex items-center space-x-3">
+                  <input
+                    type="checkbox"
+                    id="confirm_trades"
+                    checked={localSettings.trading.confirm_trades}
+                    onChange={(e) => updateTradingSettings('confirm_trades', e.target.checked)}
+                    className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                  />
+                  <label htmlFor="confirm_trades" className="text-sm text-gray-700">
+                    Запрашивать подтверждение перед открытием реальных сделок
+                  </label>
+                </div>
+                
+                {/* Тест API подключения */}
+                <div className="mt-4">
+                  <button
+                    onClick={testApiConnection}
+                    disabled={!localSettings.trading.api_key || !localSettings.trading.api_secret || testApiStatus === 'loading'}
+                    className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white px-4 py-2 rounded-lg transition-colors"
+                  >
+                    {testApiStatus === 'loading' ? (
+                      <RefreshCw className="w-5 h-5 animate-spin" />
+                    ) : (
+                      <Shield className="w-5 h-5" />
+                    )}
+                    <span>Проверить API подключение</span>
+                  </button>
+                  
+                  {testApiStatus !== 'idle' && (
+                    <div className={`mt-3 p-3 rounded-lg ${
+                      testApiStatus === 'success' ? 'bg-green-50 text-green-700' : 
+                      testApiStatus === 'error' ? 'bg-red-50 text-red-700' : 
+                      'bg-blue-50 text-blue-700'
+                    }`}>
+                      {testApiMessage}
+                    </div>
+                  )}
+                </div>
+                
+                <div className="mt-4 p-4 bg-yellow-50 rounded-lg">
+                  <h5 className="font-medium text-yellow-900 mb-2">⚠️ Важная информация о безопасности</h5>
+                  <ul className="text-sm text-yellow-700 space-y-1">
+                    <li>• API ключи хранятся только на вашем устройстве и не передаются третьим лицам</li>
+                    <li>• Рекомендуется создать отдельный API ключ с ограниченными правами только для торговли</li>
+                    <li>• Не включайте права на вывод средств в настройках API ключа</li>
+                    <li>• Ограничьте доступ API ключа по IP-адресу для дополнительной безопасности</li>
+                  </ul>
+                </div>
               </div>
             </div>
           )}
