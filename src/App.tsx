@@ -12,7 +12,6 @@ import {
   ExternalLink,
   Star,
   MessageCircle,
-  Users,
   ThumbsUp,
   ThumbsDown,
   Minus
@@ -387,18 +386,6 @@ function App() {
     );
   };
 
-  const getSocialRatingTooltip = (symbol: string) => {
-    const rating = socialRatings[symbol];
-    if (!rating) return '';
-
-    return `Социальный рейтинг: ${rating.overall_score.toFixed(1)}/100
-Упоминаний: ${rating.mention_count}
-Позитивных: ${rating.positive_mentions}
-Негативных: ${rating.negative_mentions}
-Тренд: ${rating.sentiment_trend}
-Обновлено: ${formatTime(rating.last_updated, timeZone)}`;
-  };
-
   const renderAlertCard = (alert: Alert) => (
     <div 
       key={alert.id} 
@@ -517,7 +504,7 @@ function App() {
                     <span className="font-medium">{mention.platform}</span>
                     <span className="text-gray-500">@{mention.author}</span>
                     <div className="flex items-center space-x-1">
-                      <Users className="w-3 h-3" />
+                      <MessageCircle className="w-3 h-3" />
                       <span>{mention.engagement}</span>
                     </div>
                   </div>
