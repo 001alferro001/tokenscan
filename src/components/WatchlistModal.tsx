@@ -1,28 +1,38 @@
 import React, { useState } from 'react';
-import { X, Plus, Trash2, Edit, Save, Ambulance as Cancel } from 'lucide-react';
+import { X, Plus, Trash2, Edit, Save, Ambulance as Cancel, Heart, HeartOff } from 'lucide-react';
 
 interface WatchlistItem {
   id: number;
   symbol: string;
   is_active: boolean;
+  is_favorite: boolean;
   price_drop_percentage?: number;
   current_price?: number;
   historical_price?: number;
   created_at: string;
   updated_at: string;
+  notes?: string;
+  color?: string;
 }
 
 interface WatchlistModalProps {
   watchlist: WatchlistItem[];
   onClose: () => void;
   onUpdate: () => void;
+  onToggleFavorite: (symbol: string, isFavorite: boolean) => void;
 }
 
-const WatchlistModal: React.FC<WatchlistModalProps> = ({ watchlist, onClose, onUpdate }) => {
+const WatchlistModal: React.FC<WatchlistModalProps> = ({ 
+  watchlist, 
+  onClose, 
+  onUpdate, 
+  onToggleFavorite 
+}) => {
   const [newSymbol, setNewSymbol] = useState('');
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editingSymbol, setEditingSymbol] = useState('');
   const [loading, setLoading] = useState(false);
+  const [filter, setFilter] = useState<'all' | 'active' | 'inactive' | 'favorites'>('all');
 
   const addSymbol = async () => {
     if (!newSymbol.trim()) return;
@@ -147,6 +157,23 @@ const WatchlistModal: React.FC<WatchlistModalProps> = ({ watchlist, onClose, onU
     }
   };
 
+  const toggleFavorite = async (item: WatchlistItem) => {
+    try {
+      await onToggleFavorite(item.symbol, item.is_favorite);
+    } catch (error) {
+      console.error('Ошибка переключения избранного:', error);
+      alert('Ошибка переключения избранного');
+    }
+  };
+
+  // Фильтрация списка
+  const filteredWatchlist = watchlist.filter(item => {
+    if (filter === 'active') return item.is_active;
+    if (filter === 'inactive') return !item.is_active;
+    if (filter === 'favorites') return item.is_favorite;
+    return true; // 'all'
+  });
+
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
       <div className="bg-gray-800 rounded-lg w-full max-w-4xl max-h-[90vh] flex flex-col">
@@ -183,15 +210,61 @@ const WatchlistModal: React.FC<WatchlistModalProps> = ({ watchlist, onClose, onU
           </div>
         </div>
 
+        {/* Filters */}
+        <div className="p-4 border-b border-gray-700 bg-gray-750">
+          <div className="flex space-x-2">
+            <button
+              onClick={() => setFilter('all')}
+              className={`px-3 py-1 rounded-lg text-sm ${
+                filter === 'all' 
+                  ? 'bg-blue-600 text-white' 
+                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+              }`}
+            >
+              Все ({watchlist.length})
+            </button>
+            <button
+              onClick={() => setFilter('active')}
+              className={`px-3 py-1 rounded-lg text-sm ${
+                filter === 'active' 
+                  ? 'bg-green-600 text-white' 
+                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+              }`}
+            >
+              Активные ({watchlist.filter(w => w.is_active).length})
+            </button>
+            <button
+              onClick={() => setFilter('inactive')}
+              className={`px-3 py-1 rounded-lg text-sm ${
+                filter === 'inactive' 
+                  ? 'bg-red-600 text-white' 
+                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+              }`}
+            >
+              Неактивные ({watchlist.filter(w => !w.is_active).length})
+            </button>
+            <button
+              onClick={() => setFilter('favorites')}
+              className={`px-3 py-1 rounded-lg text-sm ${
+                filter === 'favorites' 
+                  ? 'bg-yellow-600 text-white' 
+                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+              }`}
+            >
+              Избранные ({watchlist.filter(w => w.is_favorite).length})
+            </button>
+          </div>
+        </div>
+
         {/* Watchlist */}
         <div className="flex-1 overflow-y-auto p-6">
-          {watchlist.length === 0 ? (
+          {filteredWatchlist.length === 0 ? (
             <div className="text-center py-12 text-gray-400">
               <p>Нет торговых пар в списке</p>
             </div>
           ) : (
             <div className="space-y-3">
-              {watchlist.map((item) => (
+              {filteredWatchlist.map((item) => (
                 <div key={item.id} className="bg-gray-700 rounded-lg p-4 flex items-center justify-between">
                   <div className="flex items-center space-x-4">
                     <button
@@ -211,11 +284,14 @@ const WatchlistModal: React.FC<WatchlistModalProps> = ({ watchlist, onClose, onU
                         onKeyPress={(e) => e.key === 'Enter' && saveEdit()}
                       />
                     ) : (
-                      <div>
+                      <div className="flex items-center space-x-2">
                         <span className="font-semibold text-white">{item.symbol}</span>
-                        <span className="ml-2 text-sm text-gray-400">
+                        <span className="text-sm text-gray-400">
                           {item.is_active ? 'Активна' : 'Неактивна'}
                         </span>
+                        {item.is_favorite && (
+                          <Heart className="w-4 h-4 text-yellow-500 fill-yellow-500" />
+                        )}
                       </div>
                     )}
                   </div>
@@ -235,6 +311,24 @@ const WatchlistModal: React.FC<WatchlistModalProps> = ({ watchlist, onClose, onU
                     )}
 
                     <div className="flex items-center space-x-2">
+                      {/* Кнопка избранного */}
+                      <button
+                        onClick={() => toggleFavorite(item)}
+                        disabled={loading}
+                        className={`p-1 ${
+                          item.is_favorite 
+                            ? 'text-yellow-400 hover:text-yellow-300' 
+                            : 'text-gray-400 hover:text-yellow-400'
+                        }`}
+                        title={item.is_favorite ? "Удалить из избранного" : "Добавить в избранное"}
+                      >
+                        {item.is_favorite ? (
+                          <HeartOff className="w-4 h-4" />
+                        ) : (
+                          <Heart className="w-4 h-4" />
+                        )}
+                      </button>
+
                       {editingId === item.id ? (
                         <>
                           <button
@@ -283,6 +377,7 @@ const WatchlistModal: React.FC<WatchlistModalProps> = ({ watchlist, onClose, onU
           <div className="flex justify-between items-center text-sm text-gray-400">
             <span>Всего пар: {watchlist.length}</span>
             <span>Активных: {watchlist.filter(w => w.is_active).length}</span>
+            <span>Избранных: {watchlist.filter(w => w.is_favorite).length}</span>
           </div>
         </div>
       </div>

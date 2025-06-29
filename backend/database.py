@@ -44,17 +44,30 @@ class DatabaseManager:
         try:
             cursor = self.connection.cursor()
 
-            # Создаем таблицу watchlist
+            # Создаем таблицу watchlist с полем избранного
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS watchlist (
                     id SERIAL PRIMARY KEY,
                     symbol VARCHAR(20) NOT NULL UNIQUE,
                     is_active BOOLEAN DEFAULT TRUE,
+                    is_favorite BOOLEAN DEFAULT FALSE,
                     price_drop_percentage DECIMAL(5, 2),
                     current_price DECIMAL(20, 8),
                     historical_price DECIMAL(20, 8),
                     created_at_ms BIGINT DEFAULT EXTRACT(EPOCH FROM NOW()) * 1000,
                     updated_at_ms BIGINT DEFAULT EXTRACT(EPOCH FROM NOW()) * 1000
+                )
+            """)
+
+            # Создаем таблицу избранного (для дополнительной информации)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS favorites (
+                    id SERIAL PRIMARY KEY,
+                    symbol VARCHAR(20) NOT NULL UNIQUE,
+                    added_at_ms BIGINT DEFAULT EXTRACT(EPOCH FROM NOW()) * 1000,
+                    notes TEXT,
+                    color VARCHAR(7) DEFAULT '#FFD700',
+                    sort_order INTEGER DEFAULT 0
                 )
             """)
 
@@ -156,17 +169,38 @@ class DatabaseManager:
                 ON alerts(close_timestamp_ms DESC NULLS LAST)
             """)
 
+            # Индексы для избранного
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_watchlist_favorite 
+                ON watchlist(is_favorite, symbol)
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_favorites_sort_order 
+                ON favorites(sort_order, symbol)
+            """)
+
             cursor.close()
-            logger.info("Таблицы с timestamp в миллисекундах успешно созданы")
+            logger.info("Таблицы с timestamp в миллисекундах и функциональностью избранного успешно созданы")
 
         except Exception as e:
             logger.error(f"Ошибка создания таблиц: {e}")
             raise
 
     async def migrate_tables(self):
-        """Миграция существующих таблиц - удаление лишних столбцов"""
+        """Миграция существующих таблиц - добавление полей избранного"""
         try:
             cursor = self.connection.cursor()
+
+            # Добавляем поле is_favorite в watchlist, если его нет
+            try:
+                cursor.execute("""
+                    ALTER TABLE watchlist 
+                    ADD COLUMN IF NOT EXISTS is_favorite BOOLEAN DEFAULT FALSE
+                """)
+                logger.debug("Добавлено поле is_favorite в таблицу watchlist")
+            except Exception as e:
+                logger.debug(f"Поле is_favorite уже существует в watchlist: {e}")
 
             # Список столбцов для удаления из каждой таблицы
             tables_to_clean = {
@@ -203,7 +237,7 @@ class DatabaseManager:
                         logger.debug(f"Столбец {column_name} не существует в {table_name}: {e}")
 
             cursor.close()
-            logger.info("Миграция таблиц завершена - удалены лишние столбцы")
+            logger.info("Миграция таблиц завершена - добавлена функциональность избранного")
 
         except Exception as e:
             logger.error(f"Ошибка миграции таблиц: {e}")
@@ -403,13 +437,17 @@ class DatabaseManager:
         try:
             cursor = self.connection.cursor(cursor_factory=RealDictCursor)
             cursor.execute("""
-                SELECT id, symbol, is_active, price_drop_percentage, 
-                       current_price, historical_price, 
-                       created_at_ms, updated_at_ms
-                FROM watchlist 
+                SELECT w.id, w.symbol, w.is_active, w.is_favorite, w.price_drop_percentage, 
+                       w.current_price, w.historical_price, 
+                       w.created_at_ms, w.updated_at_ms,
+                       f.notes, f.color, f.sort_order, f.added_at_ms
+                FROM watchlist w
+                LEFT JOIN favorites f ON w.symbol = f.symbol
                 ORDER BY 
-                    CASE WHEN price_drop_percentage IS NOT NULL THEN price_drop_percentage ELSE 0 END DESC,
-                    symbol ASC
+                    w.is_favorite DESC,
+                    COALESCE(f.sort_order, 999) ASC,
+                    CASE WHEN w.price_drop_percentage IS NOT NULL THEN w.price_drop_percentage ELSE 0 END DESC,
+                    w.symbol ASC
             """)
 
             result = cursor.fetchall()
@@ -423,6 +461,8 @@ class DatabaseManager:
                     item['created_at'] = self._ms_to_datetime(item['created_at_ms']).isoformat()
                 if item['updated_at_ms']:
                     item['updated_at'] = self._ms_to_datetime(item['updated_at_ms']).isoformat()
+                if item['added_at_ms']:
+                    item['favorite_added_at'] = self._ms_to_datetime(item['added_at_ms']).isoformat()
                 
                 # Получаем информацию о диапазоне данных
                 data_info = await self.get_data_range_info(item['symbol'])
@@ -435,6 +475,148 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Ошибка получения детальной информации watchlist: {e}")
             return []
+
+    async def get_favorites(self) -> List[Dict]:
+        """Получить список избранных торговых пар"""
+        try:
+            cursor = self.connection.cursor(cursor_factory=RealDictCursor)
+            cursor.execute("""
+                SELECT w.id, w.symbol, w.is_active, w.price_drop_percentage, 
+                       w.current_price, w.historical_price,
+                       f.notes, f.color, f.sort_order, f.added_at_ms
+                FROM watchlist w
+                INNER JOIN favorites f ON w.symbol = f.symbol
+                WHERE w.is_favorite = TRUE
+                ORDER BY f.sort_order ASC, w.symbol ASC
+            """)
+
+            result = cursor.fetchall()
+            cursor.close()
+
+            # Преобразуем timestamp в datetime для совместимости
+            favorites = []
+            for row in result:
+                item = dict(row)
+                if item['added_at_ms']:
+                    item['favorite_added_at'] = self._ms_to_datetime(item['added_at_ms']).isoformat()
+                
+                # Получаем информацию о диапазоне данных
+                data_info = await self.get_data_range_info(item['symbol'])
+                item['data_info'] = data_info
+                
+                favorites.append(item)
+
+            return favorites
+
+        except Exception as e:
+            logger.error(f"Ошибка получения избранных пар: {e}")
+            return []
+
+    async def add_to_favorites(self, symbol: str, notes: str = None, color: str = '#FFD700', sort_order: int = 0):
+        """Добавить торговую пару в избранное"""
+        try:
+            cursor = self.connection.cursor()
+            current_time_ms = int(datetime.utcnow().timestamp() * 1000)
+
+            # Обновляем watchlist
+            cursor.execute("""
+                UPDATE watchlist 
+                SET is_favorite = TRUE, updated_at_ms = %s
+                WHERE symbol = %s
+            """, (current_time_ms, symbol))
+
+            # Добавляем в таблицу favorites
+            cursor.execute("""
+                INSERT INTO favorites (symbol, notes, color, sort_order, added_at_ms) 
+                VALUES (%s, %s, %s, %s, %s) 
+                ON CONFLICT (symbol) DO UPDATE SET
+                    notes = EXCLUDED.notes,
+                    color = EXCLUDED.color,
+                    sort_order = EXCLUDED.sort_order
+            """, (symbol, notes, color, sort_order, current_time_ms))
+
+            cursor.close()
+            logger.info(f"Пара {symbol} добавлена в избранное")
+
+        except Exception as e:
+            logger.error(f"Ошибка добавления в избранное: {e}")
+
+    async def remove_from_favorites(self, symbol: str):
+        """Удалить торговую пару из избранного"""
+        try:
+            cursor = self.connection.cursor()
+            current_time_ms = int(datetime.utcnow().timestamp() * 1000)
+
+            # Обновляем watchlist
+            cursor.execute("""
+                UPDATE watchlist 
+                SET is_favorite = FALSE, updated_at_ms = %s
+                WHERE symbol = %s
+            """, (current_time_ms, symbol))
+
+            # Удаляем из таблицы favorites
+            cursor.execute("""
+                DELETE FROM favorites WHERE symbol = %s
+            """, (symbol,))
+
+            cursor.close()
+            logger.info(f"Пара {symbol} удалена из избранного")
+
+        except Exception as e:
+            logger.error(f"Ошибка удаления из избранного: {e}")
+
+    async def update_favorite(self, symbol: str, notes: str = None, color: str = None, sort_order: int = None):
+        """Обновить информацию об избранной паре"""
+        try:
+            cursor = self.connection.cursor()
+
+            # Формируем запрос обновления
+            update_fields = []
+            params = []
+
+            if notes is not None:
+                update_fields.append("notes = %s")
+                params.append(notes)
+
+            if color is not None:
+                update_fields.append("color = %s")
+                params.append(color)
+
+            if sort_order is not None:
+                update_fields.append("sort_order = %s")
+                params.append(sort_order)
+
+            if update_fields:
+                params.append(symbol)
+                cursor.execute(f"""
+                    UPDATE favorites 
+                    SET {', '.join(update_fields)}
+                    WHERE symbol = %s
+                """, params)
+
+            cursor.close()
+            logger.info(f"Информация об избранной паре {symbol} обновлена")
+
+        except Exception as e:
+            logger.error(f"Ошибка обновления избранной пары: {e}")
+
+    async def reorder_favorites(self, symbol_order: List[str]):
+        """Изменить порядок избранных пар"""
+        try:
+            cursor = self.connection.cursor()
+
+            for index, symbol in enumerate(symbol_order):
+                cursor.execute("""
+                    UPDATE favorites 
+                    SET sort_order = %s
+                    WHERE symbol = %s
+                """, (index, symbol))
+
+            cursor.close()
+            logger.info(f"Порядок избранных пар обновлен: {len(symbol_order)} пар")
+
+        except Exception as e:
+            logger.error(f"Ошибка изменения порядка избранных пар: {e}")
 
     async def add_to_watchlist(self, symbol: str, price_drop: float = None,
                                current_price: float = None, historical_price: float = None):
@@ -484,8 +666,18 @@ class DatabaseManager:
             cursor = self.connection.cursor()
 
             if item_id:
+                # Получаем символ для удаления из избранного
+                cursor.execute("SELECT symbol FROM watchlist WHERE id = %s", (item_id,))
+                result = cursor.fetchone()
+                if result:
+                    symbol_to_remove = result[0]
+                    # Удаляем из избранного
+                    await self.remove_from_favorites(symbol_to_remove)
+                
                 cursor.execute("DELETE FROM watchlist WHERE id = %s", (item_id,))
             elif symbol:
+                # Удаляем из избранного
+                await self.remove_from_favorites(symbol)
                 cursor.execute("DELETE FROM watchlist WHERE symbol = %s", (symbol,))
 
             cursor.close()

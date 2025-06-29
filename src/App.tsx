@@ -12,10 +12,13 @@ import {
   Clock,
   WifiOff,
   Activity,
-  Zap
+  Zap,
+  Heart,
+  HeartOff
 } from 'lucide-react';
 import ChartSelector from './components/ChartSelector';
 import WatchlistModal from './components/WatchlistModal';
+import FavoritesModal from './components/FavoritesModal';
 import StreamDataModal from './components/StreamDataModal';
 import SettingsModal from './components/SettingsModal';
 import { TimeZoneProvider } from './contexts/TimeZoneContext';
@@ -46,11 +49,16 @@ interface WatchlistItem {
   id: number;
   symbol: string;
   is_active: boolean;
+  is_favorite: boolean;
   price_drop_percentage?: number;
   current_price?: number;
   historical_price?: number;
   created_at: string;
   updated_at: string;
+  notes?: string;
+  color?: string;
+  sort_order?: number;
+  favorite_added_at?: string;
 }
 
 interface StreamData {
@@ -120,16 +128,18 @@ interface Settings {
 }
 
 const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'volume' | 'consecutive' | 'priority' | 'watchlist' | 'stream' | 'smart_money'>('volume');
+  const [activeTab, setActiveTab] = useState<'volume' | 'consecutive' | 'priority' | 'watchlist' | 'favorites' | 'stream' | 'smart_money'>('volume');
   const [volumeAlerts, setVolumeAlerts] = useState<Alert[]>([]);
   const [consecutiveAlerts, setConsecutiveAlerts] = useState<Alert[]>([]);
   const [priorityAlerts, setPriorityAlerts] = useState<Alert[]>([]);
   const [smartMoneyAlerts, setSmartMoneyAlerts] = useState<SmartMoneyAlert[]>([]);
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
+  const [favorites, setFavorites] = useState<WatchlistItem[]>([]);
   const [streamData, setStreamData] = useState<StreamData[]>([]);
   const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null);
   const [selectedSmartMoneyAlert, setSelectedSmartMoneyAlert] = useState<SmartMoneyAlert | null>(null);
   const [showWatchlistModal, setShowWatchlistModal] = useState(false);
+  const [showFavoritesModal, setShowFavoritesModal] = useState(false);
   const [showStreamModal, setShowStreamModal] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
@@ -260,6 +270,11 @@ const App: React.FC = () => {
       if (watchlistResponse.ok) {
         const watchlistData = await watchlistResponse.json();
         const sortedWatchlist = (watchlistData.pairs || []).sort((a: WatchlistItem, b: WatchlistItem) => {
+          // Сначала избранные
+          if (a.is_favorite && !b.is_favorite) return -1;
+          if (!a.is_favorite && b.is_favorite) return 1;
+          
+          // Затем по проценту падения
           if (a.price_drop_percentage && b.price_drop_percentage) {
             if (a.price_drop_percentage !== b.price_drop_percentage) {
               return b.price_drop_percentage - a.price_drop_percentage;
@@ -268,6 +283,13 @@ const App: React.FC = () => {
           return a.symbol.localeCompare(b.symbol);
         });
         setWatchlist(sortedWatchlist);
+      }
+
+      // Обновляем избранное
+      const favoritesResponse = await fetch('/api/favorites');
+      if (favoritesResponse.ok) {
+        const favoritesData = await favoritesResponse.json();
+        setFavorites(favoritesData.favorites || []);
       }
 
     } catch (error) {
@@ -334,8 +356,13 @@ const App: React.FC = () => {
       const watchlistResponse = await fetch('/api/watchlist');
       if (watchlistResponse.ok) {
         const watchlistData = await watchlistResponse.json();
-        // Сортируем по проценту падения (больше сверху) и по алфавиту
+        // Сортируем по избранному, затем по проценту падения и алфавиту
         const sortedWatchlist = (watchlistData.pairs || []).sort((a: WatchlistItem, b: WatchlistItem) => {
+          // Сначала избранные
+          if (a.is_favorite && !b.is_favorite) return -1;
+          if (!a.is_favorite && b.is_favorite) return 1;
+          
+          // Затем по проценту падения
           if (a.price_drop_percentage && b.price_drop_percentage) {
             if (a.price_drop_percentage !== b.price_drop_percentage) {
               return b.price_drop_percentage - a.price_drop_percentage;
@@ -344,6 +371,13 @@ const App: React.FC = () => {
           return a.symbol.localeCompare(b.symbol);
         });
         setWatchlist(sortedWatchlist);
+      }
+
+      // Загружаем избранное
+      const favoritesResponse = await fetch('/api/favorites');
+      if (favoritesResponse.ok) {
+        const favoritesData = await favoritesResponse.json();
+        setFavorites(favoritesData.favorites || []);
       }
 
       // Загружаем настройки
@@ -552,7 +586,8 @@ const App: React.FC = () => {
         break;
 
       case 'watchlist_updated':
-        // Обновляем watchlist при изменениях
+      case 'favorites_updated':
+        // Обновляем watchlist и избранное при изменениях
         refreshData();
         break;
 
@@ -582,8 +617,13 @@ const App: React.FC = () => {
       const response = await fetch('/api/watchlist');
       if (response.ok) {
         const data = await response.json();
-        // Сортируем по проценту падения и алфавиту
+        // Сортируем по избранному, проценту падения и алфавиту
         const sortedWatchlist = (data.pairs || []).sort((a: WatchlistItem, b: WatchlistItem) => {
+          // Сначала избранные
+          if (a.is_favorite && !b.is_favorite) return -1;
+          if (!a.is_favorite && b.is_favorite) return 1;
+          
+          // Затем по проценту падения
           if (a.price_drop_percentage && b.price_drop_percentage) {
             if (a.price_drop_percentage !== b.price_drop_percentage) {
               return b.price_drop_percentage - a.price_drop_percentage;
@@ -595,6 +635,46 @@ const App: React.FC = () => {
       }
     } catch (error) {
       console.error('Ошибка загрузки watchlist:', error);
+    }
+  };
+
+  const loadFavorites = async () => {
+    try {
+      const response = await fetch('/api/favorites');
+      if (response.ok) {
+        const data = await response.json();
+        setFavorites(data.favorites || []);
+      }
+    } catch (error) {
+      console.error('Ошибка загрузки избранного:', error);
+    }
+  };
+
+  const toggleFavorite = async (symbol: string, isFavorite: boolean) => {
+    try {
+      if (isFavorite) {
+        // Удаляем из избранного
+        const response = await fetch(`/api/favorites/${symbol}`, {
+          method: 'DELETE'
+        });
+        if (response.ok) {
+          await refreshData();
+        }
+      } else {
+        // Добавляем в избранное
+        const response = await fetch('/api/favorites', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ symbol }),
+        });
+        if (response.ok) {
+          await refreshData();
+        }
+      }
+    } catch (error) {
+      console.error('Ошибка переключения избранного:', error);
     }
   };
 
@@ -865,7 +945,7 @@ const App: React.FC = () => {
 
       {alert.top && alert.bottom && (
         <div className="mt-3 pt-3 border-t border-gray-200">
-          <div className="grid grid-cols-2 gap-4 text-xs text-gray-500">
+          <div className="grid grid-cols-2 gap-4  text-xs text-gray-500">
             <div>Верх: ${alert.top.toFixed(6)}</div>
             <div>Низ: ${alert.bottom.toFixed(6)}</div>
           </div>
@@ -880,15 +960,41 @@ const App: React.FC = () => {
         <div className="flex items-center space-x-3">
           <div className={`w-3 h-3 rounded-full ${item.is_active ? 'bg-green-500' : 'bg-red-500'}`}></div>
           <span className="font-bold text-lg text-gray-900">{item.symbol}</span>
+          {item.is_favorite && (
+            <span className="text-yellow-500">
+              <Star className="w-4 h-4 fill-yellow-500" />
+            </span>
+          )}
         </div>
 
-        <button
-          onClick={() => openTradingView(item.symbol)}
-          className="text-blue-600 hover:text-blue-800 p-1"
-          title="Открыть в TradingView"
-        >
-          <ExternalLink className="w-4 h-4" />
-        </button>
+        <div className="flex items-center space-x-2">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              toggleFavorite(item.symbol, item.is_favorite);
+            }}
+            className={`p-1 rounded-full ${
+              item.is_favorite 
+                ? 'text-yellow-500 hover:text-yellow-600' 
+                : 'text-gray-400 hover:text-yellow-500'
+            }`}
+            title={item.is_favorite ? "Удалить из избранного" : "Добавить в избранное"}
+          >
+            {item.is_favorite ? (
+              <Heart className="w-5 h-5 fill-yellow-500" />
+            ) : (
+              <Heart className="w-5 h-5" />
+            )}
+          </button>
+          
+          <button
+            onClick={() => openTradingView(item.symbol)}
+            className="text-blue-600 hover:text-blue-800 p-1"
+            title="Открыть в TradingView"
+          >
+            <ExternalLink className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
       {item.price_drop_percentage && (
@@ -907,8 +1013,80 @@ const App: React.FC = () => {
         </div>
       )}
 
+      {item.notes && (
+        <div className="mt-2 text-sm text-gray-600 bg-gray-50 p-2 rounded">
+          {item.notes}
+        </div>
+      )}
+
       <div className="mt-3 pt-3 border-t border-gray-200 text-xs text-gray-500">
         Обновлено: {formatTime(item.updated_at, 'local')}
+      </div>
+    </div>
+  );
+
+  const renderFavoriteCard = (item: WatchlistItem) => (
+    <div 
+      key={item.id} 
+      className="bg-white rounded-lg shadow-md border-l-4 p-4 hover:shadow-lg transition-shadow w-full"
+      style={{ borderLeftColor: item.color || '#FFD700' }}
+    >
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center space-x-3">
+          <div className={`w-3 h-3 rounded-full ${item.is_active ? 'bg-green-500' : 'bg-red-500'}`}></div>
+          <span className="font-bold text-lg text-gray-900">{item.symbol}</span>
+          <span className="text-yellow-500">
+            <Star className="w-4 h-4 fill-yellow-500" />
+          </span>
+        </div>
+
+        <div className="flex items-center space-x-2">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              toggleFavorite(item.symbol, true);
+            }}
+            className="text-yellow-500 hover:text-yellow-600 p-1"
+            title="Удалить из избранного"
+          >
+            <HeartOff className="w-5 h-5" />
+          </button>
+          
+          <button
+            onClick={() => openTradingView(item.symbol)}
+            className="text-blue-600 hover:text-blue-800 p-1"
+            title="Открыть в TradingView"
+          >
+            <ExternalLink className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4 text-sm">
+        {item.price_drop_percentage && (
+          <div>
+            <span className="text-gray-600">Падение цены:</span>
+            <div className="font-semibold text-red-600">{item.price_drop_percentage.toFixed(2)}%</div>
+          </div>
+        )}
+
+        {item.current_price && (
+          <div>
+            <span className="text-gray-600">Текущая цена:</span>
+            <div className="font-mono text-gray-900">${item.current_price.toFixed(8)}</div>
+          </div>
+        )}
+      </div>
+
+      {item.notes && (
+        <div className="mt-2 text-sm text-gray-600 bg-gray-50 p-2 rounded">
+          {item.notes}
+        </div>
+      )}
+
+      <div className="mt-3 pt-3 border-t border-gray-200 text-xs text-gray-500 flex justify-between">
+        <span>Добавлено: {formatTime(item.favorite_added_at || item.created_at, 'local')}</span>
+        <span>Обновлено: {formatTime(item.updated_at, 'local')}</span>
       </div>
     </div>
   );
@@ -1007,6 +1185,7 @@ const App: React.FC = () => {
                 { id: 'consecutive', label: 'LONG последовательности', icon: BarChart3, count: consecutiveAlerts.length },
                 { id: 'priority', label: 'Приоритетные', icon: Star, count: priorityAlerts.length },
                 { id: 'smart_money', label: 'Smart Money', icon: Brain, count: smartMoneyAlerts.length },
+                { id: 'favorites', label: 'Избранное', icon: Heart, count: favorites.length },
                 { id: 'watchlist', label: 'Торговые пары', icon: List, count: watchlist.length },
                 { id: 'stream', label: 'Потоковые данные', icon: Wifi, count: streamData.length }
               ].map((tab) => (
@@ -1133,6 +1312,33 @@ const App: React.FC = () => {
                   </div>
                 ) : (
                   smartMoneyAlerts.map(renderSmartMoneyCard)
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Favorites */}
+          {activeTab === 'favorites' && (
+            <div>
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-2xl font-bold text-gray-900">Избранные торговые пары</h2>
+                <button
+                  onClick={() => setShowFavoritesModal(true)}
+                  className="bg-yellow-600 hover:bg-yellow-700 text-white px-4 py-2 rounded-lg transition-colors"
+                >
+                  Управление избранным
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                {favorites.length === 0 ? (
+                  <div className="text-center py-12 text-gray-500">
+                    <Heart className="w-12 h-12 mx-auto mb-4 text-gray-300" />
+                    <p>Нет избранных торговых пар</p>
+                    <p className="mt-2 text-sm">Добавьте пары в избранное, нажав на иконку сердечка в списке торговых пар</p>
+                  </div>
+                ) : (
+                  favorites.map(renderFavoriteCard)
                 )}
               </div>
             </div>
@@ -1277,6 +1483,15 @@ const App: React.FC = () => {
             watchlist={watchlist}
             onClose={() => setShowWatchlistModal(false)}
             onUpdate={loadWatchlist}
+            onToggleFavorite={toggleFavorite}
+          />
+        )}
+
+        {showFavoritesModal && (
+          <FavoritesModal
+            favorites={favorites}
+            onClose={() => setShowFavoritesModal(false)}
+            onUpdate={loadFavorites}
           />
         )}
 

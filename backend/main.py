@@ -162,6 +162,22 @@ class WatchlistUpdate(BaseModel):
     is_active: bool
 
 
+class FavoriteAdd(BaseModel):
+    symbol: str
+    notes: Optional[str] = None
+    color: Optional[str] = '#FFD700'
+
+
+class FavoriteUpdate(BaseModel):
+    notes: Optional[str] = None
+    color: Optional[str] = None
+    sort_order: Optional[int] = None
+
+
+class FavoriteReorder(BaseModel):
+    symbol_order: List[str]
+
+
 async def periodic_cleanup():
     """Периодическая очистка старых данных"""
     while True:
@@ -211,6 +227,7 @@ async def get_stats():
         # Получаем статистику из базы данных
         watchlist = await db_manager.get_watchlist()
         alerts_data = await db_manager.get_all_alerts(limit=1000)
+        favorites = await db_manager.get_favorites()
 
         # Добавляем информацию о синхронизации времени
         time_sync_info = {}
@@ -219,6 +236,7 @@ async def get_stats():
 
         return {
             "pairs_count": len(watchlist),
+            "favorites_count": len(favorites),
             "alerts_count": len(alerts_data.get('alerts', [])),
             "volume_alerts_count": len(alerts_data.get('volume_alerts', [])),
             "consecutive_alerts_count": len(alerts_data.get('consecutive_alerts', [])),
@@ -388,6 +406,94 @@ async def remove_from_watchlist(item_id: int):
         return {"status": "success"}
     except Exception as e:
         logger.error(f"Ошибка удаления из watchlist: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# API для избранного
+@app.get("/api/favorites")
+async def get_favorites():
+    """Получить список избранных торговых пар"""
+    try:
+        favorites = await db_manager.get_favorites()
+        return {"favorites": favorites}
+    except Exception as e:
+        logger.error(f"Ошибка получения избранного: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/favorites")
+async def add_to_favorites(item: FavoriteAdd):
+    """Добавить торговую пару в избранное"""
+    try:
+        await db_manager.add_to_favorites(item.symbol, item.notes, item.color)
+
+        # Уведомляем клиентов об обновлении
+        await manager.broadcast_json({
+            "type": "favorites_updated",
+            "action": "added",
+            "symbol": item.symbol
+        })
+
+        return {"status": "success", "symbol": item.symbol}
+    except Exception as e:
+        logger.error(f"Ошибка добавления в избранное: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/favorites/{symbol}")
+async def remove_from_favorites(symbol: str):
+    """Удалить торговую пару из избранного"""
+    try:
+        await db_manager.remove_from_favorites(symbol)
+
+        # Уведомляем клиентов об обновлении
+        await manager.broadcast_json({
+            "type": "favorites_updated",
+            "action": "removed",
+            "symbol": symbol
+        })
+
+        return {"status": "success"}
+    except Exception as e:
+        logger.error(f"Ошибка удаления из избранного: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/favorites/{symbol}")
+async def update_favorite(symbol: str, item: FavoriteUpdate):
+    """Обновить информацию об избранной паре"""
+    try:
+        await db_manager.update_favorite(symbol, item.notes, item.color, item.sort_order)
+
+        # Уведомляем клиентов об обновлении
+        await manager.broadcast_json({
+            "type": "favorites_updated",
+            "action": "updated",
+            "symbol": symbol
+        })
+
+        return {"status": "success"}
+    except Exception as e:
+        logger.error(f"Ошибка обновления избранной пары: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/favorites/reorder")
+async def reorder_favorites(item: FavoriteReorder):
+    """Изменить порядок избранных пар"""
+    try:
+        await db_manager.reorder_favorites(item.symbol_order)
+
+        # Уведомляем клиентов об обновлении
+        await manager.broadcast_json({
+            "type": "favorites_updated",
+            "action": "reordered",
+            "symbol_order": item.symbol_order
+        })
+
+        return {"status": "success"}
+    except Exception as e:
+        logger.error(f"Ошибка изменения порядка избранных пар: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
