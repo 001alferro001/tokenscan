@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { BarChart3, TrendingUp, Globe, X } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { BarChart3, TrendingUp, Globe, X, Target } from 'lucide-react';
 import TradingViewChart from './TradingViewChart';
 import CoinGeckoChart from './CoinGeckoChart';
 import ChartModal from './ChartModal';
@@ -16,6 +16,8 @@ interface Alert {
   imbalance_data?: any;
   candle_data?: any;
   order_book_snapshot?: any;
+  volume_ratio?: number;
+  consecutive_count?: number;
 }
 
 interface ChartSelectorProps {
@@ -27,6 +29,53 @@ type ChartType = 'tradingview' | 'coingecko' | 'internal' | null;
 
 const ChartSelector: React.FC<ChartSelectorProps> = ({ alert, onClose }) => {
   const [selectedChart, setSelectedChart] = useState<ChartType>(null);
+  const [relatedAlerts, setRelatedAlerts] = useState<Alert[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    loadRelatedAlerts();
+  }, [alert.symbol]);
+
+  const loadRelatedAlerts = async () => {
+    try {
+      setLoading(true);
+      
+      // Загружаем все алерты для данного символа за последние 24 часа
+      const response = await fetch('/api/alerts/all');
+      if (response.ok) {
+        const data = await response.json();
+        
+        // Объединяем все типы алертов
+        const allAlerts = [
+          ...(data.volume_alerts || []),
+          ...(data.consecutive_alerts || []),
+          ...(data.priority_alerts || [])
+        ];
+        
+        // Фильтруем по символу и времени (последние 24 часа)
+        const oneDayAgo = Date.now() - (24 * 60 * 60 * 1000);
+        const symbolAlerts = allAlerts.filter((a: Alert) => {
+          if (a.symbol !== alert.symbol) return false;
+          
+          const alertTime = typeof a.timestamp === 'number' ? a.timestamp : new Date(a.timestamp).getTime();
+          return alertTime > oneDayAgo;
+        });
+        
+        // Сортируем по времени
+        symbolAlerts.sort((a: Alert, b: Alert) => {
+          const timeA = typeof a.timestamp === 'number' ? a.timestamp : new Date(a.timestamp).getTime();
+          const timeB = typeof b.timestamp === 'number' ? b.timestamp : new Date(b.timestamp).getTime();
+          return timeA - timeB;
+        });
+        
+        setRelatedAlerts(symbolAlerts);
+      }
+    } catch (error) {
+      console.error('Ошибка загрузки связанных алертов:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   if (selectedChart === 'tradingview') {
     return (
@@ -34,6 +83,7 @@ const ChartSelector: React.FC<ChartSelectorProps> = ({ alert, onClose }) => {
         symbol={alert.symbol}
         alertPrice={alert.price}
         alertTime={alert.close_timestamp || alert.timestamp}
+        alerts={relatedAlerts}
         onClose={onClose}
       />
     );
@@ -65,6 +115,11 @@ const ChartSelector: React.FC<ChartSelectorProps> = ({ alert, onClose }) => {
           <div>
             <h2 className="text-2xl font-bold text-gray-900">Выберите источник графика</h2>
             <p className="text-gray-600">{alert.symbol} • ${alert.price.toFixed(6)}</p>
+            {!loading && relatedAlerts.length > 0 && (
+              <p className="text-sm text-blue-600 mt-1">
+                Найдено {relatedAlerts.length} сигналов за 24 часа
+              </p>
+            )}
           </div>
           <button
             onClick={onClose}
@@ -86,14 +141,20 @@ const ChartSelector: React.FC<ChartSelectorProps> = ({ alert, onClose }) => {
                 <TrendingUp className="w-6 h-6 text-blue-600" />
               </div>
               <div className="flex-1 text-left">
-                <h3 className="text-lg font-semibold text-gray-900">TradingView</h3>
+                <h3 className="text-lg font-semibold text-gray-900">TradingView с сигналами</h3>
                 <p className="text-gray-600">
-                  Профессиональные графики с индикаторами и инструментами анализа
+                  Профессиональные графики с отметками всех сигналов программы
                 </p>
                 <div className="flex items-center space-x-4 mt-2 text-sm text-gray-500">
                   <span>✓ Реальное время</span>
-                  <span>✓ Технические индикаторы</span>
-                  <span>✓ Инструменты рисования</span>
+                  <span>✓ Сигналы программы</span>
+                  <span>✓ Smart Money зоны</span>
+                  {!loading && relatedAlerts.length > 0 && (
+                    <span className="flex items-center space-x-1 text-blue-600">
+                      <Target className="w-3 h-3" />
+                      <span>{relatedAlerts.length} сигналов</span>
+                    </span>
+                  )}
                 </div>
               </div>
               <div className="text-green-600 font-semibold">Рекомендуется</div>
@@ -151,11 +212,19 @@ const ChartSelector: React.FC<ChartSelectorProps> = ({ alert, onClose }) => {
         <div className="p-6 border-t border-gray-200 bg-gray-50">
           <div className="text-sm text-gray-600">
             <p className="mb-2">
-              <strong>Рекомендация:</strong> Используйте TradingView для детального технического анализа
+              <strong>🎯 Новая функция:</strong> TradingView теперь показывает все сигналы программы прямо на графике!
             </p>
-            <p>
-              Все источники предоставляют бесплатный доступ к графикам и данным
-            </p>
+            <div className="grid grid-cols-3 gap-4 text-xs">
+              <div>
+                <span className="text-orange-600">📈 Объемные алерты</span> - оранжевые стрелки
+              </div>
+              <div>
+                <span className="text-green-600">🕯️ LONG последовательности</span> - зеленые стрелки
+              </div>
+              <div>
+                <span className="text-pink-600">⭐ Приоритетные</span> - розовые стрелки
+              </div>
+            </div>
           </div>
         </div>
       </div>

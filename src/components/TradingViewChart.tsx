@@ -1,12 +1,32 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { X, ExternalLink, Settings, Maximize2, Minimize2 } from 'lucide-react';
+import { X, ExternalLink, Settings, Maximize2, Minimize2, Target, Zap } from 'lucide-react';
 
 interface TradingViewChartProps {
   symbol: string;
   alertPrice?: number;
   alertTime?: number | string;
+  alerts?: Alert[];  // Массив всех алертов для символа
   onClose: () => void;
   theme?: 'light' | 'dark';
+}
+
+interface Alert {
+  id: number;
+  symbol: string;
+  alert_type: string;
+  price: number;
+  timestamp: number | string;
+  close_timestamp?: number | string;
+  volume_ratio?: number;
+  consecutive_count?: number;
+  has_imbalance?: boolean;
+  imbalance_data?: {
+    type: string;
+    direction: 'bullish' | 'bearish';
+    top: number;
+    bottom: number;
+    strength: number;
+  };
 }
 
 declare global {
@@ -19,15 +39,19 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
   symbol, 
   alertPrice, 
   alertTime, 
+  alerts = [],
   onClose,
   theme = 'light'
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const widgetRef = useRef<any>(null);
+  const chartRef = useRef<any>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [interval, setInterval] = useState('1');
-  const [chartType, setChartType] = useState('1'); // 1 = candlesticks
+  const [chartType, setChartType] = useState('1');
   const [isLoading, setIsLoading] = useState(true);
+  const [showSignals, setShowSignals] = useState(true);
+  const [signalShapes, setSignalShapes] = useState<any[]>([]);
 
   useEffect(() => {
     loadTradingViewScript();
@@ -38,6 +62,12 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
       createWidget();
     }
   }, [symbol, interval, chartType, theme]);
+
+  useEffect(() => {
+    if (chartRef.current && showSignals) {
+      addSignalsToChart();
+    }
+  }, [alerts, showSignals, chartRef.current]);
 
   const loadTradingViewScript = () => {
     if (window.TradingView) {
@@ -62,7 +92,6 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
       widgetRef.current.remove();
     }
 
-    // Преобразуем символ для TradingView
     const tvSymbol = `BYBIT:${symbol.replace('USDT', '')}USDT.P`;
 
     try {
@@ -81,22 +110,16 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
         save_image: true,
         container_id: containerRef.current.id,
         studies: [
-          'Volume@tv-basicstudies',
-          'RSI@tv-basicstudies'
+          'Volume@tv-basicstudies'
         ],
         overrides: {
-          // Настройки цветов для свечей
           'mainSeriesProperties.candleStyle.upColor': '#26a69a',
           'mainSeriesProperties.candleStyle.downColor': '#ef5350',
           'mainSeriesProperties.candleStyle.borderUpColor': '#26a69a',
           'mainSeriesProperties.candleStyle.borderDownColor': '#ef5350',
           'mainSeriesProperties.candleStyle.wickUpColor': '#26a69a',
           'mainSeriesProperties.candleStyle.wickDownColor': '#ef5350',
-          
-          // Настройки объема
           'volumePaneSize': 'medium',
-          
-          // Настройки сетки
           'paneProperties.background': theme === 'dark' ? '#1e1e1e' : '#ffffff',
           'paneProperties.vertGridProperties.color': theme === 'dark' ? '#2a2a2a' : '#e1e1e1',
           'paneProperties.horzGridProperties.color': theme === 'dark' ? '#2a2a2a' : '#e1e1e1',
@@ -106,7 +129,8 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
           'volume_force_overlay'
         ],
         enabled_features: [
-          'study_templates'
+          'study_templates',
+          'create_volume_indicator_by_default'
         ],
         loading_screen: {
           backgroundColor: theme === 'dark' ? '#1e1e1e' : '#ffffff',
@@ -114,64 +138,246 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
         }
       });
 
-      // Добавляем линию алерта, если есть цена
-      if (alertPrice && widgetRef.current) {
-        widgetRef.current.onChartReady(() => {
-          const chart = widgetRef.current.chart();
-          
-          // Добавляем горизонтальную линию на уровне алерта
-          chart.createShape(
-            { time: Date.now() / 1000, price: alertPrice },
-            {
-              shape: 'horizontal_line',
-              lock: true,
-              disableSelection: true,
-              disableSave: true,
-              disableUndo: true,
-              overrides: {
-                linecolor: '#ff9800',
-                linewidth: 2,
-                linestyle: 2, // пунктирная линия
-                showLabel: true,
-                textcolor: '#ff9800',
-                text: `Alert: $${alertPrice.toFixed(6)}`
-              }
-            }
-          );
+      widgetRef.current.onChartReady(() => {
+        chartRef.current = widgetRef.current.chart();
+        
+        // Добавляем основной алерт
+        if (alertPrice) {
+          addMainAlert();
+        }
 
-          // Если есть время алерта, добавляем вертикальную линию
-          if (alertTime) {
-            const alertTimestamp = typeof alertTime === 'number' ? alertTime : new Date(alertTime).getTime();
-            chart.createShape(
-              { time: alertTimestamp / 1000, price: alertPrice },
-              {
-                shape: 'vertical_line',
-                lock: true,
-                disableSelection: true,
-                disableSave: true,
-                disableUndo: true,
-                overrides: {
-                  linecolor: '#ff5722',
-                  linewidth: 1,
-                  linestyle: 2,
-                  showLabel: true,
-                  textcolor: '#ff5722',
-                  text: 'Alert Time'
-                }
-              }
-            );
-          }
+        // Добавляем все сигналы
+        if (showSignals) {
+          addSignalsToChart();
+        }
 
-          setIsLoading(false);
-        });
-      } else {
-        setTimeout(() => setIsLoading(false), 2000);
-      }
+        setIsLoading(false);
+      });
 
     } catch (error) {
       console.error('Ошибка создания TradingView виджета:', error);
       setIsLoading(false);
     }
+  };
+
+  const addMainAlert = () => {
+    if (!chartRef.current || !alertPrice) return;
+
+    try {
+      // Горизонтальная линия уровня алерта
+      const alertLine = chartRef.current.createShape(
+        { time: Date.now() / 1000, price: alertPrice },
+        {
+          shape: 'horizontal_line',
+          lock: true,
+          disableSelection: false,
+          disableSave: true,
+          disableUndo: true,
+          overrides: {
+            linecolor: '#ff9800',
+            linewidth: 3,
+            linestyle: 2,
+            showLabel: true,
+            textcolor: '#ff9800',
+            text: `🎯 Alert: $${alertPrice.toFixed(6)}`,
+            horzLabelsAlign: 'right',
+            vertLabelsAlign: 'middle'
+          }
+        }
+      );
+
+      // Вертикальная линия времени алерта
+      if (alertTime) {
+        const alertTimestamp = typeof alertTime === 'number' ? alertTime : new Date(alertTime).getTime();
+        chartRef.current.createShape(
+          { time: alertTimestamp / 1000, price: alertPrice },
+          {
+            shape: 'vertical_line',
+            lock: true,
+            disableSelection: false,
+            disableSave: true,
+            disableUndo: true,
+            overrides: {
+              linecolor: '#ff5722',
+              linewidth: 2,
+              linestyle: 1,
+              showLabel: true,
+              textcolor: '#ff5722',
+              text: '⏰ Alert Time',
+              horzLabelsAlign: 'center',
+              vertLabelsAlign: 'top'
+            }
+          }
+        );
+      }
+    } catch (error) {
+      console.error('Ошибка добавления основного алерта:', error);
+    }
+  };
+
+  const addSignalsToChart = () => {
+    if (!chartRef.current || !alerts.length) return;
+
+    // Очищаем предыдущие сигналы
+    clearSignals();
+
+    const newShapes: any[] = [];
+
+    alerts.forEach((alert, index) => {
+      try {
+        const alertTimestamp = typeof alert.timestamp === 'number' ? 
+          alert.timestamp : new Date(alert.timestamp).getTime();
+        
+        const timeInSeconds = alertTimestamp / 1000;
+
+        // Определяем цвет и иконку по типу алерта
+        let color = '#2196f3';
+        let icon = '📊';
+        let label = '';
+
+        switch (alert.alert_type) {
+          case 'volume_spike':
+            color = '#ff9800';
+            icon = '📈';
+            label = `Volume ${alert.volume_ratio}x`;
+            break;
+          case 'consecutive_long':
+            color = '#4caf50';
+            icon = '🕯️';
+            label = `${alert.consecutive_count} LONG`;
+            break;
+          case 'priority':
+            color = '#e91e63';
+            icon = '⭐';
+            label = 'Priority Signal';
+            break;
+        }
+
+        // Создаем стрелку вверх для сигнала
+        const signalShape = chartRef.current.createShape(
+          { time: timeInSeconds, price: alert.price },
+          {
+            shape: 'arrow_up',
+            lock: false,
+            disableSelection: false,
+            disableSave: true,
+            disableUndo: false,
+            overrides: {
+              color: color,
+              transparency: 20,
+              size: 'normal',
+              showLabel: true,
+              textcolor: color,
+              text: `${icon} ${label}`,
+              fontsize: 12,
+              bold: true
+            }
+          }
+        );
+
+        newShapes.push(signalShape);
+
+        // Добавляем зоны имбаланса для Smart Money сигналов
+        if (alert.has_imbalance && alert.imbalance_data) {
+          const imbalanceColor = alert.imbalance_data.direction === 'bullish' ? 
+            'rgba(76, 175, 80, 0.2)' : 'rgba(244, 67, 54, 0.2)';
+
+          // Создаем прямоугольник для зоны имбаланса
+          const imbalanceZone = chartRef.current.createShape(
+            [
+              { time: timeInSeconds - 300, price: alert.imbalance_data.top },
+              { time: timeInSeconds + 300, price: alert.imbalance_data.bottom }
+            ],
+            {
+              shape: 'rectangle',
+              lock: false,
+              disableSelection: false,
+              disableSave: true,
+              disableUndo: false,
+              overrides: {
+                color: imbalanceColor,
+                transparency: 80,
+                showLabel: true,
+                textcolor: alert.imbalance_data.direction === 'bullish' ? '#4caf50' : '#f44336',
+                text: `${alert.imbalance_data.type.toUpperCase()} (${alert.imbalance_data.strength.toFixed(1)}%)`,
+                fontsize: 10
+              }
+            }
+          );
+
+          newShapes.push(imbalanceZone);
+        }
+
+        // Добавляем текстовую метку с деталями
+        const textLabel = chartRef.current.createShape(
+          { time: timeInSeconds, price: alert.price * 1.001 }, // Немного выше цены
+          {
+            shape: 'text',
+            lock: false,
+            disableSelection: false,
+            disableSave: true,
+            disableUndo: false,
+            overrides: {
+              color: color,
+              fontsize: 10,
+              text: getAlertDetails(alert),
+              bold: false,
+              italic: false
+            }
+          }
+        );
+
+        newShapes.push(textLabel);
+
+      } catch (error) {
+        console.error(`Ошибка добавления сигнала ${index}:`, error);
+      }
+    });
+
+    setSignalShapes(newShapes);
+  };
+
+  const getAlertDetails = (alert: Alert): string => {
+    const time = new Date(typeof alert.timestamp === 'number' ? alert.timestamp : alert.timestamp);
+    const timeStr = time.toLocaleTimeString('ru-RU', { 
+      hour: '2-digit', 
+      minute: '2-digit',
+      timeZone: 'UTC'
+    });
+
+    let details = `${timeStr} UTC\n$${alert.price.toFixed(6)}`;
+
+    if (alert.volume_ratio) {
+      details += `\nVolume: ${alert.volume_ratio}x`;
+    }
+
+    if (alert.consecutive_count) {
+      details += `\nLONG: ${alert.consecutive_count}`;
+    }
+
+    return details;
+  };
+
+  const clearSignals = () => {
+    signalShapes.forEach(shape => {
+      try {
+        if (shape && shape.remove) {
+          shape.remove();
+        }
+      } catch (error) {
+        console.error('Ошибка удаления сигнала:', error);
+      }
+    });
+    setSignalShapes([]);
+  };
+
+  const toggleSignals = () => {
+    if (showSignals) {
+      clearSignals();
+    } else {
+      addSignalsToChart();
+    }
+    setShowSignals(!showSignals);
   };
 
   const openInTradingView = () => {
@@ -216,9 +422,30 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
                 Alert: ${alertPrice.toFixed(6)}
               </span>
             )}
+            {alerts.length > 0 && (
+              <span className="text-sm text-blue-600 bg-blue-100 px-2 py-1 rounded">
+                {alerts.length} сигналов
+              </span>
+            )}
           </div>
           
           <div className="flex items-center space-x-3">
+            {/* Переключатель сигналов */}
+            <button
+              onClick={toggleSignals}
+              className={`flex items-center space-x-2 px-3 py-2 rounded-lg transition-colors ${
+                showSignals 
+                  ? 'bg-green-100 text-green-700 hover:bg-green-200' 
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+              }`}
+              title={showSignals ? 'Скрыть сигналы' : 'Показать сигналы'}
+            >
+              <Target className="w-4 h-4" />
+              <span className="text-sm">
+                {showSignals ? 'Скрыть сигналы' : 'Показать сигналы'}
+              </span>
+            </button>
+
             {/* Интервалы */}
             <div className="flex items-center space-x-1 bg-gray-100 rounded-lg p-1">
               {intervals.map((int) => (
@@ -299,7 +526,15 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
         {/* Footer */}
         <div className="p-3 border-t border-gray-200 bg-gray-50">
           <div className="flex justify-between items-center text-sm text-gray-600">
-            <span>Данные предоставлены TradingView</span>
+            <div className="flex items-center space-x-4">
+              <span>Данные предоставлены TradingView</span>
+              {alerts.length > 0 && (
+                <span className="flex items-center space-x-1">
+                  <Zap className="w-3 h-3" />
+                  <span>{alerts.length} сигналов программы на графике</span>
+                </span>
+              )}
+            </div>
             <span>Обновляется в реальном времени</span>
           </div>
         </div>
