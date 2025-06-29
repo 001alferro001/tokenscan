@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { BarChart3, TrendingUp, Globe, X, Target } from 'lucide-react';
+import { BarChart3, TrendingUp, Globe, X, Target, AlertCircle } from 'lucide-react';
 import TradingViewChart from './TradingViewChart';
 import CoinGeckoChart from './CoinGeckoChart';
 import ChartModal from './ChartModal';
@@ -31,6 +31,7 @@ const ChartSelector: React.FC<ChartSelectorProps> = ({ alert, onClose }) => {
   const [selectedChart, setSelectedChart] = useState<ChartType>(null);
   const [relatedAlerts, setRelatedAlerts] = useState<Alert[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     loadRelatedAlerts();
@@ -39,39 +40,48 @@ const ChartSelector: React.FC<ChartSelectorProps> = ({ alert, onClose }) => {
   const loadRelatedAlerts = async () => {
     try {
       setLoading(true);
+      setError(null);
       
       // Загружаем все алерты для данного символа за последние 24 часа
-      const response = await fetch('/api/alerts/all');
+      const response = await fetch(`/api/alerts/symbol/${alert.symbol}?hours=24`);
       if (response.ok) {
         const data = await response.json();
-        
-        // Объединяем все типы алертов
-        const allAlerts = [
-          ...(data.volume_alerts || []),
-          ...(data.consecutive_alerts || []),
-          ...(data.priority_alerts || [])
-        ];
-        
-        // Фильтруем по символу и времени (последние 24 часа)
-        const oneDayAgo = Date.now() - (24 * 60 * 60 * 1000);
-        const symbolAlerts = allAlerts.filter((a: Alert) => {
-          if (a.symbol !== alert.symbol) return false;
+        setRelatedAlerts(data.alerts || []);
+      } else {
+        // Fallback - загружаем все алерты и фильтруем
+        const allResponse = await fetch('/api/alerts/all');
+        if (allResponse.ok) {
+          const allData = await allResponse.json();
           
-          const alertTime = typeof a.timestamp === 'number' ? a.timestamp : new Date(a.timestamp).getTime();
-          return alertTime > oneDayAgo;
-        });
-        
-        // Сортируем по времени
-        symbolAlerts.sort((a: Alert, b: Alert) => {
-          const timeA = typeof a.timestamp === 'number' ? a.timestamp : new Date(a.timestamp).getTime();
-          const timeB = typeof b.timestamp === 'number' ? b.timestamp : new Date(b.timestamp).getTime();
-          return timeA - timeB;
-        });
-        
-        setRelatedAlerts(symbolAlerts);
+          // Объединяем все типы алертов
+          const allAlerts = [
+            ...(allData.volume_alerts || []),
+            ...(allData.consecutive_alerts || []),
+            ...(allData.priority_alerts || [])
+          ];
+          
+          // Фильтруем по символу и времени (последние 24 часа)
+          const oneDayAgo = Date.now() - (24 * 60 * 60 * 1000);
+          const symbolAlerts = allAlerts.filter((a: Alert) => {
+            if (a.symbol !== alert.symbol) return false;
+            
+            const alertTime = typeof a.timestamp === 'number' ? a.timestamp : new Date(a.timestamp).getTime();
+            return alertTime > oneDayAgo;
+          });
+          
+          // Сортируем по времени
+          symbolAlerts.sort((a: Alert, b: Alert) => {
+            const timeA = typeof a.timestamp === 'number' ? a.timestamp : new Date(a.timestamp).getTime();
+            const timeB = typeof b.timestamp === 'number' ? b.timestamp : new Date(b.timestamp).getTime();
+            return timeA - timeB;
+          });
+          
+          setRelatedAlerts(symbolAlerts);
+        }
       }
     } catch (error) {
       console.error('Ошибка загрузки связанных алертов:', error);
+      setError('Ошибка загрузки алертов');
     } finally {
       setLoading(false);
     }
@@ -115,10 +125,19 @@ const ChartSelector: React.FC<ChartSelectorProps> = ({ alert, onClose }) => {
           <div>
             <h2 className="text-2xl font-bold text-gray-900">Выберите источник графика</h2>
             <p className="text-gray-600">{alert.symbol} • ${alert.price.toFixed(6)}</p>
-            {!loading && relatedAlerts.length > 0 && (
+            {loading ? (
+              <p className="text-sm text-gray-500 mt-1">Загрузка алертов...</p>
+            ) : error ? (
+              <p className="text-sm text-red-500 mt-1 flex items-center">
+                <AlertCircle className="w-3 h-3 mr-1" />
+                {error}
+              </p>
+            ) : relatedAlerts.length > 0 ? (
               <p className="text-sm text-blue-600 mt-1">
                 Найдено {relatedAlerts.length} сигналов за 24 часа
               </p>
+            ) : (
+              <p className="text-sm text-gray-500 mt-1">Нет сигналов за 24 часа</p>
             )}
           </div>
           <button

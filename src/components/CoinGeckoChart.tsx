@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { X, ExternalLink, TrendingUp, TrendingDown } from 'lucide-react';
+import { X, ExternalLink, TrendingUp, TrendingDown, RefreshCw } from 'lucide-react';
 
 interface CoinGeckoChartProps {
   symbol: string;
@@ -14,6 +14,7 @@ interface CoinData {
   market_cap: number;
   total_volume: number;
   image: string;
+  symbol: string;
 }
 
 const CoinGeckoChart: React.FC<CoinGeckoChartProps> = ({ symbol, onClose }) => {
@@ -35,7 +36,14 @@ const CoinGeckoChart: React.FC<CoinGeckoChartProps> = ({ symbol, onClose }) => {
       const coinId = getCoinId(symbol);
       
       if (!coinId) {
-        setError('Криптовалюта не найдена в CoinGecko');
+        // Если не нашли в маппинге, попробуем поиск по символу
+        const searchResult = await searchCoinBySymbol(symbol);
+        if (!searchResult) {
+          setError('Криптовалюта не найдена в CoinGecko');
+          setLoading(false);
+          return;
+        }
+        setCoinData(searchResult);
         setLoading(false);
         return;
       }
@@ -54,6 +62,7 @@ const CoinGeckoChart: React.FC<CoinGeckoChartProps> = ({ symbol, onClose }) => {
       setCoinData({
         id: data.id,
         name: data.name,
+        symbol: data.symbol.toUpperCase(),
         current_price: data.market_data.current_price.usd,
         price_change_percentage_24h: data.market_data.price_change_percentage_24h,
         market_cap: data.market_data.market_cap.usd,
@@ -65,6 +74,57 @@ const CoinGeckoChart: React.FC<CoinGeckoChartProps> = ({ symbol, onClose }) => {
       setError(err instanceof Error ? err.message : 'Неизвестная ошибка');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const searchCoinBySymbol = async (symbol: string): Promise<CoinData | null> => {
+    try {
+      // Убираем USDT из символа для поиска
+      const cleanSymbol = symbol.replace('USDT', '').toLowerCase();
+      
+      // Поиск по символу
+      const searchResponse = await fetch(
+        `https://api.coingecko.com/api/v3/search?query=${cleanSymbol}`
+      );
+      
+      if (!searchResponse.ok) {
+        return null;
+      }
+      
+      const searchData = await searchResponse.json();
+      const coin = searchData.coins?.find((c: any) => 
+        c.symbol.toLowerCase() === cleanSymbol
+      );
+      
+      if (!coin) {
+        return null;
+      }
+      
+      // Загружаем полные данные найденной монеты
+      const coinResponse = await fetch(
+        `https://api.coingecko.com/api/v3/coins/${coin.id}?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false&sparkline=false`
+      );
+      
+      if (!coinResponse.ok) {
+        return null;
+      }
+      
+      const coinData = await coinResponse.json();
+      
+      return {
+        id: coinData.id,
+        name: coinData.name,
+        symbol: coinData.symbol.toUpperCase(),
+        current_price: coinData.market_data.current_price.usd,
+        price_change_percentage_24h: coinData.market_data.price_change_percentage_24h,
+        market_cap: coinData.market_data.market_cap.usd,
+        total_volume: coinData.market_data.total_volume.usd,
+        image: coinData.image.large
+      };
+      
+    } catch (error) {
+      console.error('Ошибка поиска монеты:', error);
+      return null;
     }
   };
 
@@ -94,7 +154,140 @@ const CoinGeckoChart: React.FC<CoinGeckoChartProps> = ({ symbol, onClose }) => {
       'EOSUSDT': 'eos',
       'AAVEUSDT': 'aave',
       'MKRUSDT': 'maker',
-      'COMPUSDT': 'compound-governance-token'
+      'COMPUSDT': 'compound-governance-token',
+      'ALGOUSDT': 'algorand',
+      'VETUSDT': 'vechain',
+      'ICPUSDT': 'internet-computer',
+      'FTMUSDT': 'fantom',
+      'SANDUSDT': 'the-sandbox',
+      'MANAUSDT': 'decentraland',
+      'AXSUSDT': 'axie-infinity',
+      'THETAUSDT': 'theta-token',
+      'XTZUSDT': 'tezos',
+      'EGLDUSDT': 'elrond-erd-2',
+      'KLAYUSDT': 'klay-token',
+      'NEARUSDT': 'near',
+      'FLOWUSDT': 'flow',
+      'IOTAUSDT': 'iota',
+      'XMRUSDT': 'monero',
+      'ZECUSDT': 'zcash',
+      'DASHUSDT': 'dash',
+      'NEOUSDT': 'neo',
+      'QTUMUSDT': 'qtum',
+      'OMGUSDT': 'omisego',
+      'BATUSDT': 'basic-attention-token',
+      'ZRXUSDT': '0x',
+      'ENJUSDT': 'enjincoin',
+      'CHZUSDT': 'chiliz',
+      'HOTUSDT': 'holotoken',
+      'ZILUSDT': 'zilliqa',
+      'RVNUSDT': 'ravencoin',
+      'SCUSDT': 'siacoin',
+      'DGBUSDT': 'digibyte',
+      'WAVESUSDT': 'waves',
+      'ZENUSDT': 'zencash',
+      'ONTUSDT': 'ontology',
+      'FETUSDT': 'fetch-ai',
+      'CELRUSDT': 'celer-network',
+      'BANDUSDT': 'band-protocol',
+      'BELUSDT': 'bella-protocol',
+      'WINGUSDT': 'wing-finance',
+      'CREAMUSDT': 'cream-2',
+      'FLAMUSDT': 'flamingo-finance',
+      'BURGERUSDT': 'burger-swap',
+      'SPARUSDT': 'spartan-protocol',
+      'TKOUSDT': 'tokocrypto',
+      'FORUSDT': 'for-protocol',
+      'EASYUSDT': 'easyfi',
+      'AUTOUSDT': 'auto',
+      'VIDTUSDT': 'v-id-blockchain',
+      'COINUSDT': 'coin98',
+      'ERNUSDT': 'ethernity-chain',
+      'KLAYUSDT': 'klay-token',
+      'DYDXUSDT': 'dydx',
+      'GALAUSDT': 'gala',
+      'ILVUSDT': 'illuvium',
+      'YGGUSDT': 'yield-guild-games',
+      'FIDAUSDT': 'bonfida',
+      'FRONTUSDT': 'frontier-token',
+      'CVPUSDT': 'concentrated-voting-power',
+      'AGLDUSDT': 'adventure-gold',
+      'RADUSDT': 'radicle',
+      'BETAUSDT': 'beta-finance',
+      'RAREUSDT': 'superrare',
+      'LAZIOUSDT': 'lazio-fan-token',
+      'CHESSUSDT': 'tranchess',
+      'ADXUSDT': 'adex',
+      'AUCTIONUSDT': 'bounce-token',
+      'DARUSDT': 'mines-of-dalarnia',
+      'BNXUSDT': 'binaryx',
+      'RGTUSDT': 'rari-governance-token',
+      'MOVRUSDT': 'mover',
+      'CITYUSDT': 'manchester-city-fan-token',
+      'ENSUSDT': 'ethereum-name-service',
+      'KP3RUSDT': 'keep3rv1',
+      'QIUSDT': 'benqi',
+      'PORTOUSDT': 'porto',
+      'POWRUSDT': 'power-ledger',
+      'VGXUSDT': 'ethos',
+      'JASMYUSDT': 'jasmycoin',
+      'AMPUSDT': 'amp-token',
+      'PLAUSDT': 'playdapp',
+      'PYRUSDT': 'vulcan-forged',
+      'RNDRUSDT': 'render-token',
+      'ALCXUSDT': 'alchemix',
+      'SANTOSUSDT': 'santos-fc-fan-token',
+      'MCUSDT': 'merit-circle',
+      'ANYUSDT': 'anyswap',
+      'BICOUSDT': 'biconomy',
+      'FLUXUSDT': 'zelcash',
+      'FXSUSDT': 'frax-share',
+      'VOXELUSDT': 'voxies',
+      'HIGHUSDT': 'highstreet',
+      'CVXUSDT': 'convex-finance',
+      'PEOPLEUSDT': 'constitutiondao',
+      'OOKIUSDT': 'ooki',
+      'SPELLUSDT': 'spell-token',
+      'USTUSDT': 'terrausd',
+      'JOEUSDT': 'joe',
+      'ACHUSDT': 'achain',
+      'IMXUSDT': 'immutable-x',
+      'GLMRUSDT': 'glamorous',
+      'LOKAUSDT': 'loka',
+      'SCRTUSDT': 'secret',
+      'APIUSDT': 'api3',
+      'BTTCUSDT': 'bittorrent',
+      'ACMUSDT': 'ac-milan-fan-token',
+      'ANCUSDT': 'anchor-protocol',
+      'XNOUSDT': 'xeno-token',
+      'WOOUSDT': 'woo-network',
+      'ALPINEUSDT': 'alpine-f1-team-fan-token',
+      'TUSDT': 'threshold-network-token',
+      'ASTRUSDT': 'astrafer',
+      'NBTUSDT': 'nanobyte-token',
+      'GMTUSDT': 'stepn',
+      'KDAUSDT': 'kadena',
+      'APEUSDT': 'apecoin',
+      'BSWUSDT': 'biswap',
+      'BIFIUSDT': 'beefy-finance',
+      'MULTIUSDT': 'multichain',
+      'STEEMUSDT': 'steem',
+      'MOBUSDT': 'mobilecoin',
+      'NEXOUSDT': 'nexo',
+      'REIUSDT': 'rei-network',
+      'GALUSDT': 'galatasaray-fan-token',
+      'LDOUSDT': 'lido-dao',
+      'EPXUSDT': 'ellipsis',
+      'OPUSDT': 'optimism',
+      'LEVERUSDT': 'leverfi',
+      'STGUSDT': 'stargate-finance',
+      'LUNCUSDT': 'terra-luna',
+      'GMXUSDT': 'gmx',
+      'NEBULAUSDT': 'nebulas',
+      'POLYXUSDT': 'polymesh',
+      'APEUSDT': 'apecoin',
+      'BSWUSDT': 'biswap',
+      'BIFIUSDT': 'beefy-finance'
     };
 
     return symbolMap[symbol] || null;
@@ -132,17 +325,31 @@ const CoinGeckoChart: React.FC<CoinGeckoChartProps> = ({ symbol, onClose }) => {
                 src={coinData.image} 
                 alt={coinData.name}
                 className="w-8 h-8 rounded-full"
+                onError={(e) => {
+                  // Fallback если изображение не загружается
+                  (e.target as HTMLImageElement).style.display = 'none';
+                }}
               />
             )}
             <div>
               <h2 className="text-2xl font-bold text-gray-900">
-                {coinData ? coinData.name : symbol}
+                {coinData ? `${coinData.name} (${coinData.symbol})` : symbol}
               </h2>
               <p className="text-gray-600">Данные CoinGecko</p>
             </div>
           </div>
           
           <div className="flex items-center space-x-3">
+            {/* Кнопка обновления */}
+            <button
+              onClick={loadCoinData}
+              disabled={loading}
+              className="flex items-center space-x-2 bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-2 rounded-lg transition-colors disabled:opacity-50"
+            >
+              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+              <span>Обновить</span>
+            </button>
+
             {/* Период графика */}
             <div className="flex items-center space-x-1 bg-gray-100 rounded-lg p-1">
               {[
@@ -246,14 +453,23 @@ const CoinGeckoChart: React.FC<CoinGeckoChartProps> = ({ symbol, onClose }) => {
 
               {/* График */}
               <div className="flex-1 bg-gray-50 rounded-lg overflow-hidden">
-                <iframe
-                  src={chartUrl}
-                  width="100%"
-                  height="100%"
-                  frameBorder="0"
-                  title={`${coinData.name} Chart`}
-                  className="w-full h-full"
-                />
+                {chartUrl ? (
+                  <iframe
+                    src={chartUrl}
+                    width="100%"
+                    height="100%"
+                    frameBorder="0"
+                    title={`${coinData.name} Chart`}
+                    className="w-full h-full"
+                    onError={() => {
+                      setError('Ошибка загрузки графика CoinGecko');
+                    }}
+                  />
+                ) : (
+                  <div className="flex items-center justify-center h-full">
+                    <p className="text-gray-600">График недоступен</p>
+                  </div>
+                )}
               </div>
             </div>
           ) : (

@@ -52,26 +52,47 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
   const [isLoading, setIsLoading] = useState(true);
   const [showSignals, setShowSignals] = useState(true);
   const [signalShapes, setSignalShapes] = useState<any[]>([]);
+  const [scriptLoaded, setScriptLoaded] = useState(false);
 
   useEffect(() => {
     loadTradingViewScript();
+    return () => {
+      // Cleanup при размонтировании
+      if (widgetRef.current) {
+        try {
+          widgetRef.current.remove();
+        } catch (e) {
+          console.log('Widget cleanup error:', e);
+        }
+      }
+    };
   }, []);
 
   useEffect(() => {
-    if (window.TradingView && containerRef.current) {
+    if (scriptLoaded && containerRef.current) {
       createWidget();
     }
-  }, [symbol, interval, chartType, theme]);
+  }, [scriptLoaded, symbol, interval, chartType, theme]);
 
   useEffect(() => {
-    if (chartRef.current && showSignals) {
-      addSignalsToChart();
+    if (chartRef.current && showSignals && alerts.length > 0) {
+      // Добавляем небольшую задержку для стабильности
+      setTimeout(() => {
+        addSignalsToChart();
+      }, 1000);
     }
   }, [alerts, showSignals, chartRef.current]);
 
   const loadTradingViewScript = () => {
     if (window.TradingView) {
-      createWidget();
+      setScriptLoaded(true);
+      return;
+    }
+
+    // Проверяем, не загружается ли уже скрипт
+    const existingScript = document.querySelector('script[src*="tv.js"]');
+    if (existingScript) {
+      existingScript.addEventListener('load', () => setScriptLoaded(true));
       return;
     }
 
@@ -79,7 +100,11 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
     script.src = 'https://s3.tradingview.com/tv.js';
     script.async = true;
     script.onload = () => {
-      createWidget();
+      setScriptLoaded(true);
+    };
+    script.onerror = () => {
+      console.error('Ошибка загрузки TradingView скрипта');
+      setIsLoading(false);
     };
     document.head.appendChild(script);
   };
@@ -89,10 +114,18 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
 
     // Очищаем предыдущий виджет
     if (widgetRef.current) {
-      widgetRef.current.remove();
+      try {
+        widgetRef.current.remove();
+      } catch (e) {
+        console.log('Previous widget cleanup error:', e);
+      }
     }
 
     const tvSymbol = `BYBIT:${symbol.replace('USDT', '')}USDT.P`;
+    const containerId = `tradingview_${symbol}_${Date.now()}`;
+    
+    // Устанавливаем ID контейнера
+    containerRef.current.id = containerId;
 
     try {
       widgetRef.current = new window.TradingView.widget({
@@ -108,7 +141,7 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
         hide_top_toolbar: false,
         hide_legend: false,
         save_image: true,
-        container_id: containerRef.current.id,
+        container_id: containerId,
         studies: [
           'Volume@tv-basicstudies'
         ],
@@ -139,19 +172,26 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
       });
 
       widgetRef.current.onChartReady(() => {
-        chartRef.current = widgetRef.current.chart();
-        
-        // Добавляем основной алерт
-        if (alertPrice) {
-          addMainAlert();
-        }
+        try {
+          chartRef.current = widgetRef.current.chart();
+          
+          // Добавляем основной алерт
+          if (alertPrice) {
+            addMainAlert();
+          }
 
-        // Добавляем все сигналы
-        if (showSignals) {
-          addSignalsToChart();
-        }
+          // Добавляем все сигналы
+          if (showSignals && alerts.length > 0) {
+            setTimeout(() => {
+              addSignalsToChart();
+            }, 500);
+          }
 
-        setIsLoading(false);
+          setIsLoading(false);
+        } catch (error) {
+          console.error('Ошибка инициализации графика:', error);
+          setIsLoading(false);
+        }
       });
 
     } catch (error) {
@@ -165,7 +205,7 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
 
     try {
       // Горизонтальная линия уровня алерта
-      const alertLine = chartRef.current.createShape(
+      chartRef.current.createShape(
         { time: Date.now() / 1000, price: alertPrice },
         {
           shape: 'horizontal_line',
@@ -518,7 +558,6 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
           
           <div
             ref={containerRef}
-            id={`tradingview_${symbol}_${Date.now()}`}
             className="w-full h-full"
           />
         </div>
