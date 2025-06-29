@@ -767,7 +767,10 @@ function App() {
                 onClick={() => setActiveTab(tab.id as any)}
                 className={`flex items-center space-x-2 py-3 px-4 rounded-lg font-medium text-sm transition-all ${
                   activeTab === tab.id
-                    ? `bg-${tab.color}-100 text-${tab.color}-700 shadow-sm`
+                    ? tab.color === 'orange' ? 'bg-orange-100 text-orange-700 shadow-sm' :
+                      tab.color === 'green' ? 'bg-green-100 text-green-700 shadow-sm' :
+                      tab.color === 'purple' ? 'bg-purple-100 text-purple-700 shadow-sm' :
+                      'bg-yellow-100 text-yellow-700 shadow-sm'
                     : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
                 }`}
               >
@@ -775,7 +778,10 @@ function App() {
                 <span>{tab.label}</span>
                 <span className={`px-2 py-1 rounded-full text-xs font-medium ${
                   activeTab === tab.id 
-                    ? `bg-${tab.color}-200 text-${tab.color}-800`
+                    ? tab.color === 'orange' ? 'bg-orange-200 text-orange-800' :
+                      tab.color === 'green' ? 'bg-green-200 text-green-800' :
+                      tab.color === 'purple' ? 'bg-purple-200 text-purple-800' :
+                      'bg-yellow-200 text-yellow-800'
                     : 'bg-gray-200 text-gray-600'
                 }`}>
                   {tab.count}
