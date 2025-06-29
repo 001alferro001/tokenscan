@@ -19,6 +19,7 @@ from price_filter import PriceFilter
 from telegram_bot import TelegramBot
 from time_sync import ExchangeTimeSync
 from trading_api import BybitTradingAPI
+from social_sentiment import SocialSentimentAnalyzer
 
 # Настройка логирования
 logging.basicConfig(
@@ -36,6 +37,7 @@ telegram_bot = None
 time_sync = None
 manager = None
 trading_api = None
+social_analyzer = None
 
 
 class ConnectionManager:
@@ -179,7 +181,7 @@ class ApiConnectionTest(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    global db_manager, alert_manager, bybit_client, price_filter, telegram_bot, time_sync, trading_api
+    global db_manager, alert_manager, bybit_client, price_filter, telegram_bot, time_sync, trading_api, social_analyzer
 
     try:
         logger.info("Запуск системы анализа объемов...")
@@ -209,6 +211,11 @@ async def lifespan(app: FastAPI):
             api_secret=trading_settings.get('api_secret')
         )
 
+        # Инициализация анализатора социальных настроений
+        social_analyzer = SocialSentimentAnalyzer(db_manager)
+        await social_analyzer.start()
+        logger.info("Анализатор социальных настроений запущен")
+
         # Получение списка торговых пар
         trading_pairs = await db_manager.get_watchlist()
         if not trading_pairs:
@@ -231,6 +238,9 @@ async def lifespan(app: FastAPI):
             # Запуск периодической очистки данных
             asyncio.create_task(periodic_cleanup())
 
+            # Запуск периодического обновления социальных рейтингов
+            asyncio.create_task(periodic_social_update())
+
             logger.info("Система успешно запущена с синхронизацией времени!")
         else:
             logger.error("Не удалось получить торговые пары. Система не запущена.")
@@ -249,6 +259,8 @@ async def lifespan(app: FastAPI):
         await bybit_client.stop()
     if price_filter:
         await price_filter.stop()
+    if social_analyzer:
+        await social_analyzer.stop()
     if db_manager:
         db_manager.close()
 
@@ -269,6 +281,23 @@ async def periodic_cleanup():
             logger.info("Периодическая очистка данных выполнена")
         except Exception as e:
             logger.error(f"Ошибка периодической очистки: {e}")
+
+
+async def periodic_social_update():
+    """Периодическое обновление социальных рейтингов"""
+    while True:
+        try:
+            await asyncio.sleep(1800)  # Каждые 30 минут
+            if social_analyzer and db_manager:
+                # Получаем список активных торговых пар
+                trading_pairs = await db_manager.get_watchlist()
+                if trading_pairs:
+                    logger.info(f"Обновление социальных рейтингов для {len(trading_pairs)} пар")
+                    # Обновляем рейтинги для всех пар
+                    await social_analyzer.get_ratings_for_symbols(trading_pairs[:20])  # Ограничиваем 20 парами
+                    logger.info("Обновление социальных рейтингов завершено")
+        except Exception as e:
+            logger.error(f"Ошибка обновления социальных рейтингов: {e}")
 
 
 # WebSocket endpoint
@@ -329,6 +358,102 @@ async def get_stats():
         }
     except Exception as e:
         logger.error(f"Ошибка получения статистики: {e}")
+        return {"error": str(e)}
+
+
+@app.get("/api/social-ratings")
+async def get_social_ratings(symbols: Optional[str] = None):
+    """Получить социальные рейтинги для торговых пар"""
+    try:
+        if not social_analyzer:
+            return {"error": "Social analyzer not initialized"}
+
+        if symbols:
+            # Получаем рейтинги для конкретных символов
+            symbol_list = [s.strip().upper() for s in symbols.split(',')]
+            ratings = await social_analyzer.get_ratings_for_symbols(symbol_list)
+        else:
+            # Получаем рейтинги для всех активных пар
+            watchlist = await db_manager.get_watchlist()
+            ratings = await social_analyzer.get_ratings_for_symbols(watchlist[:20])
+
+        # Преобразуем в формат для API
+        formatted_ratings = {}
+        for symbol, rating in ratings.items():
+            formatted_ratings[symbol] = {
+                'overall_score': rating.overall_score,
+                'mention_count': rating.mention_count,
+                'positive_mentions': rating.positive_mentions,
+                'negative_mentions': rating.negative_mentions,
+                'neutral_mentions': rating.neutral_mentions,
+                'trending_score': rating.trending_score,
+                'volume_score': rating.volume_score,
+                'sentiment_trend': rating.sentiment_trend,
+                'last_updated': rating.last_updated.isoformat(),
+                'rating_emoji': social_analyzer.get_rating_emoji(rating.overall_score),
+                'trend_emoji': social_analyzer.get_trend_emoji(rating.sentiment_trend),
+                'top_mentions': [
+                    {
+                        'platform': mention.platform,
+                        'text': mention.text[:100] + '...' if len(mention.text) > 100 else mention.text,
+                        'author': mention.author,
+                        'engagement': mention.engagement,
+                        'sentiment_score': mention.sentiment_score,
+                        'timestamp': mention.timestamp.isoformat()
+                    }
+                    for mention in rating.top_mentions[:3]
+                ]
+            }
+
+        return {"ratings": formatted_ratings}
+
+    except Exception as e:
+        logger.error(f"Ошибка получения социальных рейтингов: {e}")
+        return {"error": str(e)}
+
+
+@app.get("/api/social-rating/{symbol}")
+async def get_symbol_social_rating(symbol: str):
+    """Получить детальный социальный рейтинг для конкретной торговой пары"""
+    try:
+        if not social_analyzer:
+            return {"error": "Social analyzer not initialized"}
+
+        rating = await social_analyzer.get_symbol_rating(symbol.upper())
+        
+        if not rating:
+            return {"error": f"No rating data available for {symbol}"}
+
+        return {
+            "symbol": rating.symbol,
+            "overall_score": rating.overall_score,
+            "mention_count": rating.mention_count,
+            "positive_mentions": rating.positive_mentions,
+            "negative_mentions": rating.negative_mentions,
+            "neutral_mentions": rating.neutral_mentions,
+            "trending_score": rating.trending_score,
+            "volume_score": rating.volume_score,
+            "sentiment_trend": rating.sentiment_trend,
+            "last_updated": rating.last_updated.isoformat(),
+            "rating_emoji": social_analyzer.get_rating_emoji(rating.overall_score),
+            "trend_emoji": social_analyzer.get_trend_emoji(rating.sentiment_trend),
+            "top_mentions": [
+                {
+                    'platform': mention.platform,
+                    'text': mention.text,
+                    'author': mention.author,
+                    'engagement': mention.engagement,
+                    'sentiment_score': mention.sentiment_score,
+                    'confidence': mention.confidence,
+                    'timestamp': mention.timestamp.isoformat(),
+                    'url': mention.url
+                }
+                for mention in rating.top_mentions
+            ]
+        }
+
+    except Exception as e:
+        logger.error(f"Ошибка получения рейтинга для {symbol}: {e}")
         return {"error": str(e)}
 
 
