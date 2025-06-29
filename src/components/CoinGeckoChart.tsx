@@ -192,7 +192,9 @@ const CoinGeckoChart: React.FC<CoinGeckoChartProps> = ({ symbol, onClose }) => {
       'ONTUSDT': 'ontology',
       'FETUSDT': 'fetch-ai',
       'CELRUSDT': 'celer-network',
-      'BANDUSDT': 'band-protocol'
+      'BANDUSDT': 'band-protocol',
+      'REXUSDT': 'rexcoin',
+      'AIXBTUSDT': 'aixbt-by-virtuals'
     };
 
     return symbolMap[symbol] || null;

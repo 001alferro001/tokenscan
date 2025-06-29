@@ -15,7 +15,6 @@ import {
   Zap
 } from 'lucide-react';
 import ChartSelector from './components/ChartSelector';
-import SmartMoneyChartModal from './components/SmartMoneyChartModal';
 import WatchlistModal from './components/WatchlistModal';
 import StreamDataModal from './components/StreamDataModal';
 import SettingsModal from './components/SettingsModal';
@@ -1250,8 +1249,25 @@ const App: React.FC = () => {
         )}
 
         {selectedSmartMoneyAlert && (
-          <SmartMoneyChartModal
-            alert={selectedSmartMoneyAlert}
+          <ChartSelector
+            alert={{
+              id: selectedSmartMoneyAlert.id,
+              symbol: selectedSmartMoneyAlert.symbol,
+              alert_type: 'smart_money',
+              price: selectedSmartMoneyAlert.price,
+              timestamp: selectedSmartMoneyAlert.timestamp,
+              close_timestamp: selectedSmartMoneyAlert.timestamp,
+              has_imbalance: true,
+              imbalance_data: {
+                type: selectedSmartMoneyAlert.type,
+                direction: selectedSmartMoneyAlert.direction,
+                strength: selectedSmartMoneyAlert.strength,
+                top: selectedSmartMoneyAlert.top,
+                bottom: selectedSmartMoneyAlert.bottom
+              },
+              is_closed: true,
+              message: `Smart Money: ${selectedSmartMoneyAlert.type}`
+            }}
             onClose={() => setSelectedSmartMoneyAlert(null)}
           />
         )}
