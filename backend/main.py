@@ -3,7 +3,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from typing import List, Dict, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
@@ -76,6 +76,70 @@ class ConnectionManager:
 
 
 manager = ConnectionManager()
+
+
+# Модели данных
+class WatchlistAdd(BaseModel):
+    symbol: str
+
+
+class WatchlistUpdate(BaseModel):
+    id: int
+    symbol: str
+    is_active: bool
+
+
+class FavoriteAdd(BaseModel):
+    symbol: str
+    notes: Optional[str] = None
+    color: Optional[str] = '#FFD700'
+
+
+class FavoriteUpdate(BaseModel):
+    notes: Optional[str] = None
+    color: Optional[str] = None
+    sort_order: Optional[int] = None
+
+
+class FavoriteReorder(BaseModel):
+    symbol_order: List[str]
+
+
+class PaperTradeCreate(BaseModel):
+    symbol: str
+    trade_type: str  # 'LONG' or 'SHORT'
+    entry_price: float
+    quantity: Optional[float] = None
+    stop_loss: Optional[float] = None
+    take_profit: Optional[float] = None
+    risk_amount: Optional[float] = None
+    risk_percentage: Optional[float] = None
+    notes: Optional[str] = None
+    alert_id: Optional[int] = None
+
+
+class PaperTradeClose(BaseModel):
+    exit_price: float
+    exit_reason: Optional[str] = 'MANUAL'
+
+
+class TradingSettingsUpdate(BaseModel):
+    account_balance: Optional[float] = None
+    max_risk_per_trade: Optional[float] = None
+    max_open_trades: Optional[int] = None
+    default_stop_loss_percentage: Optional[float] = None
+    default_take_profit_percentage: Optional[float] = None
+    auto_calculate_quantity: Optional[bool] = None
+
+
+class RiskCalculatorRequest(BaseModel):
+    entry_price: float
+    stop_loss: Optional[float] = None
+    take_profit: Optional[float] = None
+    risk_amount: Optional[float] = None
+    risk_percentage: Optional[float] = None
+    account_balance: Optional[float] = None
+    trade_type: str = 'LONG'
 
 
 @asynccontextmanager
@@ -151,33 +215,6 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Trading Volume Analyzer", lifespan=lifespan)
 
 
-# Модели данных
-class WatchlistAdd(BaseModel):
-    symbol: str
-
-
-class WatchlistUpdate(BaseModel):
-    id: int
-    symbol: str
-    is_active: bool
-
-
-class FavoriteAdd(BaseModel):
-    symbol: str
-    notes: Optional[str] = None
-    color: Optional[str] = '#FFD700'
-
-
-class FavoriteUpdate(BaseModel):
-    notes: Optional[str] = None
-    color: Optional[str] = None
-    sort_order: Optional[int] = None
-
-
-class FavoriteReorder(BaseModel):
-    symbol_order: List[str]
-
-
 async def periodic_cleanup():
     """Периодическая очистка старых данных"""
     while True:
@@ -228,6 +265,7 @@ async def get_stats():
         watchlist = await db_manager.get_watchlist()
         alerts_data = await db_manager.get_all_alerts(limit=1000)
         favorites = await db_manager.get_favorites()
+        trading_stats = await db_manager.get_trading_statistics()
 
         # Добавляем информацию о синхронизации времени
         time_sync_info = {}
@@ -241,7 +279,8 @@ async def get_stats():
             "volume_alerts_count": len(alerts_data.get('volume_alerts', [])),
             "consecutive_alerts_count": len(alerts_data.get('consecutive_alerts', [])),
             "priority_alerts_count": len(alerts_data.get('priority_alerts', [])),
-            "last_update": datetime.now().isoformat(),
+            "trading_stats": trading_stats,
+            "last_update": datetime.now(timezone.utc).isoformat(),
             "system_status": "running",
             "time_sync": time_sync_info
         }
@@ -262,12 +301,12 @@ async def get_time_info():
             return sync_status
         else:
             # Fallback на локальное UTC время
-            current_time_ms = int(datetime.utcnow().timestamp() * 1000)
+            current_time_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
             fallback_response = {
                 "is_synced": False,
                 "serverTime": current_time_ms,  # Ключевое поле для клиента
-                "local_time": datetime.utcnow().isoformat(),
-                "utc_time": datetime.utcnow().isoformat(),
+                "local_time": datetime.now(timezone.utc).isoformat(),
+                "utc_time": datetime.now(timezone.utc).isoformat(),
                 "time_offset_ms": 0,
                 "status": "not_synced"
             }
@@ -277,12 +316,12 @@ async def get_time_info():
     except Exception as e:
         logger.error(f"Ошибка получения информации о времени: {e}")
         # Аварийный fallback
-        current_time_ms = int(datetime.utcnow().timestamp() * 1000)
+        current_time_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
         return {
             "is_synced": False,
             "serverTime": current_time_ms,
-            "local_time": datetime.utcnow().isoformat(),
-            "utc_time": datetime.utcnow().isoformat(),
+            "local_time": datetime.now(timezone.utc).isoformat(),
+            "utc_time": datetime.now(timezone.utc).isoformat(),
             "time_offset_ms": 0,
             "status": "error",
             "error": str(e)
@@ -304,7 +343,7 @@ async def get_alerts_by_symbol(symbol: str, hours: int = 24):
         ]
         
         # Фильтруем по символу и времени
-        cutoff_time = datetime.utcnow() - timedelta(hours=hours)
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
         cutoff_timestamp_ms = int(cutoff_time.timestamp() * 1000)
         
         symbol_alerts = []
@@ -494,6 +533,222 @@ async def reorder_favorites(item: FavoriteReorder):
         return {"status": "success"}
     except Exception as e:
         logger.error(f"Ошибка изменения порядка избранных пар: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# API для бумажной торговли
+@app.get("/api/trading/settings")
+async def get_trading_settings():
+    """Получить настройки торговли"""
+    try:
+        settings = await db_manager.get_trading_settings()
+        return {"settings": settings}
+    except Exception as e:
+        logger.error(f"Ошибка получения настроек торговли: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/trading/settings")
+async def update_trading_settings(settings: TradingSettingsUpdate):
+    """Обновить настройки торговли"""
+    try:
+        settings_dict = settings.dict(exclude_unset=True)
+        await db_manager.update_trading_settings(settings_dict)
+        return {"status": "success"}
+    except Exception as e:
+        logger.error(f"Ошибка обновления настроек торговли: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/trading/calculate-risk")
+async def calculate_risk(request: RiskCalculatorRequest):
+    """Калькулятор риска и прибыли"""
+    try:
+        # Получаем настройки торговли
+        settings = await db_manager.get_trading_settings()
+        account_balance = request.account_balance or settings.get('account_balance', 10000)
+        
+        # Базовые расчеты
+        entry_price = request.entry_price
+        stop_loss = request.stop_loss
+        take_profit = request.take_profit
+        trade_type = request.trade_type.upper()
+        
+        result = {
+            'entry_price': entry_price,
+            'stop_loss': stop_loss,
+            'take_profit': take_profit,
+            'trade_type': trade_type,
+            'account_balance': account_balance
+        }
+        
+        # Если указан риск в деньгах
+        if request.risk_amount:
+            risk_amount = request.risk_amount
+            risk_percentage = (risk_amount / account_balance) * 100
+        # Если указан риск в процентах
+        elif request.risk_percentage:
+            risk_percentage = request.risk_percentage
+            risk_amount = (account_balance * risk_percentage) / 100
+        # Используем настройки по умолчанию
+        else:
+            risk_percentage = settings.get('max_risk_per_trade', 2.0)
+            risk_amount = (account_balance * risk_percentage) / 100
+        
+        result.update({
+            'risk_amount': round(risk_amount, 2),
+            'risk_percentage': round(risk_percentage, 2)
+        })
+        
+        # Рассчитываем количество токенов, если указан стоп-лосс
+        if stop_loss:
+            if trade_type == 'LONG':
+                price_diff = entry_price - stop_loss
+            else:  # SHORT
+                price_diff = stop_loss - entry_price
+            
+            if price_diff > 0:
+                quantity = risk_amount / price_diff
+                result['quantity'] = round(quantity, 8)
+                result['position_size'] = round(quantity * entry_price, 2)
+                
+                # Рассчитываем потенциальную прибыль, если указан тейк-профит
+                if take_profit:
+                    if trade_type == 'LONG':
+                        profit_diff = take_profit - entry_price
+                    else:  # SHORT
+                        profit_diff = entry_price - take_profit
+                    
+                    if profit_diff > 0:
+                        potential_profit = quantity * profit_diff
+                        result['potential_profit'] = round(potential_profit, 2)
+                        result['potential_profit_percentage'] = round((potential_profit / (quantity * entry_price)) * 100, 2)
+                        result['risk_reward_ratio'] = round(potential_profit / risk_amount, 2)
+                
+                # Рассчитываем потенциальный убыток
+                potential_loss = quantity * price_diff
+                result['potential_loss'] = round(potential_loss, 2)
+                result['potential_loss_percentage'] = round((potential_loss / (quantity * entry_price)) * 100, 2)
+            else:
+                result['error'] = 'Некорректные уровни стоп-лосса'
+        else:
+            result['error'] = 'Стоп-лосс не указан'
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Ошибка расчета риска: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/trading/trades")
+async def create_paper_trade(trade: PaperTradeCreate):
+    """Создать бумажную сделку"""
+    try:
+        # Автоматически рассчитываем параметры, если не указаны
+        settings = await db_manager.get_trading_settings()
+        
+        trade_data = trade.dict()
+        
+        # Рассчитываем количество, если не указано
+        if not trade_data.get('quantity') and trade_data.get('stop_loss'):
+            account_balance = settings.get('account_balance', 10000)
+            risk_percentage = trade_data.get('risk_percentage') or settings.get('max_risk_per_trade', 2.0)
+            risk_amount = (account_balance * risk_percentage) / 100
+            
+            entry_price = trade_data['entry_price']
+            stop_loss = trade_data['stop_loss']
+            
+            if trade_data['trade_type'].upper() == 'LONG':
+                price_diff = entry_price - stop_loss
+            else:
+                price_diff = stop_loss - entry_price
+            
+            if price_diff > 0:
+                quantity = risk_amount / price_diff
+                trade_data['quantity'] = quantity
+                trade_data['risk_amount'] = risk_amount
+                trade_data['risk_percentage'] = risk_percentage
+                
+                # Рассчитываем потенциальную прибыль
+                if trade_data.get('take_profit'):
+                    take_profit = trade_data['take_profit']
+                    if trade_data['trade_type'].upper() == 'LONG':
+                        profit_diff = take_profit - entry_price
+                    else:
+                        profit_diff = entry_price - take_profit
+                    
+                    if profit_diff > 0:
+                        potential_profit = quantity * profit_diff
+                        potential_loss = quantity * price_diff
+                        trade_data['potential_profit'] = potential_profit
+                        trade_data['potential_loss'] = potential_loss
+                        trade_data['risk_reward_ratio'] = potential_profit / potential_loss
+        
+        trade_id = await db_manager.create_paper_trade(trade_data)
+        
+        if trade_id:
+            # Уведомляем клиентов о новой сделке
+            await manager.broadcast_json({
+                "type": "paper_trade_created",
+                "trade_id": trade_id,
+                "symbol": trade_data['symbol']
+            })
+            
+            return {"status": "success", "trade_id": trade_id}
+        else:
+            raise HTTPException(status_code=500, detail="Не удалось создать сделку")
+            
+    except Exception as e:
+        logger.error(f"Ошибка создания бумажной сделки: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/trading/trades")
+async def get_paper_trades(status: Optional[str] = None, limit: int = 100):
+    """Получить список бумажных сделок"""
+    try:
+        trades = await db_manager.get_paper_trades(status, limit)
+        return {"trades": trades}
+    except Exception as e:
+        logger.error(f"Ошибка получения бумажных сделок: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/trading/trades/{trade_id}/close")
+async def close_paper_trade(trade_id: int, close_data: PaperTradeClose):
+    """Закрыть бумажную сделку"""
+    try:
+        success = await db_manager.close_paper_trade(
+            trade_id, 
+            close_data.exit_price, 
+            close_data.exit_reason
+        )
+        
+        if success:
+            # Уведомляем клиентов о закрытии сделки
+            await manager.broadcast_json({
+                "type": "paper_trade_closed",
+                "trade_id": trade_id
+            })
+            
+            return {"status": "success"}
+        else:
+            raise HTTPException(status_code=404, detail="Сделка не найдена или уже закрыта")
+            
+    except Exception as e:
+        logger.error(f"Ошибка закрытия бумажной сделки: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/trading/statistics")
+async def get_trading_statistics():
+    """Получить статистику торговли"""
+    try:
+        stats = await db_manager.get_trading_statistics()
+        return {"statistics": stats}
+    except Exception as e:
+        logger.error(f"Ошибка получения статистики торговли: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

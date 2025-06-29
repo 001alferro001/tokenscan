@@ -1,9 +1,9 @@
 import asyncio
 import logging
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import os
 import json
 
@@ -31,7 +31,7 @@ class DatabaseManager:
             await self.create_tables()
 
             # Обновляем существующие таблицы
-            await self.migrate_tables()
+            await self.update_tables()
 
             logger.info("База данных успешно инициализирована")
 
@@ -40,11 +40,11 @@ class DatabaseManager:
             raise
 
     async def create_tables(self):
-        """Создание необходимых таблиц только с timestamp в миллисекундах"""
+        """Создание необходимых таблиц с UTC временем"""
         try:
             cursor = self.connection.cursor()
 
-            # Создаем таблицу watchlist с полем избранного
+            # Создаем таблицу watchlist
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS watchlist (
                     id SERIAL PRIMARY KEY,
@@ -54,24 +54,37 @@ class DatabaseManager:
                     price_drop_percentage DECIMAL(5, 2),
                     current_price DECIMAL(20, 8),
                     historical_price DECIMAL(20, 8),
+                    notes TEXT,
+                    color VARCHAR(7) DEFAULT '#FFD700',
+                    sort_order INTEGER DEFAULT 0,
                     created_at_ms BIGINT DEFAULT EXTRACT(EPOCH FROM NOW()) * 1000,
-                    updated_at_ms BIGINT DEFAULT EXTRACT(EPOCH FROM NOW()) * 1000
+                    updated_at_ms BIGINT DEFAULT EXTRACT(EPOCH FROM NOW()) * 1000,
+                    favorite_added_at_ms BIGINT,
+                    created_at_readable VARCHAR(30),
+                    updated_at_readable VARCHAR(30),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
 
-            # Создаем таблицу избранного (для дополнительной информации)
+            # Создаем таблицу избранного
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS favorites (
                     id SERIAL PRIMARY KEY,
                     symbol VARCHAR(20) NOT NULL UNIQUE,
-                    added_at_ms BIGINT DEFAULT EXTRACT(EPOCH FROM NOW()) * 1000,
                     notes TEXT,
                     color VARCHAR(7) DEFAULT '#FFD700',
-                    sort_order INTEGER DEFAULT 0
+                    sort_order INTEGER DEFAULT 0,
+                    created_at_ms BIGINT DEFAULT EXTRACT(EPOCH FROM NOW()) * 1000,
+                    updated_at_ms BIGINT DEFAULT EXTRACT(EPOCH FROM NOW()) * 1000,
+                    created_at_readable VARCHAR(30),
+                    updated_at_readable VARCHAR(30),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
 
-            # Создаем основную таблицу для исторических данных свечей (только timestamp в мс)
+            # Создаем основную таблицу для исторических данных свечей (UTC время)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS kline_data (
                     id SERIAL PRIMARY KEY,
@@ -86,7 +99,13 @@ class DatabaseManager:
                     volume_usdt DECIMAL(20, 8) NOT NULL,
                     is_long BOOLEAN NOT NULL,
                     is_closed BOOLEAN DEFAULT TRUE,
+                    open_time_readable VARCHAR(30),
+                    close_time_readable VARCHAR(30),
                     created_at_ms BIGINT DEFAULT EXTRACT(EPOCH FROM NOW()) * 1000,
+                    created_at_readable VARCHAR(30),
+                    open_time BIGINT,
+                    close_time BIGINT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(symbol, open_time_ms)
                 )
             """)
@@ -107,11 +126,14 @@ class DatabaseManager:
                     is_long BOOLEAN NOT NULL,
                     is_closed BOOLEAN DEFAULT FALSE,
                     last_update_ms BIGINT DEFAULT EXTRACT(EPOCH FROM NOW()) * 1000,
+                    open_time_readable VARCHAR(30),
+                    close_time_readable VARCHAR(30),
+                    last_update_readable VARCHAR(30),
                     UNIQUE(symbol, open_time_ms)
                 )
             """)
 
-            # Создаем обновленную таблицу алертов только с timestamp в мс
+            # Создаем обновленную таблицу алертов с UTC временем
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS alerts (
                     id SERIAL PRIMARY KEY,
@@ -129,13 +151,78 @@ class DatabaseManager:
                     telegram_sent BOOLEAN DEFAULT FALSE,
                     alert_timestamp_ms BIGINT NOT NULL,
                     close_timestamp_ms BIGINT,
+                    alert_timestamp_readable VARCHAR(30),
+                    close_timestamp_readable VARCHAR(30),
                     candle_data JSONB,
                     preliminary_alert JSONB,
                     imbalance_data JSONB,
                     order_book_snapshot JSONB,
                     created_at_ms BIGINT DEFAULT EXTRACT(EPOCH FROM NOW()) * 1000,
-                    updated_at_ms BIGINT DEFAULT EXTRACT(EPOCH FROM NOW()) * 1000
+                    updated_at_ms BIGINT DEFAULT EXTRACT(EPOCH FROM NOW()) * 1000,
+                    created_at_readable VARCHAR(30),
+                    updated_at_readable VARCHAR(30),
+                    alert_timestamp TIMESTAMP,
+                    close_timestamp TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
+            """)
+
+            # Создаем таблицу для бумажной торговли
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS paper_trades (
+                    id SERIAL PRIMARY KEY,
+                    symbol VARCHAR(20) NOT NULL,
+                    trade_type VARCHAR(10) NOT NULL CHECK (trade_type IN ('LONG', 'SHORT')),
+                    entry_price DECIMAL(20, 8) NOT NULL,
+                    quantity DECIMAL(20, 8) NOT NULL,
+                    stop_loss DECIMAL(20, 8),
+                    take_profit DECIMAL(20, 8),
+                    risk_amount DECIMAL(20, 8) NOT NULL,
+                    risk_percentage DECIMAL(5, 2) NOT NULL,
+                    potential_profit DECIMAL(20, 8),
+                    potential_loss DECIMAL(20, 8),
+                    risk_reward_ratio DECIMAL(10, 2),
+                    status VARCHAR(20) DEFAULT 'OPEN' CHECK (status IN ('OPEN', 'CLOSED', 'CANCELLED')),
+                    exit_price DECIMAL(20, 8),
+                    exit_reason VARCHAR(50),
+                    pnl DECIMAL(20, 8),
+                    pnl_percentage DECIMAL(10, 2),
+                    notes TEXT,
+                    alert_id INTEGER REFERENCES alerts(id),
+                    opened_at_ms BIGINT DEFAULT EXTRACT(EPOCH FROM NOW()) * 1000,
+                    closed_at_ms BIGINT,
+                    opened_at_readable VARCHAR(30),
+                    closed_at_readable VARCHAR(30),
+                    opened_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    closed_at TIMESTAMP
+                )
+            """)
+
+            # Создаем таблицу настроек торговли
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS trading_settings (
+                    id SERIAL PRIMARY KEY,
+                    user_id VARCHAR(50) DEFAULT 'default',
+                    account_balance DECIMAL(20, 8) DEFAULT 10000.00,
+                    max_risk_per_trade DECIMAL(5, 2) DEFAULT 2.00,
+                    max_open_trades INTEGER DEFAULT 5,
+                    default_stop_loss_percentage DECIMAL(5, 2) DEFAULT 2.00,
+                    default_take_profit_percentage DECIMAL(5, 2) DEFAULT 6.00,
+                    auto_calculate_quantity BOOLEAN DEFAULT TRUE,
+                    created_at_ms BIGINT DEFAULT EXTRACT(EPOCH FROM NOW()) * 1000,
+                    updated_at_ms BIGINT DEFAULT EXTRACT(EPOCH FROM NOW()) * 1000,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_id)
+                )
+            """)
+
+            # Вставляем настройки по умолчанию
+            cursor.execute("""
+                INSERT INTO trading_settings (user_id) 
+                VALUES ('default') 
+                ON CONFLICT (user_id) DO NOTHING
             """)
 
             # Создаем индексы для оптимизации запросов
@@ -169,169 +256,145 @@ class DatabaseManager:
                 ON alerts(close_timestamp_ms DESC NULLS LAST)
             """)
 
-            # Индексы для избранного
             cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_watchlist_favorite 
-                ON watchlist(is_favorite, symbol)
+                CREATE INDEX IF NOT EXISTS idx_paper_trades_symbol_status 
+                ON paper_trades(symbol, status)
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_paper_trades_opened_at_ms 
+                ON paper_trades(opened_at_ms DESC)
             """)
 
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_favorites_sort_order 
-                ON favorites(sort_order, symbol)
+                ON favorites(sort_order)
             """)
 
             cursor.close()
-            logger.info("Таблицы с timestamp в миллисекундах и функциональностью избранного успешно созданы")
+            logger.info("Таблицы с UTC временем успешно созданы")
 
         except Exception as e:
             logger.error(f"Ошибка создания таблиц: {e}")
             raise
 
-    async def migrate_tables(self):
-        """Миграция существующих таблиц - добавление полей избранного"""
+    async def update_tables(self):
+        """Обновление существующих таблиц для добавления новых столбцов"""
         try:
             cursor = self.connection.cursor()
 
-            # Добавляем поле is_favorite в watchlist, если его нет
-            try:
-                cursor.execute("""
-                    ALTER TABLE watchlist 
-                    ADD COLUMN IF NOT EXISTS is_favorite BOOLEAN DEFAULT FALSE
-                """)
-                logger.debug("Добавлено поле is_favorite в таблицу watchlist")
-            except Exception as e:
-                logger.debug(f"Поле is_favorite уже существует в watchlist: {e}")
+            # Добавляем новые столбцы в существующие таблицы, если их нет
+            tables_to_update = [
+                ('watchlist', [
+                    ('is_favorite', 'BOOLEAN DEFAULT FALSE'),
+                    ('notes', 'TEXT'),
+                    ('color', 'VARCHAR(7) DEFAULT \'#FFD700\''),
+                    ('sort_order', 'INTEGER DEFAULT 0'),
+                    ('favorite_added_at_ms', 'BIGINT'),
+                    ('created_at_ms', 'BIGINT'),
+                    ('updated_at_ms', 'BIGINT'),
+                    ('created_at_readable', 'VARCHAR(30)'),
+                    ('updated_at_readable', 'VARCHAR(30)')
+                ]),
+                ('kline_data', [
+                    ('open_time_ms', 'BIGINT'),
+                    ('close_time_ms', 'BIGINT'),
+                    ('is_closed', 'BOOLEAN DEFAULT TRUE'),
+                    ('open_time_readable', 'VARCHAR(30)'),
+                    ('close_time_readable', 'VARCHAR(30)'),
+                    ('created_at_ms', 'BIGINT'),
+                    ('created_at_readable', 'VARCHAR(30)')
+                ]),
+                ('alerts', [
+                    ('alert_timestamp_ms', 'BIGINT'),
+                    ('close_timestamp_ms', 'BIGINT'),
+                    ('alert_timestamp_readable', 'VARCHAR(30)'),
+                    ('close_timestamp_readable', 'VARCHAR(30)'),
+                    ('created_at_ms', 'BIGINT'),
+                    ('updated_at_ms', 'BIGINT'),
+                    ('created_at_readable', 'VARCHAR(30)'),
+                    ('updated_at_readable', 'VARCHAR(30)')
+                ])
+            ]
 
-            # Список столбцов для удаления из каждой таблицы
-            tables_to_clean = {
-                'watchlist': [
-                    'created_at_unix', 'updated_at_unix', 'created_at_readable', 
-                    'updated_at_readable', 'created_at', 'updated_at'
-                ],
-                'kline_data': [
-                    'open_time_unix', 'close_time_unix', 'open_time_readable', 
-                    'close_time_readable', 'created_at_unix', 'created_at_readable',
-                    'open_time', 'close_time', 'created_at'
-                ],
-                'kline_stream': [
-                    'open_time_unix', 'close_time_unix', 'open_time_readable',
-                    'close_time_readable', 'last_update_readable'
-                ],
-                'alerts': [
-                    'alert_timestamp_unix', 'close_timestamp_unix', 'alert_timestamp_readable',
-                    'close_timestamp_readable', 'created_at_unix', 'updated_at_unix',
-                    'created_at_readable', 'updated_at_readable', 'alert_timestamp',
-                    'close_timestamp', 'created_at', 'updated_at'
-                ]
-            }
-
-            for table_name, columns_to_drop in tables_to_clean.items():
-                for column_name in columns_to_drop:
+            for table_name, columns in tables_to_update:
+                for column_name, column_type in columns:
                     try:
                         cursor.execute(f"""
                             ALTER TABLE {table_name} 
-                            DROP COLUMN IF EXISTS {column_name}
+                            ADD COLUMN IF NOT EXISTS {column_name} {column_type}
                         """)
-                        logger.debug(f"Удален столбец {column_name} из таблицы {table_name}")
                     except Exception as e:
-                        logger.debug(f"Столбец {column_name} не существует в {table_name}: {e}")
+                        logger.debug(f"Столбец {column_name} уже существует в {table_name}: {e}")
+
+            # Заполняем UTC столбцы из существующих timestamp столбцов
+            cursor.execute("""
+                UPDATE kline_data 
+                SET open_time_ms = EXTRACT(EPOCH FROM TO_TIMESTAMP(open_time/1000)) * 1000,
+                    close_time_ms = EXTRACT(EPOCH FROM TO_TIMESTAMP(close_time/1000)) * 1000
+                WHERE open_time_ms IS NULL AND open_time IS NOT NULL
+            """)
+
+            cursor.execute("""
+                UPDATE alerts 
+                SET alert_timestamp_ms = EXTRACT(EPOCH FROM alert_timestamp) * 1000,
+                    close_timestamp_ms = EXTRACT(EPOCH FROM close_timestamp) * 1000
+                WHERE alert_timestamp_ms IS NULL AND alert_timestamp IS NOT NULL
+            """)
+
+            # Заполняем читаемые столбцы
+            await self._update_readable_timestamps()
 
             cursor.close()
-            logger.info("Миграция таблиц завершена - добавлена функциональность избранного")
+            logger.info("Таблицы успешно обновлены для UTC времени")
 
         except Exception as e:
-            logger.error(f"Ошибка миграции таблиц: {e}")
+            logger.error(f"Ошибка обновления таблиц: {e}")
 
-    def _ms_to_datetime(self, timestamp_ms: int) -> datetime:
-        """Преобразование миллисекунд в datetime"""
-        try:
-            return datetime.utcfromtimestamp(timestamp_ms / 1000)
-        except:
-            return datetime.utcnow()
-
-    def _datetime_to_ms(self, dt: datetime) -> int:
-        """Преобразование datetime в миллисекунды"""
-        try:
-            return int(dt.timestamp() * 1000)
-        except:
-            return int(datetime.utcnow().timestamp() * 1000)
-
-    async def get_data_range_info(self, symbol: str) -> Dict:
-        """Получить информацию о диапазоне данных для символа"""
+    async def _update_readable_timestamps(self):
+        """Обновление читаемых временных меток"""
         try:
             cursor = self.connection.cursor()
-            
-            # Получаем статистику по свечам
+
+            # Обновляем читаемые метки для kline_data
             cursor.execute("""
-                SELECT 
-                    COUNT(*) as total_candles,
-                    MIN(open_time_ms) as first_candle_ms,
-                    MAX(open_time_ms) as last_candle_ms
-                FROM kline_data 
-                WHERE symbol = %s AND is_closed = TRUE
-            """, (symbol,))
-            
-            result = cursor.fetchone()
+                UPDATE kline_data 
+                SET open_time_readable = TO_CHAR(TO_TIMESTAMP(open_time_ms/1000), 'DD.MM.YYYY HH24:MI:SS:MS'),
+                    close_time_readable = TO_CHAR(TO_TIMESTAMP(close_time_ms/1000), 'DD.MM.YYYY HH24:MI:SS:MS'),
+                    created_at_readable = TO_CHAR(TO_TIMESTAMP(created_at_ms/1000), 'DD.MM.YYYY HH24:MI:SS:MS')
+                WHERE open_time_ms IS NOT NULL AND open_time_readable IS NULL
+            """)
+
+            # Обновляем читаемые метки для alerts
+            cursor.execute("""
+                UPDATE alerts 
+                SET alert_timestamp_readable = TO_CHAR(TO_TIMESTAMP(alert_timestamp_ms/1000), 'DD.MM.YYYY HH24:MI:SS:MS'),
+                    close_timestamp_readable = TO_CHAR(TO_TIMESTAMP(close_timestamp_ms/1000), 'DD.MM.YYYY HH24:MI:SS:MS'),
+                    created_at_readable = TO_CHAR(TO_TIMESTAMP(created_at_ms/1000), 'DD.MM.YYYY HH24:MI:SS:MS'),
+                    updated_at_readable = TO_CHAR(TO_TIMESTAMP(updated_at_ms/1000), 'DD.MM.YYYY HH24:MI:SS:MS')
+                WHERE alert_timestamp_ms IS NOT NULL AND alert_timestamp_readable IS NULL
+            """)
+
             cursor.close()
-            
-            if not result or result[0] == 0:
-                return {
-                    'symbol': symbol,
-                    'total_candles': 0,
-                    'first_candle': None,
-                    'last_candle': None,
-                    'missing_candles': 0,
-                    'data_range_hours': 0,
-                    'expected_candles': 0,
-                    'completeness_percentage': 0
-                }
-            
-            total_candles, first_candle_ms, last_candle_ms = result
-            
-            # Рассчитываем ожидаемое количество свечей
-            if first_candle_ms and last_candle_ms:
-                time_range_ms = last_candle_ms - first_candle_ms
-                expected_candles = int(time_range_ms / 60000) + 1  # +1 для включения последней свечи
-                missing_candles = max(0, expected_candles - total_candles)
-                completeness_percentage = (total_candles / expected_candles) * 100 if expected_candles > 0 else 0
-                data_range_hours = time_range_ms / (60 * 60 * 1000)
-            else:
-                expected_candles = 0
-                missing_candles = 0
-                completeness_percentage = 0
-                data_range_hours = 0
-            
-            return {
-                'symbol': symbol,
-                'total_candles': total_candles,
-                'first_candle': self._ms_to_datetime(first_candle_ms) if first_candle_ms else None,
-                'last_candle': self._ms_to_datetime(last_candle_ms) if last_candle_ms else None,
-                'missing_candles': missing_candles,
-                'data_range_hours': round(data_range_hours, 2),
-                'expected_candles': expected_candles,
-                'completeness_percentage': round(completeness_percentage, 1)
-            }
-            
+
         except Exception as e:
-            logger.error(f"Ошибка получения информации о диапазоне данных для {symbol}: {e}")
-            return {
-                'symbol': symbol,
-                'total_candles': 0,
-                'first_candle': None,
-                'last_candle': None,
-                'missing_candles': 0,
-                'data_range_hours': 0,
-                'expected_candles': 0,
-                'completeness_percentage': 0
-            }
+            logger.error(f"Ошибка обновления читаемых временных меток: {e}")
+
+    def _utc_to_readable(self, utc_timestamp_ms: int) -> str:
+        """Преобразование UTC времени в читаемый формат"""
+        try:
+            dt = datetime.fromtimestamp(utc_timestamp_ms / 1000, tz=timezone.utc)
+            return dt.strftime('%d.%m.%Y %H:%M:%S:%f')[:-3]  # Убираем последние 3 цифры микросекунд
+        except:
+            return ""
 
     async def check_data_integrity(self, symbol: str, hours: int) -> Dict:
-        """Проверка целостности исторических данных"""
+        """Проверка целостности исторических данных с UTC временем"""
         try:
             cursor = self.connection.cursor()
 
-            # Определяем временные границы
-            current_time_ms = int(datetime.utcnow().timestamp() * 1000)
+            # Определяем временные границы в UTC формате
+            current_time_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
             # Округляем до начала текущей минуты
             current_minute_ms = (current_time_ms // 60000) * 60000
             end_time_ms = current_minute_ms
@@ -347,7 +410,7 @@ class DatabaseManager:
             existing_times = [row[0] for row in cursor.fetchall()]
             cursor.close()
 
-            # Генерируем ожидаемые временные метки (каждую минуту)
+            # Генерируем ожидаемые временные метки (каждую минуту с нулями)
             expected_times = []
             current_time_ms = start_time_ms
             while current_time_ms < end_time_ms:
@@ -382,37 +445,372 @@ class DatabaseManager:
                 'integrity_percentage': 0
             }
 
-    async def cleanup_old_candles(self, symbol: str, retention_hours: int):
-        """Очистка старых свечей для поддержания заданного диапазона"""
+    # Методы для работы с избранным
+    async def get_favorites(self) -> List[Dict]:
+        """Получить список избранных торговых пар"""
+        try:
+            cursor = self.connection.cursor(cursor_factory=RealDictCursor)
+            cursor.execute("""
+                SELECT f.*, w.is_active, w.price_drop_percentage, w.current_price, w.historical_price
+                FROM favorites f
+                LEFT JOIN watchlist w ON f.symbol = w.symbol
+                ORDER BY f.sort_order, f.created_at_ms DESC
+            """)
+
+            result = cursor.fetchall()
+            cursor.close()
+
+            return [dict(row) for row in result]
+
+        except Exception as e:
+            logger.error(f"Ошибка получения избранного: {e}")
+            return []
+
+    async def add_to_favorites(self, symbol: str, notes: str = None, color: str = '#FFD700'):
+        """Добавить торговую пару в избранное"""
         try:
             cursor = self.connection.cursor()
-            
-            # Определяем границу для удаления старых данных
-            current_time_ms = int(datetime.utcnow().timestamp() * 1000)
-            cutoff_time_ms = current_time_ms - (retention_hours * 60 * 60 * 1000)
-            
-            # Удаляем старые данные
-            cursor.execute("""
-                DELETE FROM kline_data 
-                WHERE symbol = %s AND open_time_ms < %s
-            """, (symbol, cutoff_time_ms))
-            
-            deleted_count = cursor.rowcount
-            
-            # Также очищаем потоковые данные
-            cursor.execute("""
-                DELETE FROM kline_stream 
-                WHERE symbol = %s AND open_time_ms < %s
-            """, (symbol, cutoff_time_ms))
-            
-            cursor.close()
-            
-            if deleted_count > 0:
-                logger.info(f"Удалено {deleted_count} старых свечей для {symbol}")
-                
-        except Exception as e:
-            logger.error(f"Ошибка очистки старых свечей для {symbol}: {e}")
+            current_time_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+            readable_time = self._utc_to_readable(current_time_ms)
 
+            # Получаем максимальный sort_order
+            cursor.execute("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM favorites")
+            sort_order = cursor.fetchone()[0]
+
+            cursor.execute("""
+                INSERT INTO favorites (symbol, notes, color, sort_order, created_at_ms, updated_at_ms, 
+                                     created_at_readable, updated_at_readable) 
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s) 
+                ON CONFLICT (symbol) DO UPDATE SET
+                    notes = EXCLUDED.notes,
+                    color = EXCLUDED.color,
+                    updated_at_ms = EXCLUDED.updated_at_ms,
+                    updated_at_readable = EXCLUDED.updated_at_readable,
+                    updated_at = CURRENT_TIMESTAMP
+            """, (symbol, notes, color, sort_order, current_time_ms, current_time_ms, 
+                  readable_time, readable_time))
+
+            # Обновляем watchlist
+            cursor.execute("""
+                UPDATE watchlist 
+                SET is_favorite = TRUE, 
+                    favorite_added_at_ms = %s,
+                    updated_at_ms = %s,
+                    updated_at_readable = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE symbol = %s
+            """, (current_time_ms, current_time_ms, readable_time, symbol))
+
+            cursor.close()
+
+        except Exception as e:
+            logger.error(f"Ошибка добавления в избранное: {e}")
+
+    async def remove_from_favorites(self, symbol: str):
+        """Удалить торговую пару из избранного"""
+        try:
+            cursor = self.connection.cursor()
+            current_time_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+            readable_time = self._utc_to_readable(current_time_ms)
+
+            cursor.execute("DELETE FROM favorites WHERE symbol = %s", (symbol,))
+
+            # Обновляем watchlist
+            cursor.execute("""
+                UPDATE watchlist 
+                SET is_favorite = FALSE, 
+                    favorite_added_at_ms = NULL,
+                    updated_at_ms = %s,
+                    updated_at_readable = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE symbol = %s
+            """, (current_time_ms, readable_time, symbol))
+
+            cursor.close()
+
+        except Exception as e:
+            logger.error(f"Ошибка удаления из избранного: {e}")
+
+    async def update_favorite(self, symbol: str, notes: str = None, color: str = None, sort_order: int = None):
+        """Обновить информацию об избранной паре"""
+        try:
+            cursor = self.connection.cursor()
+            current_time_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+            readable_time = self._utc_to_readable(current_time_ms)
+
+            update_fields = []
+            params = []
+
+            if notes is not None:
+                update_fields.append("notes = %s")
+                params.append(notes)
+
+            if color is not None:
+                update_fields.append("color = %s")
+                params.append(color)
+
+            if sort_order is not None:
+                update_fields.append("sort_order = %s")
+                params.append(sort_order)
+
+            if update_fields:
+                update_fields.extend([
+                    "updated_at_ms = %s",
+                    "updated_at_readable = %s",
+                    "updated_at = CURRENT_TIMESTAMP"
+                ])
+                params.extend([current_time_ms, readable_time, symbol])
+
+                query = f"UPDATE favorites SET {', '.join(update_fields)} WHERE symbol = %s"
+                cursor.execute(query, params)
+
+            cursor.close()
+
+        except Exception as e:
+            logger.error(f"Ошибка обновления избранной пары: {e}")
+
+    async def reorder_favorites(self, symbol_order: List[str]):
+        """Изменить порядок избранных пар"""
+        try:
+            cursor = self.connection.cursor()
+            current_time_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+            readable_time = self._utc_to_readable(current_time_ms)
+
+            for index, symbol in enumerate(symbol_order):
+                cursor.execute("""
+                    UPDATE favorites 
+                    SET sort_order = %s, 
+                        updated_at_ms = %s,
+                        updated_at_readable = %s,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE symbol = %s
+                """, (index, current_time_ms, readable_time, symbol))
+
+            cursor.close()
+
+        except Exception as e:
+            logger.error(f"Ошибка изменения порядка избранных пар: {e}")
+
+    # Методы для бумажной торговли
+    async def get_trading_settings(self, user_id: str = 'default') -> Dict:
+        """Получить настройки торговли"""
+        try:
+            cursor = self.connection.cursor(cursor_factory=RealDictCursor)
+            cursor.execute("""
+                SELECT * FROM trading_settings WHERE user_id = %s
+            """, (user_id,))
+
+            result = cursor.fetchone()
+            cursor.close()
+
+            return dict(result) if result else {}
+
+        except Exception as e:
+            logger.error(f"Ошибка получения настроек торговли: {e}")
+            return {}
+
+    async def update_trading_settings(self, settings: Dict, user_id: str = 'default'):
+        """Обновить настройки торговли"""
+        try:
+            cursor = self.connection.cursor()
+            current_time_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+            cursor.execute("""
+                UPDATE trading_settings 
+                SET account_balance = %s,
+                    max_risk_per_trade = %s,
+                    max_open_trades = %s,
+                    default_stop_loss_percentage = %s,
+                    default_take_profit_percentage = %s,
+                    auto_calculate_quantity = %s,
+                    updated_at_ms = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = %s
+            """, (
+                settings.get('account_balance'),
+                settings.get('max_risk_per_trade'),
+                settings.get('max_open_trades'),
+                settings.get('default_stop_loss_percentage'),
+                settings.get('default_take_profit_percentage'),
+                settings.get('auto_calculate_quantity'),
+                current_time_ms,
+                user_id
+            ))
+
+            cursor.close()
+
+        except Exception as e:
+            logger.error(f"Ошибка обновления настроек торговли: {e}")
+
+    async def create_paper_trade(self, trade_data: Dict) -> int:
+        """Создать бумажную сделку"""
+        try:
+            cursor = self.connection.cursor()
+            current_time_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+            readable_time = self._utc_to_readable(current_time_ms)
+
+            cursor.execute("""
+                INSERT INTO paper_trades 
+                (symbol, trade_type, entry_price, quantity, stop_loss, take_profit,
+                 risk_amount, risk_percentage, potential_profit, potential_loss,
+                 risk_reward_ratio, notes, alert_id, opened_at_ms, opened_at_readable)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+            """, (
+                trade_data['symbol'],
+                trade_data['trade_type'],
+                trade_data['entry_price'],
+                trade_data['quantity'],
+                trade_data.get('stop_loss'),
+                trade_data.get('take_profit'),
+                trade_data['risk_amount'],
+                trade_data['risk_percentage'],
+                trade_data.get('potential_profit'),
+                trade_data.get('potential_loss'),
+                trade_data.get('risk_reward_ratio'),
+                trade_data.get('notes'),
+                trade_data.get('alert_id'),
+                current_time_ms,
+                readable_time
+            ))
+
+            trade_id = cursor.fetchone()[0]
+            cursor.close()
+
+            return trade_id
+
+        except Exception as e:
+            logger.error(f"Ошибка создания бумажной сделки: {e}")
+            return None
+
+    async def get_paper_trades(self, status: str = None, limit: int = 100) -> List[Dict]:
+        """Получить список бумажных сделок"""
+        try:
+            cursor = self.connection.cursor(cursor_factory=RealDictCursor)
+            
+            query = """
+                SELECT pt.*, a.alert_type, a.message as alert_message
+                FROM paper_trades pt
+                LEFT JOIN alerts a ON pt.alert_id = a.id
+            """
+            params = []
+
+            if status:
+                query += " WHERE pt.status = %s"
+                params.append(status)
+
+            query += " ORDER BY pt.opened_at_ms DESC LIMIT %s"
+            params.append(limit)
+
+            cursor.execute(query, params)
+            result = cursor.fetchall()
+            cursor.close()
+
+            return [dict(row) for row in result]
+
+        except Exception as e:
+            logger.error(f"Ошибка получения бумажных сделок: {e}")
+            return []
+
+    async def close_paper_trade(self, trade_id: int, exit_price: float, exit_reason: str = 'MANUAL'):
+        """Закрыть бумажную сделку"""
+        try:
+            cursor = self.connection.cursor()
+            current_time_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+            readable_time = self._utc_to_readable(current_time_ms)
+
+            # Получаем данные сделки
+            cursor.execute("""
+                SELECT * FROM paper_trades WHERE id = %s AND status = 'OPEN'
+            """, (trade_id,))
+            
+            trade = cursor.fetchone()
+            if not trade:
+                return False
+
+            # Рассчитываем PnL
+            entry_price = float(trade[3])  # entry_price
+            quantity = float(trade[4])     # quantity
+            trade_type = trade[2]          # trade_type
+
+            if trade_type == 'LONG':
+                pnl = (exit_price - entry_price) * quantity
+            else:  # SHORT
+                pnl = (entry_price - exit_price) * quantity
+
+            pnl_percentage = (pnl / (entry_price * quantity)) * 100
+
+            # Обновляем сделку
+            cursor.execute("""
+                UPDATE paper_trades 
+                SET status = 'CLOSED',
+                    exit_price = %s,
+                    exit_reason = %s,
+                    pnl = %s,
+                    pnl_percentage = %s,
+                    closed_at_ms = %s,
+                    closed_at_readable = %s,
+                    closed_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            """, (exit_price, exit_reason, pnl, pnl_percentage, 
+                  current_time_ms, readable_time, trade_id))
+
+            cursor.close()
+            return True
+
+        except Exception as e:
+            logger.error(f"Ошибка закрытия бумажной сделки: {e}")
+            return False
+
+    async def get_trading_statistics(self) -> Dict:
+        """Получить статистику торговли"""
+        try:
+            cursor = self.connection.cursor()
+
+            # Общая статистика
+            cursor.execute("""
+                SELECT 
+                    COUNT(*) as total_trades,
+                    COUNT(CASE WHEN status = 'OPEN' THEN 1 END) as open_trades,
+                    COUNT(CASE WHEN status = 'CLOSED' THEN 1 END) as closed_trades,
+                    COUNT(CASE WHEN status = 'CLOSED' AND pnl > 0 THEN 1 END) as winning_trades,
+                    COUNT(CASE WHEN status = 'CLOSED' AND pnl < 0 THEN 1 END) as losing_trades,
+                    COALESCE(SUM(CASE WHEN status = 'CLOSED' THEN pnl END), 0) as total_pnl,
+                    COALESCE(AVG(CASE WHEN status = 'CLOSED' THEN pnl_percentage END), 0) as avg_pnl_percentage,
+                    COALESCE(MAX(CASE WHEN status = 'CLOSED' THEN pnl END), 0) as max_profit,
+                    COALESCE(MIN(CASE WHEN status = 'CLOSED' THEN pnl END), 0) as max_loss
+                FROM paper_trades
+            """)
+
+            stats = cursor.fetchone()
+            cursor.close()
+
+            if stats:
+                total_trades, open_trades, closed_trades, winning_trades, losing_trades, \
+                total_pnl, avg_pnl_percentage, max_profit, max_loss = stats
+
+                win_rate = (winning_trades / closed_trades * 100) if closed_trades > 0 else 0
+
+                return {
+                    'total_trades': total_trades,
+                    'open_trades': open_trades,
+                    'closed_trades': closed_trades,
+                    'winning_trades': winning_trades,
+                    'losing_trades': losing_trades,
+                    'win_rate': round(win_rate, 2),
+                    'total_pnl': float(total_pnl),
+                    'avg_pnl_percentage': float(avg_pnl_percentage),
+                    'max_profit': float(max_profit),
+                    'max_loss': float(max_loss)
+                }
+
+            return {}
+
+        except Exception as e:
+            logger.error(f"Ошибка получения статистики торговли: {e}")
+            return {}
+
+    # Остальные методы остаются без изменений, но с заменой datetime.utcnow() на datetime.now(timezone.utc)
     async def get_watchlist(self) -> List[str]:
         """Получить список активных торговых пар"""
         try:
@@ -437,260 +835,60 @@ class DatabaseManager:
         try:
             cursor = self.connection.cursor(cursor_factory=RealDictCursor)
             cursor.execute("""
-                SELECT w.id, w.symbol, w.is_active, w.is_favorite, w.price_drop_percentage, 
-                       w.current_price, w.historical_price, 
-                       w.created_at_ms, w.updated_at_ms,
-                       f.notes, f.color, f.sort_order, f.added_at_ms
-                FROM watchlist w
-                LEFT JOIN favorites f ON w.symbol = f.symbol
+                SELECT id, symbol, is_active, is_favorite, price_drop_percentage, 
+                       current_price, historical_price, notes, color, sort_order,
+                       created_at_readable, updated_at_readable,
+                       created_at, updated_at
+                FROM watchlist 
                 ORDER BY 
-                    w.is_favorite DESC,
-                    COALESCE(f.sort_order, 999) ASC,
-                    CASE WHEN w.price_drop_percentage IS NOT NULL THEN w.price_drop_percentage ELSE 0 END DESC,
-                    w.symbol ASC
+                    is_favorite DESC,
+                    CASE WHEN price_drop_percentage IS NOT NULL THEN price_drop_percentage ELSE 0 END DESC,
+                    symbol ASC
             """)
 
             result = cursor.fetchall()
             cursor.close()
 
-            # Преобразуем timestamp в datetime для совместимости
-            watchlist_items = []
-            for row in result:
-                item = dict(row)
-                if item['created_at_ms']:
-                    item['created_at'] = self._ms_to_datetime(item['created_at_ms']).isoformat()
-                if item['updated_at_ms']:
-                    item['updated_at'] = self._ms_to_datetime(item['updated_at_ms']).isoformat()
-                if item['added_at_ms']:
-                    item['favorite_added_at'] = self._ms_to_datetime(item['added_at_ms']).isoformat()
-                
-                # Получаем информацию о диапазоне данных
-                data_info = await self.get_data_range_info(item['symbol'])
-                item['data_info'] = data_info
-                
-                watchlist_items.append(item)
-
-            return watchlist_items
+            return [dict(row) for row in result]
 
         except Exception as e:
             logger.error(f"Ошибка получения детальной информации watchlist: {e}")
             return []
-
-    async def get_favorites(self) -> List[Dict]:
-        """Получить список избранных торговых пар"""
-        try:
-            cursor = self.connection.cursor(cursor_factory=RealDictCursor)
-            cursor.execute("""
-                SELECT w.id, w.symbol, w.is_active, w.price_drop_percentage, 
-                       w.current_price, w.historical_price,
-                       f.notes, f.color, f.sort_order, f.added_at_ms
-                FROM watchlist w
-                INNER JOIN favorites f ON w.symbol = f.symbol
-                WHERE w.is_favorite = TRUE
-                ORDER BY f.sort_order ASC, w.symbol ASC
-            """)
-
-            result = cursor.fetchall()
-            cursor.close()
-
-            # Преобразуем timestamp в datetime для совместимости
-            favorites = []
-            for row in result:
-                item = dict(row)
-                if item['added_at_ms']:
-                    item['favorite_added_at'] = self._ms_to_datetime(item['added_at_ms']).isoformat()
-                
-                # Получаем информацию о диапазоне данных
-                data_info = await self.get_data_range_info(item['symbol'])
-                item['data_info'] = data_info
-                
-                favorites.append(item)
-
-            return favorites
-
-        except Exception as e:
-            logger.error(f"Ошибка получения избранных пар: {e}")
-            return []
-
-    async def add_to_favorites(self, symbol: str, notes: str = None, color: str = '#FFD700', sort_order: int = 0):
-        """Добавить торговую пару в избранное"""
-        try:
-            cursor = self.connection.cursor()
-            current_time_ms = int(datetime.utcnow().timestamp() * 1000)
-
-            # Обновляем watchlist
-            cursor.execute("""
-                UPDATE watchlist 
-                SET is_favorite = TRUE, updated_at_ms = %s
-                WHERE symbol = %s
-            """, (current_time_ms, symbol))
-
-            # Добавляем в таблицу favorites
-            cursor.execute("""
-                INSERT INTO favorites (symbol, notes, color, sort_order, added_at_ms) 
-                VALUES (%s, %s, %s, %s, %s) 
-                ON CONFLICT (symbol) DO UPDATE SET
-                    notes = EXCLUDED.notes,
-                    color = EXCLUDED.color,
-                    sort_order = EXCLUDED.sort_order
-            """, (symbol, notes, color, sort_order, current_time_ms))
-
-            cursor.close()
-            logger.info(f"Пара {symbol} добавлена в избранное")
-
-        except Exception as e:
-            logger.error(f"Ошибка добавления в избранное: {e}")
-
-    async def remove_from_favorites(self, symbol: str):
-        """Удалить торговую пару из избранного"""
-        try:
-            cursor = self.connection.cursor()
-            current_time_ms = int(datetime.utcnow().timestamp() * 1000)
-
-            # Обновляем watchlist
-            cursor.execute("""
-                UPDATE watchlist 
-                SET is_favorite = FALSE, updated_at_ms = %s
-                WHERE symbol = %s
-            """, (current_time_ms, symbol))
-
-            # Удаляем из таблицы favorites
-            cursor.execute("""
-                DELETE FROM favorites WHERE symbol = %s
-            """, (symbol,))
-
-            cursor.close()
-            logger.info(f"Пара {symbol} удалена из избранного")
-
-        except Exception as e:
-            logger.error(f"Ошибка удаления из избранного: {e}")
-
-    async def update_favorite(self, symbol: str, notes: str = None, color: str = None, sort_order: int = None):
-        """Обновить информацию об избранной паре"""
-        try:
-            cursor = self.connection.cursor()
-
-            # Формируем запрос обновления
-            update_fields = []
-            params = []
-
-            if notes is not None:
-                update_fields.append("notes = %s")
-                params.append(notes)
-
-            if color is not None:
-                update_fields.append("color = %s")
-                params.append(color)
-
-            if sort_order is not None:
-                update_fields.append("sort_order = %s")
-                params.append(sort_order)
-
-            if update_fields:
-                params.append(symbol)
-                cursor.execute(f"""
-                    UPDATE favorites 
-                    SET {', '.join(update_fields)}
-                    WHERE symbol = %s
-                """, params)
-
-            cursor.close()
-            logger.info(f"Информация об избранной паре {symbol} обновлена")
-
-        except Exception as e:
-            logger.error(f"Ошибка обновления избранной пары: {e}")
-
-    async def reorder_favorites(self, symbol_order: List[str]):
-        """Изменить порядок избранных пар"""
-        try:
-            cursor = self.connection.cursor()
-
-            for index, symbol in enumerate(symbol_order):
-                cursor.execute("""
-                    UPDATE favorites 
-                    SET sort_order = %s
-                    WHERE symbol = %s
-                """, (index, symbol))
-
-            cursor.close()
-            logger.info(f"Порядок избранных пар обновлен: {len(symbol_order)} пар")
-
-        except Exception as e:
-            logger.error(f"Ошибка изменения порядка избранных пар: {e}")
 
     async def add_to_watchlist(self, symbol: str, price_drop: float = None,
                                current_price: float = None, historical_price: float = None):
         """Добавить торговую пару в watchlist"""
         try:
             cursor = self.connection.cursor()
-            current_time_ms = int(datetime.utcnow().timestamp() * 1000)
+            current_time_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+            readable_time = self._utc_to_readable(current_time_ms)
 
             cursor.execute("""
                 INSERT INTO watchlist (symbol, price_drop_percentage, current_price, historical_price,
-                                     created_at_ms, updated_at_ms) 
-                VALUES (%s, %s, %s, %s, %s, %s) 
+                                     created_at_ms, updated_at_ms, created_at_readable, updated_at_readable) 
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s) 
                 ON CONFLICT (symbol) DO UPDATE SET
                     is_active = TRUE,
                     price_drop_percentage = EXCLUDED.price_drop_percentage,
                     current_price = EXCLUDED.current_price,
                     historical_price = EXCLUDED.historical_price,
-                    updated_at_ms = EXCLUDED.updated_at_ms
+                    updated_at_ms = EXCLUDED.updated_at_ms,
+                    updated_at_readable = EXCLUDED.updated_at_readable,
+                    updated_at = CURRENT_TIMESTAMP
             """, (symbol, price_drop, current_price, historical_price,
-                  current_time_ms, current_time_ms))
+                  current_time_ms, current_time_ms, readable_time, readable_time))
 
             cursor.close()
 
         except Exception as e:
             logger.error(f"Ошибка добавления в watchlist: {e}")
 
-    async def update_watchlist_item(self, item_id: int, symbol: str, is_active: bool):
-        """Обновить элемент watchlist"""
-        try:
-            cursor = self.connection.cursor()
-            current_time_ms = int(datetime.utcnow().timestamp() * 1000)
-
-            cursor.execute("""
-                UPDATE watchlist 
-                SET symbol = %s, is_active = %s, updated_at_ms = %s
-                WHERE id = %s
-            """, (symbol, is_active, current_time_ms, item_id))
-
-            cursor.close()
-
-        except Exception as e:
-            logger.error(f"Ошибка обновления watchlist: {e}")
-
-    async def remove_from_watchlist(self, symbol: str = None, item_id: int = None):
-        """Удалить торговую пару из watchlist"""
-        try:
-            cursor = self.connection.cursor()
-
-            if item_id:
-                # Получаем символ для удаления из избранного
-                cursor.execute("SELECT symbol FROM watchlist WHERE id = %s", (item_id,))
-                result = cursor.fetchone()
-                if result:
-                    symbol_to_remove = result[0]
-                    # Удаляем из избранного
-                    await self.remove_from_favorites(symbol_to_remove)
-                
-                cursor.execute("DELETE FROM watchlist WHERE id = %s", (item_id,))
-            elif symbol:
-                # Удаляем из избранного
-                await self.remove_from_favorites(symbol)
-                cursor.execute("DELETE FROM watchlist WHERE symbol = %s", (symbol,))
-
-            cursor.close()
-
-        except Exception as e:
-            logger.error(f"Ошибка удаления из watchlist: {e}")
-
     async def save_kline_data(self, symbol: str, kline_data: Dict, is_closed: bool = False):
-        """Сохранение данных свечи в базу данных"""
+        """Сохранение данных свечи в базу данных с UTC временем"""
         try:
             cursor = self.connection.cursor()
 
-            # Получаем время из данных биржи
+            # Получаем UTC время из данных биржи
             open_time_ms = int(kline_data['start'])
             close_time_ms = int(kline_data['end'])
 
@@ -700,7 +898,11 @@ class DatabaseManager:
             # Рассчитываем объем в USDT
             volume_usdt = float(kline_data['volume']) * float(kline_data['close'])
 
-            current_time_ms = int(datetime.utcnow().timestamp() * 1000)
+            # Создаем читаемые временные метки
+            open_time_readable = self._utc_to_readable(open_time_ms)
+            close_time_readable = self._utc_to_readable(close_time_ms)
+            current_time_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+            created_at_readable = self._utc_to_readable(current_time_ms)
 
             if is_closed:
                 # Сохраняем в основную таблицу исторических данных
@@ -708,8 +910,9 @@ class DatabaseManager:
                     INSERT INTO kline_data 
                     (symbol, open_time_ms, close_time_ms, open_price, high_price, 
                      low_price, close_price, volume, volume_usdt, is_long, is_closed,
-                     created_at_ms)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     open_time_readable, close_time_readable, created_at_ms, created_at_readable,
+                     open_time, close_time)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (symbol, open_time_ms) DO UPDATE SET
                         close_time_ms = EXCLUDED.close_time_ms,
                         open_price = EXCLUDED.open_price,
@@ -719,13 +922,15 @@ class DatabaseManager:
                         volume = EXCLUDED.volume,
                         volume_usdt = EXCLUDED.volume_usdt,
                         is_long = EXCLUDED.is_long,
-                        is_closed = EXCLUDED.is_closed
+                        is_closed = EXCLUDED.is_closed,
+                        close_time_readable = EXCLUDED.close_time_readable
                 """, (
                     symbol, open_time_ms, close_time_ms,
                     float(kline_data['open']), float(kline_data['high']),
                     float(kline_data['low']), float(kline_data['close']),
                     float(kline_data['volume']), volume_usdt, is_long, is_closed,
-                    current_time_ms
+                    open_time_readable, close_time_readable, current_time_ms, created_at_readable,
+                    open_time_ms, close_time_ms  # Для совместимости
                 ))
             else:
                 # Сохраняем в таблицу потоковых данных
@@ -733,8 +938,8 @@ class DatabaseManager:
                     INSERT INTO kline_stream 
                     (symbol, open_time_ms, close_time_ms, open_price, high_price, 
                      low_price, close_price, volume, volume_usdt, is_long, is_closed,
-                     last_update_ms)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     last_update_ms, open_time_readable, close_time_readable, last_update_readable)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (symbol, open_time_ms) DO UPDATE SET
                         close_time_ms = EXCLUDED.close_time_ms,
                         high_price = GREATEST(kline_stream.high_price, EXCLUDED.high_price),
@@ -743,13 +948,14 @@ class DatabaseManager:
                         volume = EXCLUDED.volume,
                         volume_usdt = EXCLUDED.volume_usdt,
                         is_long = EXCLUDED.is_long,
-                        last_update_ms = EXCLUDED.last_update_ms
+                        last_update_ms = EXCLUDED.last_update_ms,
+                        last_update_readable = EXCLUDED.last_update_readable
                 """, (
                     symbol, open_time_ms, close_time_ms,
                     float(kline_data['open']), float(kline_data['high']),
                     float(kline_data['low']), float(kline_data['close']),
                     float(kline_data['volume']), volume_usdt, is_long, is_closed,
-                    current_time_ms
+                    current_time_ms, open_time_readable, close_time_readable, created_at_readable
                 ))
 
             cursor.close()
@@ -758,21 +964,24 @@ class DatabaseManager:
             logger.error(f"Ошибка сохранения данных свечи: {e}")
 
     async def save_alert(self, alert_data: Dict) -> int:
-        """Сохранение алерта в базу данных"""
+        """Сохранение алерта в базу данных с UTC временем"""
         try:
             cursor = self.connection.cursor()
 
-            # Преобразуем datetime в миллисекунды
-            alert_timestamp_ms = self._datetime_to_ms(alert_data['timestamp']) if isinstance(
-                alert_data['timestamp'], datetime) else int(alert_data['timestamp'])
+            # Преобразуем timestamp в UTC время
+            alert_timestamp_ms = int(alert_data['timestamp']) if isinstance(alert_data['timestamp'], (int, float)) else int(datetime.fromisoformat(str(alert_data['timestamp']).replace('Z', '+00:00')).timestamp() * 1000)
             close_timestamp_ms = None
             if alert_data.get('close_timestamp'):
-                if isinstance(alert_data['close_timestamp'], datetime):
-                    close_timestamp_ms = self._datetime_to_ms(alert_data['close_timestamp'])
-                else:
+                if isinstance(alert_data['close_timestamp'], (int, float)):
                     close_timestamp_ms = int(alert_data['close_timestamp'])
+                else:
+                    close_timestamp_ms = int(datetime.fromisoformat(str(alert_data['close_timestamp']).replace('Z', '+00:00')).timestamp() * 1000)
 
-            current_time_ms = int(datetime.utcnow().timestamp() * 1000)
+            # Создаем читаемые временные метки
+            alert_timestamp_readable = self._utc_to_readable(alert_timestamp_ms)
+            close_timestamp_readable = self._utc_to_readable(close_timestamp_ms) if close_timestamp_ms else None
+            current_time_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+            created_at_readable = self._utc_to_readable(current_time_ms)
 
             # Подготавливаем JSON данные
             candle_data_json = None
@@ -809,9 +1018,11 @@ class DatabaseManager:
                  current_volume_usdt, average_volume_usdt, is_true_signal, 
                  is_closed, has_imbalance, message, 
                  alert_timestamp_ms, close_timestamp_ms,
-                 created_at_ms, updated_at_ms,
-                 candle_data, preliminary_alert, imbalance_data, order_book_snapshot)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 alert_timestamp_readable, close_timestamp_readable,
+                 created_at_ms, updated_at_ms, created_at_readable, updated_at_readable,
+                 candle_data, preliminary_alert, imbalance_data, order_book_snapshot,
+                 alert_timestamp, close_timestamp)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """, (
                 alert_data['symbol'],
@@ -827,12 +1038,18 @@ class DatabaseManager:
                 alert_data.get('message', ''),
                 alert_timestamp_ms,
                 close_timestamp_ms,
+                alert_timestamp_readable,
+                close_timestamp_readable,
                 current_time_ms,
                 current_time_ms,
+                created_at_readable,
+                created_at_readable,
                 candle_data_json,
                 preliminary_alert_json,
                 imbalance_data_json,
-                order_book_snapshot_json
+                order_book_snapshot_json,
+                datetime.fromtimestamp(alert_timestamp_ms / 1000, tz=timezone.utc),
+                datetime.fromtimestamp(close_timestamp_ms / 1000, tz=timezone.utc) if close_timestamp_ms else None
             ))
 
             alert_id = cursor.fetchone()[0]
@@ -844,117 +1061,8 @@ class DatabaseManager:
             logger.error(f"Ошибка сохранения алерта: {e}")
             return None
 
-    async def update_alert(self, alert_id: int, alert_data: Dict):
-        """Обновление алерта"""
-        try:
-            cursor = self.connection.cursor()
-
-            # Преобразуем datetime в миллисекунды
-            close_timestamp_ms = None
-            if alert_data.get('close_timestamp'):
-                if isinstance(alert_data['close_timestamp'], datetime):
-                    close_timestamp_ms = self._datetime_to_ms(alert_data['close_timestamp'])
-                else:
-                    close_timestamp_ms = int(alert_data['close_timestamp'])
-
-            current_time_ms = int(datetime.utcnow().timestamp() * 1000)
-
-            # Подготавливаем JSON данные
-            candle_data_json = None
-            if 'candle_data' in alert_data and alert_data['candle_data']:
-                if isinstance(alert_data['candle_data'], str):
-                    candle_data_json = alert_data['candle_data']
-                else:
-                    candle_data_json = json.dumps(alert_data['candle_data'])
-
-            imbalance_data_json = None
-            if 'imbalance_data' in alert_data and alert_data['imbalance_data']:
-                if isinstance(alert_data['imbalance_data'], str):
-                    imbalance_data_json = alert_data['imbalance_data']
-                else:
-                    imbalance_data_json = json.dumps(alert_data['imbalance_data'])
-
-            cursor.execute("""
-                UPDATE alerts 
-                SET price = %s, volume_ratio = %s, consecutive_count = %s,
-                    current_volume_usdt = %s, average_volume_usdt = %s,
-                    is_true_signal = %s, is_closed = %s, has_imbalance = %s, message = %s,
-                    close_timestamp_ms = %s, updated_at_ms = %s,
-                    candle_data = %s, imbalance_data = %s
-                WHERE id = %s
-            """, (
-                alert_data['price'],
-                alert_data.get('volume_ratio'),
-                alert_data.get('consecutive_count'),
-                alert_data.get('current_volume_usdt'),
-                alert_data.get('average_volume_usdt'),
-                alert_data.get('is_true_signal'),
-                alert_data.get('is_closed', False),
-                alert_data.get('has_imbalance', False),
-                alert_data.get('message', ''),
-                close_timestamp_ms,
-                current_time_ms,
-                candle_data_json,
-                imbalance_data_json,
-                alert_id
-            ))
-
-            cursor.close()
-
-        except Exception as e:
-            logger.error(f"Ошибка обновления алерта: {e}")
-
-    async def get_alerts_by_type(self, alert_type: str, limit: int = 50) -> List[Dict]:
-        """Получить алерты по типу"""
-        try:
-            cursor = self.connection.cursor(cursor_factory=RealDictCursor)
-            cursor.execute("""
-                SELECT id, symbol, alert_type, price, volume_ratio, consecutive_count,
-                       current_volume_usdt, average_volume_usdt, is_true_signal, 
-                       is_closed, has_imbalance, message, telegram_sent, 
-                       alert_timestamp_ms, close_timestamp_ms,
-                       candle_data, preliminary_alert, imbalance_data, 
-                       order_book_snapshot, created_at_ms, updated_at_ms
-                FROM alerts 
-                WHERE alert_type = %s
-                ORDER BY COALESCE(close_timestamp_ms, alert_timestamp_ms) DESC
-                LIMIT %s
-            """, (alert_type, limit))
-
-            result = cursor.fetchall()
-            cursor.close()
-
-            # Парсим JSON данные и преобразуем timestamp
-            alerts = []
-            for row in result:
-                alert = dict(row)
-
-                # Преобразуем timestamp в datetime для совместимости
-                if alert['alert_timestamp_ms']:
-                    alert['timestamp'] = self._ms_to_datetime(alert['alert_timestamp_ms']).isoformat()
-                if alert['close_timestamp_ms']:
-                    alert['close_timestamp'] = self._ms_to_datetime(alert['close_timestamp_ms']).isoformat()
-
-                # Безопасный парсинг JSON
-                for json_field in ['candle_data', 'preliminary_alert', 'imbalance_data', 'order_book_snapshot']:
-                    if alert[json_field]:
-                        try:
-                            if isinstance(alert[json_field], str):
-                                alert[json_field] = json.loads(alert[json_field])
-                        except (json.JSONDecodeError, TypeError) as e:
-                            logger.warning(f"Ошибка парсинга {json_field} для алерта {alert['id']}: {e}")
-                            alert[json_field] = None
-
-                alerts.append(alert)
-
-            return alerts
-
-        except Exception as e:
-            logger.error(f"Ошибка получения алертов по типу {alert_type}: {e}")
-            return []
-
     async def get_all_alerts(self, limit: int = 100) -> Dict[str, List[Dict]]:
-        """Получить все алерты, разделенные по типам"""
+        """Получить все алерты, разделенные по типам с сортировкой по UTC времени"""
         try:
             cursor = self.connection.cursor(cursor_factory=RealDictCursor)
             cursor.execute("""
@@ -962,8 +1070,10 @@ class DatabaseManager:
                        current_volume_usdt, average_volume_usdt, is_true_signal, 
                        is_closed, has_imbalance, message, telegram_sent,
                        alert_timestamp_ms, close_timestamp_ms,
+                       alert_timestamp_readable, close_timestamp_readable,
                        candle_data, preliminary_alert, imbalance_data,
-                       order_book_snapshot, created_at_ms, updated_at_ms
+                       order_book_snapshot, created_at_ms, updated_at_ms,
+                       alert_timestamp as timestamp, close_timestamp, created_at, updated_at
                 FROM alerts 
                 ORDER BY COALESCE(close_timestamp_ms, alert_timestamp_ms) DESC
                 LIMIT %s
@@ -972,16 +1082,10 @@ class DatabaseManager:
             all_alerts_raw = cursor.fetchall()
             cursor.close()
 
-            # Парсим JSON данные и преобразуем timestamp
+            # Парсим JSON данные с проверкой типов
             all_alerts = []
             for row in all_alerts_raw:
                 alert = dict(row)
-
-                # Преобразуем timestamp в datetime для совместимости
-                if alert['alert_timestamp_ms']:
-                    alert['timestamp'] = self._ms_to_datetime(alert['alert_timestamp_ms']).isoformat()
-                if alert['close_timestamp_ms']:
-                    alert['close_timestamp'] = self._ms_to_datetime(alert['close_timestamp_ms']).isoformat()
 
                 # Безопасный парсинг JSON
                 for json_field in ['candle_data', 'preliminary_alert', 'imbalance_data', 'order_book_snapshot']:
@@ -989,6 +1093,7 @@ class DatabaseManager:
                         try:
                             if isinstance(alert[json_field], str):
                                 alert[json_field] = json.loads(alert[json_field])
+                            # Если уже dict/list, оставляем как есть
                         except (json.JSONDecodeError, TypeError) as e:
                             logger.warning(f"Ошибка парсинга {json_field} для алерта {alert['id']}: {e}")
                             alert[json_field] = None
@@ -1009,177 +1114,13 @@ class DatabaseManager:
             logger.error(f"Ошибка получения всех алертов: {e}")
             return {'alerts': [], 'volume_alerts': [], 'consecutive_alerts': [], 'priority_alerts': []}
 
-    async def clear_alerts(self, alert_type: str = None):
-        """Очистить алерты"""
-        try:
-            cursor = self.connection.cursor()
-
-            if alert_type:
-                cursor.execute("DELETE FROM alerts WHERE alert_type = %s", (alert_type,))
-            else:
-                cursor.execute("DELETE FROM alerts")
-
-            cursor.close()
-
-        except Exception as e:
-            logger.error(f"Ошибка очистки алертов: {e}")
-
-    async def get_historical_long_volumes(self, symbol: str, hours: int, offset_minutes: int = 0,
-                                          volume_type: str = 'long') -> List[float]:
-        """Получить объемы свечей за указанный период"""
-        try:
-            cursor = self.connection.cursor()
-
-            # Рассчитываем временные границы
-            current_time_ms = int(datetime.utcnow().timestamp() * 1000)
-            end_time_ms = current_time_ms - (offset_minutes * 60 * 1000)
-            start_time_ms = end_time_ms - (hours * 60 * 60 * 1000)
-
-            # Формируем условие в зависимости от типа объемов
-            if volume_type == 'long':
-                condition = "AND is_long = TRUE"
-            elif volume_type == 'short':
-                condition = "AND is_long = FALSE"
-            else:  # 'all'
-                condition = ""
-
-            cursor.execute(f"""
-                SELECT volume_usdt FROM kline_data 
-                WHERE symbol = %s 
-                {condition}
-                AND open_time_ms >= %s 
-                AND open_time_ms < %s
-                AND is_closed = TRUE
-                ORDER BY open_time_ms
-            """, (symbol, start_time_ms, end_time_ms))
-
-            volumes = [float(row[0]) for row in cursor.fetchall()]
-            cursor.close()
-
-            return volumes
-
-        except Exception as e:
-            logger.error(f"Ошибка получения исторических объемов: {e}")
-            return []
-
-    async def get_recent_candles(self, symbol: str, count: int) -> List[Dict]:
-        """Получить последние свечи для символа"""
-        try:
-            cursor = self.connection.cursor(cursor_factory=RealDictCursor)
-            cursor.execute("""
-                SELECT open_time_ms as timestamp, open_price as open, high_price as high,
-                       low_price as low, close_price as close, volume, volume_usdt, is_long, is_closed
-                FROM kline_data 
-                WHERE symbol = %s AND is_closed = TRUE
-                ORDER BY open_time_ms DESC
-                LIMIT %s
-            """, (symbol, count))
-
-            result = cursor.fetchall()
-            cursor.close()
-
-            candles = []
-            for row in result:
-                candles.append({
-                    'timestamp': int(row['timestamp']),
-                    'open': float(row['open']),
-                    'high': float(row['high']),
-                    'low': float(row['low']),
-                    'close': float(row['close']),
-                    'volume': float(row['volume']),
-                    'volume_usdt': float(row['volume_usdt']),
-                    'is_long': row['is_long'],
-                    'is_closed': row['is_closed']
-                })
-
-            return list(reversed(candles))  # Возвращаем в хронологическом порядке
-
-        except Exception as e:
-            logger.error(f"Ошибка получения последних свечей для {symbol}: {e}")
-            return []
-
-    async def get_chart_data(self, symbol: str, hours: int = 1, alert_time: str = None) -> List[Dict]:
-        """Получить данные для построения графика"""
-        try:
-            cursor = self.connection.cursor(cursor_factory=RealDictCursor)
-
-            # Определяем временные границы
-            if alert_time:
-                try:
-                    alert_dt = datetime.fromisoformat(alert_time.replace('Z', '+00:00'))
-                    end_time_ms = self._datetime_to_ms(alert_dt)
-                except:
-                    end_time_ms = int(datetime.utcnow().timestamp() * 1000)
-            else:
-                end_time_ms = int(datetime.utcnow().timestamp() * 1000)
-
-            start_time_ms = end_time_ms - (hours * 60 * 60 * 1000)
-
-            cursor.execute("""
-                SELECT open_time_ms as timestamp, open_price as open, high_price as high,
-                       low_price as low, close_price as close, volume, volume_usdt, is_long
-                FROM kline_data 
-                WHERE symbol = %s 
-                AND open_time_ms >= %s 
-                AND open_time_ms <= %s
-                AND is_closed = TRUE
-                ORDER BY open_time_ms
-            """, (symbol, start_time_ms, end_time_ms))
-
-            result = cursor.fetchall()
-            cursor.close()
-
-            chart_data = []
-            for row in result:
-                chart_data.append({
-                    'timestamp': int(row['timestamp']),
-                    'open': float(row['open']),
-                    'high': float(row['high']),
-                    'low': float(row['low']),
-                    'close': float(row['close']),
-                    'volume': float(row['volume']),
-                    'volume_usdt': float(row['volume_usdt']),
-                    'is_long': row['is_long']
-                })
-
-            logger.info(f"Получено {len(chart_data)} свечей для {symbol} за период {hours}ч")
-            return chart_data
-
-        except Exception as e:
-            logger.error(f"Ошибка получения данных графика для {symbol}: {e}")
-            return []
-
-    async def get_recent_volume_alerts(self, symbol: str, minutes_back: int) -> List[Dict]:
-        """Получить недавние объемные алерты для символа"""
-        try:
-            cursor = self.connection.cursor(cursor_factory=RealDictCursor)
-
-            cutoff_time_ms = int((datetime.utcnow() - timedelta(minutes=minutes_back)).timestamp() * 1000)
-
-            cursor.execute("""
-                SELECT * FROM alerts 
-                WHERE symbol = %s 
-                AND alert_type = 'volume_spike'
-                AND alert_timestamp_ms >= %s
-                ORDER BY alert_timestamp_ms DESC
-            """, (symbol, cutoff_time_ms))
-
-            result = cursor.fetchall()
-            cursor.close()
-
-            return [dict(row) for row in result]
-
-        except Exception as e:
-            logger.error(f"Ошибка получения недавних объемных алертов для {symbol}: {e}")
-            return []
-
     async def cleanup_old_data(self, retention_hours: int = 2):
-        """Очистка старых данных"""
+        """Очистка старых данных с UTC временем"""
         try:
             cursor = self.connection.cursor()
 
             # Удаляем старые данные свечей
-            cutoff_time_ms = int((datetime.utcnow() - timedelta(hours=retention_hours)).timestamp() * 1000)
+            cutoff_time_ms = int((datetime.now(timezone.utc) - timedelta(hours=retention_hours)).timestamp() * 1000)
 
             cursor.execute("""
                 DELETE FROM kline_data 
@@ -1197,7 +1138,7 @@ class DatabaseManager:
             deleted_stream = cursor.rowcount
 
             # Удаляем старые алерты (старше 24 часов)
-            alert_cutoff_ms = int((datetime.utcnow() - timedelta(hours=24)).timestamp() * 1000)
+            alert_cutoff_ms = int((datetime.now(timezone.utc) - timedelta(hours=24)).timestamp() * 1000)
             cursor.execute("""
                 DELETE FROM alerts 
                 WHERE created_at_ms < %s
@@ -1212,18 +1153,6 @@ class DatabaseManager:
 
         except Exception as e:
             logger.error(f"Ошибка очистки старых данных: {e}")
-
-    async def mark_telegram_sent(self, alert_id: int):
-        """Отметить алерт как отправленный в Telegram"""
-        try:
-            cursor = self.connection.cursor()
-            cursor.execute("""
-                UPDATE alerts SET telegram_sent = TRUE WHERE id = %s
-            """, (alert_id,))
-            cursor.close()
-
-        except Exception as e:
-            logger.error(f"Ошибка отметки Telegram: {e}")
 
     def close(self):
         """Закрытие соединения с базой данных"""

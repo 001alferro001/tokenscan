@@ -1,7 +1,7 @@
 import logging
 import os
 from typing import Dict, Optional, List
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 import asyncio
 import aiohttp
@@ -200,7 +200,7 @@ class AlertManager:
             return timestamp
         else:
             # Fallback на локальное UTC время
-            timestamp = int(datetime.utcnow().timestamp() * 1000)
+            timestamp = int(datetime.now(timezone.utc).timestamp() * 1000)
             logger.debug(f"⏰ Используется локальное UTC время (fallback): {timestamp}")
             return timestamp
 
