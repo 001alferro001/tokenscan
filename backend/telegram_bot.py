@@ -18,6 +18,21 @@ class TelegramBot:
         else:
             logger.info("Telegram бот инициализирован")
 
+    def _format_timestamp(self, timestamp) -> str:
+        """Форматирование timestamp для отображения"""
+        try:
+            # Если timestamp в миллисекундах
+            if isinstance(timestamp, int):
+                dt = datetime.utcfromtimestamp(timestamp / 1000)
+            elif isinstance(timestamp, datetime):
+                dt = timestamp
+            else:
+                dt = datetime.now()
+            
+            return dt.strftime('%H:%M:%S')
+        except:
+            return datetime.now().strftime('%H:%M:%S')
+
     async def send_volume_alert(self, alert_data: Dict) -> bool:
         """Отправка алерта по объему в Telegram"""
         if not self.enabled:
@@ -46,10 +61,7 @@ class TelegramBot:
                 status = "В процессе"
             
             # Форматируем время
-            if isinstance(timestamp, datetime):
-                time_str = timestamp.strftime('%H:%M:%S')
-            else:
-                time_str = datetime.now().strftime('%H:%M:%S')
+            time_str = self._format_timestamp(timestamp)
             
             # Формируем сообщение
             message = f"""
@@ -86,10 +98,7 @@ class TelegramBot:
             timestamp = alert_data.get('close_timestamp', alert_data['timestamp'])
             
             # Форматируем время
-            if isinstance(timestamp, datetime):
-                time_str = timestamp.strftime('%H:%M:%S')
-            else:
-                time_str = datetime.now().strftime('%H:%M:%S')
+            time_str = self._format_timestamp(timestamp)
             
             # Определяем эмодзи в зависимости от количества
             if consecutive_count >= 10:
@@ -132,10 +141,7 @@ class TelegramBot:
             timestamp = alert_data.get('close_timestamp', alert_data['timestamp'])
             
             # Форматируем время
-            if isinstance(timestamp, datetime):
-                time_str = timestamp.strftime('%H:%M:%S')
-            else:
-                time_str = datetime.now().strftime('%H:%M:%S')
+            time_str = self._format_timestamp(timestamp)
             
             message = f"""
 ⭐ <b>ПРИОРИТЕТНЫЙ СИГНАЛ</b>

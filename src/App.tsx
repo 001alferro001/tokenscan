@@ -14,8 +14,6 @@ import {
   Activity,
   Zap,
   Database,
-  AlertCircle,
-  Users,
   CheckCircle,
   XCircle
 } from 'lucide-react';
@@ -39,8 +37,8 @@ interface Alert {
   has_imbalance?: boolean;
   imbalance_data?: any;
   message: string;
-  timestamp: string;
-  close_timestamp?: string;
+  timestamp: string | number;
+  close_timestamp?: string | number;
   candle_data?: any;
   preliminary_alert?: Alert;
   order_book_snapshot?: any;
@@ -56,7 +54,6 @@ interface WatchlistItem {
   created_at: string;
   updated_at: string;
   data_info?: {
-    symbol: string;
     total_candles: number;
     first_candle: string | null;
     last_candle: string | null;
@@ -73,7 +70,7 @@ interface StreamData {
   volume: number;
   volume_usdt: number;
   is_long: boolean;
-  timestamp: string;
+  timestamp: string | number;
   is_closed?: boolean;
 }
 
@@ -84,7 +81,7 @@ interface SmartMoneyAlert {
   direction: 'bullish' | 'bearish';
   strength: number;
   price: number;
-  timestamp: string;
+  timestamp: string | number;
   top?: number;
   bottom?: number;
   related_alert_id?: number;
@@ -252,20 +249,6 @@ const App: React.FC = () => {
     }
   };
 
-  const loadSubscriptionStats = async () => {
-    try {
-      const response = await fetch('/api/subscription-stats');
-      if (response.ok) {
-        const data = await response.json();
-        if (data.status === 'success') {
-          setSubscriptionStats(data.data);
-        }
-      }
-    } catch (error) {
-      console.error('Ошибка загрузки статистики подписок:', error);
-    }
-  };
-
   const refreshData = async () => {
     try {
       updateDataActivity('active');
@@ -275,16 +258,34 @@ const App: React.FC = () => {
       if (alertsResponse.ok) {
         const alertsData = await alertsResponse.json();
 
-        // Обновляем алерты с сортировкой
-        setVolumeAlerts((alertsData.volume_alerts || []).sort((a: Alert, b: Alert) =>
-          new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
-        ));
-        setConsecutiveAlerts((alertsData.consecutive_alerts || []).sort((a: Alert, b: Alert) =>
-          new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
-        ));
-        setPriorityAlerts((alertsData.priority_alerts || []).sort((a: Alert, b: Alert) =>
-          new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
-        ));
+        // Обновляем алерты с сортировкой по timestamp
+        setVolumeAlerts((alertsData.volume_alerts || []).sort((a: Alert, b: Alert) => {
+          const aTime = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
+                       typeof a.timestamp === 'number' ? a.timestamp : 
+                       new Date(a.close_timestamp || a.timestamp).getTime();
+          const bTime = typeof b.close_timestamp === 'number' ? b.close_timestamp : 
+                       typeof b.timestamp === 'number' ? b.timestamp : 
+                       new Date(b.close_timestamp || b.timestamp).getTime();
+          return bTime - aTime;
+        }));
+        setConsecutiveAlerts((alertsData.consecutive_alerts || []).sort((a: Alert, b: Alert) => {
+          const aTime = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
+                       typeof a.timestamp === 'number' ? a.timestamp : 
+                       new Date(a.close_timestamp || a.timestamp).getTime();
+          const bTime = typeof b.close_timestamp === 'number' ? b.close_timestamp : 
+                       typeof b.timestamp === 'number' ? b.timestamp : 
+                       new Date(b.close_timestamp || b.timestamp).getTime();
+          return bTime - aTime;
+        }));
+        setPriorityAlerts((alertsData.priority_alerts || []).sort((a: Alert, b: Alert) => {
+          const aTime = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
+                       typeof a.timestamp === 'number' ? a.timestamp : 
+                       new Date(a.close_timestamp || a.timestamp).getTime();
+          const bTime = typeof b.close_timestamp === 'number' ? b.close_timestamp : 
+                       typeof b.timestamp === 'number' ? b.timestamp : 
+                       new Date(b.close_timestamp || b.timestamp).getTime();
+          return bTime - aTime;
+        }));
 
         console.log('Данные обновлены:', {
           volume: alertsData.volume_alerts?.length || 0,
@@ -309,7 +310,13 @@ const App: React.FC = () => {
       }
 
       // Обновляем статистику подписок
-      await loadSubscriptionStats();
+      const subscriptionResponse = await fetch('/api/subscription-stats');
+      if (subscriptionResponse.ok) {
+        const subscriptionData = await subscriptionResponse.json();
+        if (subscriptionData.status === 'success') {
+          setSubscriptionStats(subscriptionData.data);
+        }
+      }
 
     } catch (error) {
       console.error('Ошибка обновления данных:', error);
@@ -353,16 +360,34 @@ const App: React.FC = () => {
       const alertsResponse = await fetch('/api/alerts/all');
       if (alertsResponse.ok) {
         const alertsData = await alertsResponse.json();
-        // Сортируем по времени закрытия (новые сверху)
-        setVolumeAlerts((alertsData.volume_alerts || []).sort((a: Alert, b: Alert) =>
-          new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
-        ));
-        setConsecutiveAlerts((alertsData.consecutive_alerts || []).sort((a: Alert, b: Alert) =>
-          new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
-        ));
-        setPriorityAlerts((alertsData.priority_alerts || []).sort((a: Alert, b: Alert) =>
-          new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
-        ));
+        // Сортируем по времени закрытия (новые сверху) - используем timestamp в мс
+        setVolumeAlerts((alertsData.volume_alerts || []).sort((a: Alert, b: Alert) => {
+          const aTime = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
+                       typeof a.timestamp === 'number' ? a.timestamp : 
+                       new Date(a.close_timestamp || a.timestamp).getTime();
+          const bTime = typeof b.close_timestamp === 'number' ? b.close_timestamp : 
+                       typeof b.timestamp === 'number' ? b.timestamp : 
+                       new Date(b.close_timestamp || b.timestamp).getTime();
+          return bTime - aTime;
+        }));
+        setConsecutiveAlerts((alertsData.consecutive_alerts || []).sort((a: Alert, b: Alert) => {
+          const aTime = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
+                       typeof a.timestamp === 'number' ? a.timestamp : 
+                       new Date(a.close_timestamp || a.timestamp).getTime();
+          const bTime = typeof b.close_timestamp === 'number' ? b.close_timestamp : 
+                       typeof b.timestamp === 'number' ? b.timestamp : 
+                       new Date(b.close_timestamp || b.timestamp).getTime();
+          return bTime - aTime;
+        }));
+        setPriorityAlerts((alertsData.priority_alerts || []).sort((a: Alert, b: Alert) => {
+          const aTime = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
+                       typeof a.timestamp === 'number' ? a.timestamp : 
+                       new Date(a.close_timestamp || a.timestamp).getTime();
+          const bTime = typeof b.close_timestamp === 'number' ? b.close_timestamp : 
+                       typeof b.timestamp === 'number' ? b.timestamp : 
+                       new Date(b.close_timestamp || b.timestamp).getTime();
+          return bTime - aTime;
+        }));
 
         console.log('Алерты загружены:', {
           volume: alertsData.volume_alerts?.length || 0,
@@ -399,9 +424,6 @@ const App: React.FC = () => {
           setSubscriptionStats(settingsData.subscriptions);
         }
       }
-
-      // Загружаем статистику подписок
-      await loadSubscriptionStats();
 
     } catch (error) {
       console.error('Ошибка загрузки данных:', error);
@@ -493,50 +515,86 @@ const App: React.FC = () => {
           showNotification(alert);
         }
 
-        // Обновляем алерты без дублирования
+        // Обновляем алерты без дублирования - используем timestamp для сортировки
         if (alert.alert_type === 'volume_spike') {
           setVolumeAlerts(prev => {
             const existing = prev.find(a => a.id === alert.id);
             if (existing) {
               // Обновляем существующий алерт
               const updated = prev.map(a => a.id === alert.id ? alert : a);
-              return updated.sort((a, b) =>
-                new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
-              );
+              return updated.sort((a, b) => {
+                const aTime = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
+                             typeof a.timestamp === 'number' ? a.timestamp : 
+                             new Date(a.close_timestamp || a.timestamp).getTime();
+                const bTime = typeof b.close_timestamp === 'number' ? b.close_timestamp : 
+                             typeof b.timestamp === 'number' ? b.timestamp : 
+                             new Date(b.close_timestamp || b.timestamp).getTime();
+                return bTime - aTime;
+              });
             }
             // Добавляем новый алерт
             const newList = [alert, ...prev].slice(0, 100);
-            return newList.sort((a, b) =>
-              new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
-            );
+            return newList.sort((a, b) => {
+              const aTime = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
+                           typeof a.timestamp === 'number' ? a.timestamp : 
+                           new Date(a.close_timestamp || a.timestamp).getTime();
+              const bTime = typeof b.close_timestamp === 'number' ? b.close_timestamp : 
+                           typeof b.timestamp === 'number' ? b.timestamp : 
+                           new Date(b.close_timestamp || b.timestamp).getTime();
+              return bTime - aTime;
+            });
           });
         } else if (alert.alert_type === 'consecutive_long') {
           setConsecutiveAlerts(prev => {
             const existing = prev.find(a => a.id === alert.id);
             if (existing) {
               const updated = prev.map(a => a.id === alert.id ? alert : a);
-              return updated.sort((a, b) =>
-                new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
-              );
+              return updated.sort((a, b) => {
+                const aTime = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
+                             typeof a.timestamp === 'number' ? a.timestamp : 
+                             new Date(a.close_timestamp || a.timestamp).getTime();
+                const bTime = typeof b.close_timestamp === 'number' ? b.close_timestamp : 
+                             typeof b.timestamp === 'number' ? b.timestamp : 
+                             new Date(b.close_timestamp || b.timestamp).getTime();
+                return bTime - aTime;
+              });
             }
             const newList = [alert, ...prev].slice(0, 100);
-            return newList.sort((a, b) =>
-              new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
-            );
+            return newList.sort((a, b) => {
+              const aTime = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
+                           typeof a.timestamp === 'number' ? a.timestamp : 
+                           new Date(a.close_timestamp || a.timestamp).getTime();
+              const bTime = typeof b.close_timestamp === 'number' ? b.close_timestamp : 
+                           typeof b.timestamp === 'number' ? b.timestamp : 
+                           new Date(b.close_timestamp || b.timestamp).getTime();
+              return bTime - aTime;
+            });
           });
         } else if (alert.alert_type === 'priority') {
           setPriorityAlerts(prev => {
             const existing = prev.find(a => a.id === alert.id);
             if (existing) {
               const updated = prev.map(a => a.id === alert.id ? alert : a);
-              return updated.sort((a, b) =>
-                new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
-              );
+              return updated.sort((a, b) => {
+                const aTime = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
+                             typeof a.timestamp === 'number' ? a.timestamp : 
+                             new Date(a.close_timestamp || a.timestamp).getTime();
+                const bTime = typeof b.close_timestamp === 'number' ? b.close_timestamp : 
+                             typeof b.timestamp === 'number' ? b.timestamp : 
+                             new Date(b.close_timestamp || b.timestamp).getTime();
+                return bTime - aTime;
+              });
             }
             const newList = [alert, ...prev].slice(0, 100);
-            return newList.sort((a, b) =>
-              new Date(b.close_timestamp || b.timestamp).getTime() - new Date(a.close_timestamp || a.timestamp).getTime()
-            );
+            return newList.sort((a, b) => {
+              const aTime = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
+                           typeof a.timestamp === 'number' ? a.timestamp : 
+                           new Date(a.close_timestamp || a.timestamp).getTime();
+              const bTime = typeof b.close_timestamp === 'number' ? b.close_timestamp : 
+                           typeof b.timestamp === 'number' ? b.timestamp : 
+                           new Date(b.close_timestamp || b.timestamp).getTime();
+              return bTime - aTime;
+            });
           });
         }
 
@@ -600,15 +658,24 @@ const App: React.FC = () => {
 
       case 'subscription_updated':
         // Обновление подписок
+        if (data.total_pairs !== undefined) {
+          setSubscriptionStats({
+            total_pairs: data.total_pairs,
+            subscribed_pairs: data.subscribed_pairs || 0,
+            pending_pairs: data.pending_pairs || 0,
+            last_update: data.timestamp,
+            subscription_rate: data.subscribed_pairs ? (data.subscribed_pairs / data.total_pairs) * 100 : 0
+          });
+        }
+        
         console.log('🔄 Обновление подписок:', {
-          totalPairs: data.total_pairs,
-          subscribedPairs: data.subscribed_pairs,
-          newPairs: data.new_pairs,
-          removedPairs: data.removed_pairs
+          newPairs: data.new_pairs?.length || 0,
+          removedPairs: data.removed_pairs?.length || 0,
+          totalPairs: data.total_pairs
         });
         
-        // Обновляем статистику подписок
-        loadSubscriptionStats();
+        // Обновляем watchlist при изменениях
+        refreshData();
         break;
 
       case 'watchlist_updated':
@@ -688,10 +755,19 @@ const App: React.FC = () => {
     setSettings(newSettings);
   };
 
-  // Функция для правильного форматирования времени
-  const formatTime = (timestamp: string) => {
+  // Функция для правильного форматирования времени из timestamp в мс
+  const formatTime = (timestamp: string | number) => {
     try {
-      const date = new Date(timestamp);
+      let date: Date;
+      
+      if (typeof timestamp === 'number') {
+        // Timestamp в миллисекундах
+        date = new Date(timestamp);
+      } else {
+        // Строка ISO или timestamp
+        date = new Date(timestamp);
+      }
+      
       if (isNaN(date.getTime())) {
         console.error('Некорректная временная метка:', timestamp);
         return 'Некорректное время';
@@ -746,19 +822,6 @@ const App: React.FC = () => {
     return { color: 'text-green-500', text: 'Синхронизировано', icon: '🟢' };
   };
 
-  const getSubscriptionStatus = () => {
-    if (!subscriptionStats) return { color: 'text-gray-500', text: 'Нет данных', icon: '⚪' };
-
-    const rate = subscriptionStats.subscription_rate;
-    if (rate >= 95) {
-      return { color: 'text-green-500', text: 'Отлично', icon: '🟢' };
-    } else if (rate >= 80) {
-      return { color: 'text-yellow-500', text: 'Хорошо', icon: '🟡' };
-    } else {
-      return { color: 'text-red-500', text: 'Проблемы', icon: '🔴' };
-    }
-  };
-
   const formatLocalTime = (date: Date) => {
     return date.toLocaleTimeString('ru-RU', {
       hour: '2-digit',
@@ -804,7 +867,8 @@ const App: React.FC = () => {
 
   const getConnectionStatusText = () => {
     if (subscriptionStats) {
-      return `${subscriptionStats.subscribed_pairs}/${subscriptionStats.total_pairs} (${subscriptionStats.subscription_rate.toFixed(1)}%)`;
+      const rate = subscriptionStats.subscription_rate.toFixed(0);
+      return `Подписано: ${subscriptionStats.subscribed_pairs}/${subscriptionStats.total_pairs} (${rate}%)`;
     }
     
     switch (connectionStatus) {
@@ -982,15 +1046,17 @@ const App: React.FC = () => {
         <div className="flex items-center space-x-3">
           <div className={`w-3 h-3 rounded-full ${item.is_active ? 'bg-green-500' : 'bg-red-500'}`}></div>
           <span className="font-bold text-lg text-gray-900">{item.symbol}</span>
-          
           {/* Индикатор подписки */}
           {subscriptionStats && (
             <div className="flex items-center space-x-1">
-              {connectionInfo.subscribedPairs.includes(item.symbol) ? (
-                <CheckCircle className="w-4 h-4 text-green-500" title="Подписка активна" />
+              {subscriptionStats.total_pairs > 0 ? (
+                <CheckCircle className="w-4 h-4 text-green-500" />
               ) : (
-                <XCircle className="w-4 h-4 text-red-500" title="Нет подписки" />
+                <XCircle className="w-4 h-4 text-red-500" />
               )}
+              <span className="text-xs text-gray-500">
+                {subscriptionStats.total_pairs > 0 ? 'Подписан' : 'Не подписан'}
+              </span>
             </div>
           )}
         </div>
@@ -1020,59 +1086,47 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {/* Новая секция с информацией о данных */}
+      {/* Информация о данных в базе */}
       {item.data_info && (
-        <div className="bg-gray-50 rounded-lg p-3 mb-3">
+        <div className="mt-3 p-3 bg-gray-50 rounded-lg border">
           <div className="flex items-center space-x-2 mb-2">
-            <Database className="w-4 h-4 text-blue-600" />
+            <Database className="w-4 h-4 text-gray-600" />
             <span className="text-sm font-medium text-gray-700">Данные в базе</span>
           </div>
           
-          <div className="grid grid-cols-2 gap-3 text-xs">
+          <div className="grid grid-cols-2 gap-2 text-xs text-gray-600">
             <div>
-              <span className="text-gray-600">Свечей:</span>
-              <div className="font-semibold text-gray-900">
-                {item.data_info.total_candles} / {item.data_info.expected_candles}
-              </div>
+              <span>Свечей:</span>
+              <span className="ml-1 font-semibold">{item.data_info.total_candles}</span>
             </div>
-            
             <div>
-              <span className="text-gray-600">Полнота:</span>
-              <div className={`font-semibold ${
-                item.data_info.completeness_percentage >= 90 ? 'text-green-600' : 
-                item.data_info.completeness_percentage >= 70 ? 'text-yellow-600' : 'text-red-600'
-              }`}>
-                {item.data_info.completeness_percentage.toFixed(1)}%
-              </div>
-            </div>
-            
-            <div>
-              <span className="text-gray-600">Диапазон:</span>
-              <div className="text-gray-900">{item.data_info.data_range_hours.toFixed(1)}ч</div>
-            </div>
-            
-            <div>
-              <span className="text-gray-600">Пропущено:</span>
-              <div className={`font-semibold ${
-                item.data_info.missing_candles === 0 ? 'text-green-600' : 
-                item.data_info.missing_candles < 10 ? 'text-yellow-600' : 'text-red-600'
+              <span>Пропущено:</span>
+              <span className={`ml-1 font-semibold ${
+                item.data_info.missing_candles > 10 ? 'text-red-600' : 
+                item.data_info.missing_candles > 5 ? 'text-yellow-600' : 'text-green-600'
               }`}>
                 {item.data_info.missing_candles}
-              </div>
+              </span>
+            </div>
+            <div>
+              <span>Диапазон:</span>
+              <span className="ml-1 font-semibold">{item.data_info.data_range_hours.toFixed(1)}ч</span>
+            </div>
+            <div>
+              <span>Полнота:</span>
+              <span className={`ml-1 font-semibold ${
+                item.data_info.completeness_percentage >= 95 ? 'text-green-600' : 
+                item.data_info.completeness_percentage >= 80 ? 'text-yellow-600' : 'text-red-600'
+              }`}>
+                {item.data_info.completeness_percentage.toFixed(1)}%
+              </span>
             </div>
           </div>
           
           {item.data_info.first_candle && item.data_info.last_candle && (
-            <div className="mt-2 pt-2 border-t border-gray-200 text-xs text-gray-500">
-              <div>Первая: {formatTime(item.data_info.first_candle)}</div>
-              <div>Последняя: {formatTime(item.data_info.last_candle)}</div>
-            </div>
-          )}
-          
-          {item.data_info.missing_candles > 0 && (
-            <div className="mt-2 flex items-center space-x-1 text-xs text-orange-600">
-              <AlertCircle className="w-3 h-3" />
-              <span>Есть пропуски в данных</span>
+            <div className="mt-2 text-xs text-gray-500">
+              <div>С: {formatTime(item.data_info.first_candle)}</div>
+              <div>По: {formatTime(item.data_info.last_candle)}</div>
             </div>
           )}
         </div>
@@ -1096,7 +1150,6 @@ const App: React.FC = () => {
   }
 
   const timeSyncStatus = getTimeSyncStatus();
-  const subscriptionStatus = getSubscriptionStatus();
   const timezoneInfo = getTimezoneInfo();
 
   return (
@@ -1112,17 +1165,6 @@ const App: React.FC = () => {
                 <span className="text-sm text-gray-600">
                   {getConnectionStatusText()}
                 </span>
-                
-                {/* Индикатор подписок */}
-                {subscriptionStats && (
-                  <div className="flex items-center space-x-1">
-                    <Users className="w-4 h-4 text-blue-500" />
-                    <span className={`text-xs ${subscriptionStatus.color}`}>
-                      {subscriptionStatus.text}
-                    </span>
-                  </div>
-                )}
-                
                 {/* Индикатор активности данных */}
                 <div className="flex items-center space-x-1">
                   {getDataActivityIcon()}
@@ -1133,6 +1175,11 @@ const App: React.FC = () => {
                 {lastDataUpdate && (
                   <span className="text-xs text-gray-400">
                     • {formatLocalTime(lastDataUpdate)}
+                  </span>
+                )}
+                {subscriptionStats && (
+                  <span className="text-xs text-gray-400">
+                    • Подписок: {subscriptionStats.subscribed_pairs}/{subscriptionStats.total_pairs}
                   </span>
                 )}
               </div>
@@ -1160,11 +1207,6 @@ const App: React.FC = () => {
                   <div className="text-xs">
                     Синх: {timeSyncStatus.text}
                   </div>
-                  {subscriptionStats && (
-                    <div className={`text-xs ${subscriptionStatus.color}`}>
-                      Подп: {subscriptionStatus.text}
-                    </div>
-                  )}
                 </div>
               </div>
 
@@ -1325,20 +1367,12 @@ const App: React.FC = () => {
           <div>
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-2xl font-bold text-gray-900">Список торговых пар</h2>
-              <div className="flex items-center space-x-4">
-                {subscriptionStats && (
-                  <div className="text-sm text-gray-600">
-                    Подписок: {subscriptionStats.subscribed_pairs}/{subscriptionStats.total_pairs} 
-                    ({subscriptionStats.subscription_rate.toFixed(1)}%)
-                  </div>
-                )}
-                <button
-                  onClick={() => setShowWatchlistModal(true)}
-                  className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors"
-                >
-                  Управление
-                </button>
-              </div>
+              <button
+                onClick={() => setShowWatchlistModal(true)}
+                className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors"
+              >
+                Управление
+              </button>
             </div>
 
             <div className="space-y-4">
@@ -1362,7 +1396,7 @@ const App: React.FC = () => {
               <div className="flex items-center space-x-4">
                 <span className="text-sm text-gray-600">
                   Обновлений: {streamData.length} / Пар в watchlist: {watchlist.length} / 
-                  Подписано: {subscriptionStats?.subscribed_pairs || connectionInfo.subscribedCount}
+                  {subscriptionStats && ` Подписано: ${subscriptionStats.subscribed_pairs}`}
                 </span>
                 <button
                   onClick={() => connectWebSocket()}
@@ -1393,14 +1427,6 @@ const App: React.FC = () => {
                           </span>
                           {item.is_closed && (
                             <span className="px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded-full">Закрыта</span>
-                          )}
-                          {/* Индикатор подписки */}
-                          {subscriptionStats && (
-                            connectionInfo.subscribedPairs.includes(item.symbol) ? (
-                              <CheckCircle className="w-3 h-3 text-green-500" title="Подписка активна" />
-                            ) : (
-                              <XCircle className="w-3 h-3 text-red-500" title="Нет подписки" />
-                            )
                           )}
                         </div>
                       </div>

@@ -187,21 +187,10 @@ class AlertManager:
             'breaker_block_enabled': True
         }
         
-        # Кэш для отслеживания состояния алертов
-        self.alert_cooldowns = {}  # symbol -> last alert timestamp
+        # Кэш для отслеживания состояния алертов (timestamp в миллисекундах)
+        self.alert_cooldowns = {}  # symbol -> last alert timestamp_ms
         
         logger.info(f"AlertManager инициализирован с синхронизацией времени: {self.time_sync is not None}")
-
-    def _get_current_time(self) -> datetime:
-        """Получить текущее время (биржевое если синхронизировано, иначе UTC)"""
-        if self.time_sync and self.time_sync.is_synced:
-            exchange_time = self.time_sync.get_exchange_time()
-            logger.debug(f"⏰ Используется биржевое время: {exchange_time.isoformat()}")
-            return exchange_time
-        else:
-            utc_time = datetime.utcnow()
-            logger.debug(f"⏰ Используется UTC время (fallback): {utc_time.isoformat()}")
-            return utc_time
 
     def _get_current_timestamp_ms(self) -> int:
         """Получить текущий timestamp в миллисекундах (биржевое если синхронизировано)"""
@@ -287,12 +276,12 @@ class AlertManager:
             if current_volume_usdt < self.settings['min_volume_usdt']:
                 return None
             
-            # Проверяем кулдаун для повторных сигналов
+            # Проверяем кулдаун для повторных сигналов (используем timestamp в мс)
+            current_timestamp_ms = self._get_current_timestamp_ms()
             if symbol in self.alert_cooldowns:
-                last_alert_time = self.alert_cooldowns[symbol]
-                current_time = self._get_current_time()
-                cooldown_period = self.settings['alert_grouping_minutes']
-                if (current_time - last_alert_time).total_seconds() < cooldown_period * 60:
+                last_alert_timestamp_ms = self.alert_cooldowns[symbol]
+                cooldown_period_ms = self.settings['alert_grouping_minutes'] * 60 * 1000
+                if (current_timestamp_ms - last_alert_timestamp_ms) < cooldown_period_ms:
                     return None
             
             # Получаем исторические объемы
@@ -315,9 +304,6 @@ class AlertManager:
             
             if volume_ratio >= self.settings['volume_multiplier']:
                 current_price = float(kline_data['close'])
-                
-                # Используем правильное время
-                close_time = self._get_current_time()
                 
                 # Создаем данные свечи для алерта
                 candle_data = {
@@ -348,8 +334,8 @@ class AlertManager:
                     'volume_ratio': round(volume_ratio, 2),
                     'current_volume_usdt': int(current_volume_usdt),
                     'average_volume_usdt': int(average_volume),
-                    'timestamp': close_time,
-                    'close_timestamp': close_time,
+                    'timestamp': current_timestamp_ms,  # Используем timestamp в мс
+                    'close_timestamp': current_timestamp_ms,
                     'is_closed': True,
                     'is_true_signal': True,  # Закрытая LONG свеча = истинный сигнал
                     'has_imbalance': has_imbalance,
@@ -359,11 +345,10 @@ class AlertManager:
                     'message': f"Объем превышен в {volume_ratio:.2f}x раз (истинный сигнал)"
                 }
                 
-                # Обновляем кулдаун
-                self.alert_cooldowns[symbol] = self._get_current_time()
+                # Обновляем кулдаун (timestamp в мс)
+                self.alert_cooldowns[symbol] = current_timestamp_ms
                 
                 logger.info(f"✅ Создан алерт по объему для {symbol}: {volume_ratio:.2f}x (биржевое время: {self.time_sync.is_synced if self.time_sync else False})")
-                logger.info(f"⏰ Время алерта: {close_time.isoformat()}")
                 return alert_data
             
             return None
@@ -427,7 +412,7 @@ class AlertManager:
                             return {
                                 'bids': [[float(bid[0]), float(bid[1])] for bid in result.get('b', [])],
                                 'asks': [[float(ask[0]), float(ask[1])] for ask in result.get('a', [])],
-                                'timestamp': self._get_current_time().isoformat()
+                                'timestamp': self._get_current_timestamp_ms()  # Timestamp в мс
                             }
             
             return None
@@ -455,8 +440,7 @@ class AlertManager:
             
             # Проверяем, достигнуто ли нужное количество
             if consecutive_count >= self.settings['consecutive_long_count']:
-                # Используем правильное время
-                close_time = self._get_current_time()
+                current_timestamp_ms = self._get_current_timestamp_ms()
                 current_price = float(kline_data['close'])
                 
                 # Создаем данные свечи
@@ -477,8 +461,8 @@ class AlertManager:
                     'alert_type': AlertType.CONSECUTIVE_LONG.value,
                     'price': current_price,
                     'consecutive_count': consecutive_count,
-                    'timestamp': close_time,
-                    'close_timestamp': close_time,
+                    'timestamp': current_timestamp_ms,  # Timestamp в мс
+                    'close_timestamp': current_timestamp_ms,
                     'is_closed': True,
                     'has_imbalance': has_imbalance,
                     'imbalance_data': imbalance_data,
@@ -487,7 +471,6 @@ class AlertManager:
                 }
                 
                 logger.info(f"✅ Алерт по последовательности для {symbol}: {consecutive_count} LONG свечей (биржевое время: {self.time_sync.is_synced if self.time_sync else False})")
-                logger.info(f"⏰ Время алерта: {close_time.isoformat()}")
                 return alert_data
             
             return None
@@ -528,16 +511,15 @@ class AlertManager:
                         has_imbalance = True
                         imbalance_data = consecutive_alert.get('imbalance_data')
                     
-                    # Используем правильное время
-                    close_time = self._get_current_time()
+                    current_timestamp_ms = self._get_current_timestamp_ms()
                     
                     priority_data = {
                         'symbol': symbol,
                         'alert_type': AlertType.PRIORITY.value,
                         'price': consecutive_alert['price'],
                         'consecutive_count': consecutive_alert['consecutive_count'],
-                        'timestamp': close_time,
-                        'close_timestamp': close_time,
+                        'timestamp': current_timestamp_ms,  # Timestamp в мс
+                        'close_timestamp': current_timestamp_ms,
                         'is_closed': True,
                         'has_imbalance': has_imbalance,
                         'imbalance_data': imbalance_data,
@@ -553,7 +535,6 @@ class AlertManager:
                         })
                     
                     logger.info(f"✅ Приоритетный алерт для {symbol} (биржевое время: {self.time_sync.is_synced if self.time_sync else False})")
-                    logger.info(f"⏰ Время алерта: {close_time.isoformat()}")
                     return priority_data
             
             return None
@@ -582,7 +563,7 @@ class AlertManager:
         try:
             # Логируем временные метки алерта
             logger.info(f"📤 Отправка алерта {alert_data['alert_type']} для {alert_data['symbol']}")
-            logger.info(f"⏰ Время алерта: {alert_data.get('timestamp')}")
+            logger.info(f"⏰ Время алерта (timestamp_ms): {alert_data.get('timestamp')}")
             logger.info(f"🔄 Биржевое время: {self.time_sync.is_synced if self.time_sync else False}")
             
             # Сохраняем в базу данных
@@ -618,11 +599,7 @@ class AlertManager:
         """Сериализация алерта для JSON"""
         serialized = alert_data.copy()
         
-        # Конвертируем datetime в строки
-        for key in ['timestamp', 'close_timestamp']:
-            if key in serialized and isinstance(serialized[key], datetime):
-                serialized[key] = serialized[key].isoformat()
-        
+        # Все timestamp уже в миллисекундах, дополнительных преобразований не нужно
         return serialized
 
     def update_settings(self, new_settings: Dict):
@@ -637,10 +614,12 @@ class AlertManager:
     async def cleanup_old_data(self):
         """Очистка старых данных"""
         try:
-            # Очищаем кулдауны (старше часа)
-            cooldown_cutoff = self._get_current_time() - timedelta(hours=1)
+            # Очищаем кулдауны (старше часа) - используем timestamp в мс
+            current_timestamp_ms = self._get_current_timestamp_ms()
+            cooldown_cutoff_ms = current_timestamp_ms - (60 * 60 * 1000)  # 1 час в мс
+            
             for symbol in list(self.alert_cooldowns.keys()):
-                if self.alert_cooldowns[symbol] < cooldown_cutoff:
+                if self.alert_cooldowns[symbol] < cooldown_cutoff_ms:
                     del self.alert_cooldowns[symbol]
             
             logger.info("Очистка старых данных завершена")
