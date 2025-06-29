@@ -19,19 +19,19 @@ class TelegramBot:
             logger.info("Telegram бот инициализирован")
 
     def _format_timestamp(self, timestamp) -> str:
-        """Форматирование timestamp для отображения"""
+        """Форматирование timestamp для отображения в UTC"""
         try:
-            # Если timestamp в миллисекундах
+            # Если timestamp в миллисекундах UTC
             if isinstance(timestamp, int):
                 dt = datetime.utcfromtimestamp(timestamp / 1000)
             elif isinstance(timestamp, datetime):
                 dt = timestamp
             else:
-                dt = datetime.now()
+                dt = datetime.utcnow()
             
-            return dt.strftime('%H:%M:%S')
+            return dt.strftime('%H:%M:%S UTC')
         except:
-            return datetime.now().strftime('%H:%M:%S')
+            return datetime.utcnow().strftime('%H:%M:%S UTC')
 
     async def send_volume_alert(self, alert_data: Dict) -> bool:
         """Отправка алерта по объему в Telegram"""

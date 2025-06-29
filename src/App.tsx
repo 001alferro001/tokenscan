@@ -12,8 +12,7 @@ import {
   Clock,
   WifiOff,
   Activity,
-  Zap,
-  Globe
+  Zap
 } from 'lucide-react';
 import ChartModal from './components/ChartModal';
 import SmartMoneyChartModal from './components/SmartMoneyChartModal';
@@ -37,8 +36,8 @@ interface Alert {
   has_imbalance?: boolean;
   imbalance_data?: any;
   message: string;
-  timestamp: string | number;
-  close_timestamp?: string | number;
+  timestamp: number | string;  // UTC timestamp в миллисекундах или ISO строка
+  close_timestamp?: number | string;
   candle_data?: any;
   preliminary_alert?: Alert;
   order_book_snapshot?: any;
@@ -69,7 +68,7 @@ interface StreamData {
   volume: number;
   volume_usdt: number;
   is_long: boolean;
-  timestamp: string | number;
+  timestamp: number | string;  // UTC timestamp в миллисекундах
   is_closed?: boolean;
 }
 
@@ -80,7 +79,7 @@ interface SmartMoneyAlert {
   direction: 'bullish' | 'bearish';
   strength: number;
   price: number;
-  timestamp: string | number;
+  timestamp: number | string;  // UTC timestamp в миллисекундах
   top?: number;
   bottom?: number;
   related_alert_id?: number;
@@ -88,20 +87,12 @@ interface SmartMoneyAlert {
 
 interface TimeSync {
   is_synced: boolean;
-  time_servers?: {
-    is_synced: boolean;
-    last_sync?: string;
-    time_offset_ms: number;
-  };
-  exchange_sync?: {
-    is_synced: boolean;
-    last_sync?: string;
-    time_offset_ms: number;
-  };
-  sync_method: string;
+  last_sync?: string;
+  time_offset_ms?: number;
   utc_time: number;
   utc_time_iso: string;
-  serverTime?: number;
+  sync_method: string;
+  serverTime: number;  // UTC timestamp в миллисекундах
   status: string;
 }
 
@@ -136,12 +127,6 @@ interface Settings {
     enabled: boolean;
   };
   time_sync?: TimeSync;
-  subscriptions?: {
-    total_pairs: number;
-    subscribed_pairs: number;
-    pending_pairs: number;
-    subscription_rate: number;
-  };
 }
 
 const App: React.FC = () => {
@@ -262,7 +247,7 @@ const App: React.FC = () => {
       if (alertsResponse.ok) {
         const alertsData = await alertsResponse.json();
 
-        // Обновляем алерты с сортировкой по timestamp
+        // Обновляем алерты с сортировкой по UTC timestamp
         setVolumeAlerts((alertsData.volume_alerts || []).sort((a: Alert, b: Alert) => {
           const timeA = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
                        typeof a.timestamp === 'number' ? a.timestamp : 
@@ -357,7 +342,7 @@ const App: React.FC = () => {
       const alertsResponse = await fetch('/api/alerts/all');
       if (alertsResponse.ok) {
         const alertsData = await alertsResponse.json();
-        // Сортируем по timestamp (новые сверху)
+        // Сортируем по UTC timestamp (новые сверху)
         setVolumeAlerts((alertsData.volume_alerts || []).sort((a: Alert, b: Alert) => {
           const timeA = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
                        typeof a.timestamp === 'number' ? a.timestamp : 
@@ -620,7 +605,7 @@ const App: React.FC = () => {
           volume: parseFloat(data.data.volume),
           volume_usdt: parseFloat(data.data.volume) * parseFloat(data.data.close),
           is_long: parseFloat(data.data.close) > parseFloat(data.data.open),
-          timestamp: data.timestamp,
+          timestamp: data.server_timestamp || Date.now(),  // Используем server_timestamp в UTC
           is_closed: data.is_closed || false
         };
 
@@ -650,22 +635,6 @@ const App: React.FC = () => {
           failedCount: data.failed_count,
           totalPairs: data.pairs_count
         });
-        break;
-
-      case 'subscription_updated':
-        // Обновление подписок
-        console.log('🔄 Подписки обновлены:', {
-          totalPairs: data.total_pairs,
-          subscribedPairs: data.subscribed_pairs,
-          newPairs: data.new_pairs,
-          removedPairs: data.removed_pairs
-        });
-        
-        // Обновляем информацию о подключении
-        setConnectionInfo(prev => ({
-          ...prev,
-          subscribedCount: data.subscribed_pairs || prev.subscribedCount
-        }));
         break;
 
       case 'watchlist_updated':
@@ -775,14 +744,7 @@ const App: React.FC = () => {
       return { color: 'text-yellow-500', text: 'Не синхронизировано', icon: '🟡' };
     }
 
-    // Проверяем тип синхронизации
-    if (timeSync.time_servers?.is_synced) {
-      return { color: 'text-green-500', text: 'UTC синхронизировано', icon: '🟢' };
-    } else if (timeSync.exchange_sync?.is_synced) {
-      return { color: 'text-blue-500', text: 'Биржа синхронизирована', icon: '🔵' };
-    }
-
-    return { color: 'text-green-500', text: 'Синхронизировано', icon: '🟢' };
+    return { color: 'text-green-500', text: 'Синхронизировано UTC', icon: '🟢' };
   };
 
   const formatLocalTime = (date: Date) => {
@@ -800,19 +762,6 @@ const App: React.FC = () => {
       month: '2-digit',
       day: '2-digit'
     });
-  };
-
-  const getTimezoneInfo = () => {
-    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    const offset = new Date().getTimezoneOffset();
-    const offsetHours = Math.abs(Math.floor(offset / 60));
-    const offsetMinutes = Math.abs(offset % 60);
-    const offsetSign = offset <= 0 ? '+' : '-';
-
-    return {
-      timezone,
-      offsetString: `UTC${offsetSign}${offsetHours.toString().padStart(2, '0')}:${offsetMinutes.toString().padStart(2, '0')}`
-    };
   };
 
   const getConnectionStatusIcon = () => {
@@ -1036,26 +985,10 @@ const App: React.FC = () => {
         <div className="mt-3 p-3 bg-gray-50 rounded-lg">
           <div className="text-sm font-medium text-gray-700 mb-2">Данные в базе:</div>
           <div className="grid grid-cols-2 gap-2 text-xs text-gray-600">
-            <div>
-              <span>Свечей:</span>
-              <span className="ml-1 font-semibold">{item.data_info.total_candles}</span>
-            </div>
-            <div>
-              <span>Пропущено:</span>
-              <span className={`ml-1 font-semibold ${item.data_info.missing_candles > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                {item.data_info.missing_candles}
-              </span>
-            </div>
-            <div>
-              <span>Полнота:</span>
-              <span className={`ml-1 font-semibold ${item.data_info.completeness_percentage < 90 ? 'text-red-600' : 'text-green-600'}`}>
-                {item.data_info.completeness_percentage.toFixed(1)}%
-              </span>
-            </div>
-            <div>
-              <span>Диапазон:</span>
-              <span className="ml-1 font-semibold">{item.data_info.data_range_hours.toFixed(1)}ч</span>
-            </div>
+            <div>Свечей: {item.data_info.total_candles}</div>
+            <div>Пропущено: {item.data_info.missing_candles}</div>
+            <div>Полнота: {item.data_info.completeness_percentage.toFixed(1)}%</div>
+            <div>Период: {item.data_info.data_range_hours.toFixed(1)}ч</div>
           </div>
           {item.data_info.first_candle && item.data_info.last_candle && (
             <div className="mt-2 text-xs text-gray-500">
@@ -1140,7 +1073,7 @@ const App: React.FC = () => {
                       {timezoneInfo.timezone.split('/').pop()}
                     </div>
                     <div className="text-xs">
-                      UTC: {timeSyncStatus.text}
+                      Синх: {timeSyncStatus.text}
                     </div>
                   </div>
                 </div>
