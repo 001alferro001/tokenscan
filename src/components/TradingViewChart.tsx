@@ -54,6 +54,7 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
   const [signalShapes, setSignalShapes] = useState<any[]>([]);
   const [scriptLoaded, setScriptLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [retryCount, setRetryCount] = useState(0);
 
   useEffect(() => {
     loadTradingViewScript();
@@ -96,6 +97,7 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
     const existingScript = document.querySelector('script[src*="tv.js"]');
     if (existingScript) {
       existingScript.addEventListener('load', () => setScriptLoaded(true));
+      existingScript.addEventListener('error', handleScriptError);
       return;
     }
 
@@ -105,13 +107,18 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
     script.onload = () => {
       console.log('TradingView script loaded successfully');
       setScriptLoaded(true);
+      setError(null);
+      setRetryCount(0);
     };
-    script.onerror = () => {
-      console.error('Ошибка загрузки TradingView скрипта');
-      setError('Ошибка загрузки TradingView. Проверьте подключение к интернету.');
-      setIsLoading(false);
-    };
+    script.onerror = handleScriptError;
     document.head.appendChild(script);
+  };
+
+  const handleScriptError = () => {
+    console.error('Ошибка загрузки TradingView скрипта');
+    setError('Ошибка загрузки TradingView. Проверьте подключение к интернету.');
+    setIsLoading(false);
+    setRetryCount(prev => prev + 1);
   };
 
   const createWidget = () => {
@@ -485,6 +492,22 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
     setIsFullscreen(!isFullscreen);
   };
 
+  const retryLoad = () => {
+    setError(null);
+    setIsLoading(true);
+    setScriptLoaded(false);
+    setRetryCount(0);
+    
+    // Удаляем существующий скрипт
+    const existingScript = document.querySelector('script[src*="tv.js"]');
+    if (existingScript) {
+      existingScript.remove();
+    }
+    
+    // Перезагружаем скрипт
+    loadTradingViewScript();
+  };
+
   const intervals = [
     { value: '1', label: '1м' },
     { value: '5', label: '5м' },
@@ -626,15 +649,19 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
               <div className="text-center">
                 <AlertTriangle className="w-12 h-12 text-red-500 mx-auto mb-4" />
                 <p className="text-red-600 mb-4">{error}</p>
+                {retryCount < 3 && (
+                  <button
+                    onClick={retryLoad}
+                    className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors mr-2"
+                  >
+                    Попробовать снова ({retryCount + 1}/3)
+                  </button>
+                )}
                 <button
-                  onClick={() => {
-                    setError(null);
-                    setIsLoading(true);
-                    createWidget();
-                  }}
-                  className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors"
+                  onClick={openInTradingView}
+                  className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg transition-colors"
                 >
-                  Попробовать снова
+                  Открыть в TradingView
                 </button>
               </div>
             </div>
