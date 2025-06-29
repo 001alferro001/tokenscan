@@ -84,12 +84,12 @@ async def lifespan(app: FastAPI):
     global db_manager, alert_manager, bybit_client, price_filter, telegram_bot, time_sync
 
     try:
-        logger.info("Запуск системы анализа объемов...")
+        logger.info("Запуск системы анализа объемов с UTC синхронизацией...")
 
-        # Инициализация синхронизации времени с биржей
+        # Инициализация синхронизации времени UTC с серверами точного времени
         time_sync = ExchangeTimeSync()
         await time_sync.start()
-        logger.info("Синхронизация времени с биржей запущена")
+        logger.info("Синхронизация UTC времени запущена")
 
         # Инициализация базы данных
         db_manager = DatabaseManager()
@@ -98,7 +98,7 @@ async def lifespan(app: FastAPI):
         # Инициализация Telegram бота
         telegram_bot = TelegramBot()
 
-        # Инициализация менеджера алертов С синхронизацией времени
+        # Инициализация менеджера алертов С синхронизацией UTC времени
         alert_manager = AlertManager(db_manager, telegram_bot, manager, time_sync)
 
         # Инициализация фильтра цен
@@ -126,7 +126,7 @@ async def lifespan(app: FastAPI):
             # Запуск периодической очистки данных
             asyncio.create_task(periodic_cleanup())
 
-            logger.info("Система успешно запущена с синхронизацией времени и автообновлением подписок!")
+            logger.info("Система успешно запущена с UTC синхронизацией времени и автообновлением подписок!")
         else:
             logger.error("Не удалось получить торговые пары. Система не запущена.")
 
@@ -160,6 +160,10 @@ class WatchlistUpdate(BaseModel):
     id: int
     symbol: str
     is_active: bool
+
+
+class TimeSyncSettings(BaseModel):
+    sync_method: str  # 'auto', 'exchange_only', 'time_servers_only'
 
 
 async def periodic_cleanup():
@@ -212,7 +216,7 @@ async def get_stats():
         watchlist = await db_manager.get_watchlist()
         alerts_data = await db_manager.get_all_alerts(limit=1000)
 
-        # Добавляем информацию о синхронизации времени
+        # Добавляем информацию о синхронизации времени UTC
         time_sync_info = {}
         if time_sync:
             time_sync_info = time_sync.get_sync_status()
@@ -240,27 +244,25 @@ async def get_stats():
 
 @app.get("/api/time")
 async def get_time_info():
-    """Получить информацию о времени биржи"""
+    """Получить информацию о UTC времени и синхронизации"""
     try:
-        if time_sync and time_sync.is_synced:
-            # Возвращаем биржевое время
+        if time_sync:
+            # Возвращаем информацию о UTC синхронизации
             sync_status = time_sync.get_sync_status()
-            logger.info(
-                f"API /api/time: Возвращаем биржевое время. serverTime={sync_status['serverTime']}, offset={sync_status['time_offset_ms']}мс")
+            logger.info(f"API /api/time: Возвращаем UTC время. serverTime={sync_status.get('serverTime', sync_status.get('utc_time'))}")
             return sync_status
         else:
-            # Fallback на локальное время
+            # Fallback на локальное UTC время
             current_time_ms = int(datetime.utcnow().timestamp() * 1000)
             fallback_response = {
                 "is_synced": False,
+                "utc_time": current_time_ms,
                 "serverTime": current_time_ms,  # Ключевое поле для клиента
-                "local_time": datetime.utcnow().isoformat(),
-                "exchange_time": datetime.utcnow().isoformat(),
-                "time_offset_ms": 0,
+                "utc_time_iso": datetime.utcnow().isoformat() + 'Z',
+                "sync_method": "none",
                 "status": "not_synced"
             }
-            logger.warning(
-                f"API /api/time: Синхронизация недоступна, возвращаем fallback. serverTime={current_time_ms}")
+            logger.warning(f"API /api/time: Синхронизация недоступна, возвращаем fallback UTC. serverTime={current_time_ms}")
             return fallback_response
     except Exception as e:
         logger.error(f"Ошибка получения информации о времени: {e}")
@@ -268,12 +270,36 @@ async def get_time_info():
         current_time_ms = int(datetime.utcnow().timestamp() * 1000)
         return {
             "is_synced": False,
+            "utc_time": current_time_ms,
             "serverTime": current_time_ms,
-            "local_time": datetime.utcnow().isoformat(),
-            "exchange_time": datetime.utcnow().isoformat(),
-            "time_offset_ms": 0,
+            "utc_time_iso": datetime.utcnow().isoformat() + 'Z',
+            "sync_method": "none",
             "status": "error",
             "error": str(e)
+        }
+
+
+@app.post("/api/time/sync-method")
+async def set_sync_method(settings: TimeSyncSettings):
+    """Установить метод синхронизации времени"""
+    try:
+        if time_sync:
+            time_sync.set_sync_method(settings.sync_method)
+            return {
+                "status": "success",
+                "sync_method": settings.sync_method,
+                "message": f"Метод синхронизации изменен на: {settings.sync_method}"
+            }
+        else:
+            return {
+                "status": "error",
+                "message": "Система синхронизации времени не инициализирована"
+            }
+    except Exception as e:
+        logger.error(f"Ошибка установки метода синхронизации: {e}")
+        return {
+            "status": "error",
+            "message": str(e)
         }
 
 
@@ -430,7 +456,7 @@ async def get_chart_data(symbol: str, hours: int = 1, alert_time: Optional[str] 
 async def get_settings():
     """Получить текущие настройки анализатора"""
     if alert_manager and price_filter:
-        # Добавляем информацию о синхронизации времени
+        # Добавляем информацию о синхронизации UTC времени
         time_sync_info = {}
         if time_sync:
             time_sync_info = time_sync.get_sync_status()
@@ -536,6 +562,12 @@ async def update_settings(settings: dict):
 
         if price_filter and 'price_filter' in settings:
             price_filter.update_settings(settings['price_filter'])
+
+        # Обновляем настройки синхронизации времени
+        if time_sync and 'time_sync' in settings:
+            sync_method = settings['time_sync'].get('sync_method')
+            if sync_method:
+                time_sync.set_sync_method(sync_method)
 
         await manager.broadcast_json({
             "type": "settings_updated",

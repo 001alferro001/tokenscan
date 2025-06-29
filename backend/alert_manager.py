@@ -187,20 +187,21 @@ class AlertManager:
             'breaker_block_enabled': True
         }
         
-        # Кэш для отслеживания состояния алертов (timestamp в миллисекундах)
+        # Кэш для отслеживания состояния алертов (timestamp в миллисекундах UTC)
         self.alert_cooldowns = {}  # symbol -> last alert timestamp_ms
         
-        logger.info(f"AlertManager инициализирован с синхронизацией времени: {self.time_sync is not None}")
+        logger.info(f"AlertManager инициализирован с синхронизацией времени UTC: {self.time_sync is not None}")
 
     def _get_current_timestamp_ms(self) -> int:
-        """Получить текущий timestamp в миллисекундах (биржевое если синхронизировано)"""
-        if self.time_sync and self.time_sync.is_synced:
-            timestamp = self.time_sync.get_exchange_timestamp()
-            logger.debug(f"⏰ Используется биржевый timestamp: {timestamp}")
+        """Получить текущий UTC timestamp в миллисекундах"""
+        if self.time_sync:
+            timestamp = self.time_sync.get_utc_timestamp_ms()
+            logger.debug(f"⏰ Используется синхронизированное UTC время: {timestamp}")
             return timestamp
         else:
+            # Fallback на локальное UTC время
             timestamp = int(datetime.utcnow().timestamp() * 1000)
-            logger.debug(f"⏰ Используется UTC timestamp (fallback): {timestamp}")
+            logger.debug(f"⏰ Используется локальное UTC время (fallback): {timestamp}")
             return timestamp
 
     async def process_kline_data(self, symbol: str, kline_data: Dict) -> List[Dict]:
@@ -276,7 +277,7 @@ class AlertManager:
             if current_volume_usdt < self.settings['min_volume_usdt']:
                 return None
             
-            # Проверяем кулдаун для повторных сигналов (используем timestamp в мс)
+            # Проверяем кулдаун для повторных сигналов (используем timestamp в мс UTC)
             current_timestamp_ms = self._get_current_timestamp_ms()
             if symbol in self.alert_cooldowns:
                 last_alert_timestamp_ms = self.alert_cooldowns[symbol]
@@ -334,7 +335,7 @@ class AlertManager:
                     'volume_ratio': round(volume_ratio, 2),
                     'current_volume_usdt': int(current_volume_usdt),
                     'average_volume_usdt': int(average_volume),
-                    'timestamp': current_timestamp_ms,  # Используем timestamp в мс
+                    'timestamp': current_timestamp_ms,  # UTC timestamp в мс
                     'close_timestamp': current_timestamp_ms,
                     'is_closed': True,
                     'is_true_signal': True,  # Закрытая LONG свеча = истинный сигнал
@@ -345,10 +346,10 @@ class AlertManager:
                     'message': f"Объем превышен в {volume_ratio:.2f}x раз (истинный сигнал)"
                 }
                 
-                # Обновляем кулдаун (timestamp в мс)
+                # Обновляем кулдаун (timestamp в мс UTC)
                 self.alert_cooldowns[symbol] = current_timestamp_ms
                 
-                logger.info(f"✅ Создан алерт по объему для {symbol}: {volume_ratio:.2f}x (биржевое время: {self.time_sync.is_synced if self.time_sync else False})")
+                logger.info(f"✅ Создан алерт по объему для {symbol}: {volume_ratio:.2f}x (UTC время)")
                 return alert_data
             
             return None
@@ -412,7 +413,7 @@ class AlertManager:
                             return {
                                 'bids': [[float(bid[0]), float(bid[1])] for bid in result.get('b', [])],
                                 'asks': [[float(ask[0]), float(ask[1])] for ask in result.get('a', [])],
-                                'timestamp': self._get_current_timestamp_ms()  # Timestamp в мс
+                                'timestamp': self._get_current_timestamp_ms()  # UTC timestamp в мс
                             }
             
             return None
@@ -461,7 +462,7 @@ class AlertManager:
                     'alert_type': AlertType.CONSECUTIVE_LONG.value,
                     'price': current_price,
                     'consecutive_count': consecutive_count,
-                    'timestamp': current_timestamp_ms,  # Timestamp в мс
+                    'timestamp': current_timestamp_ms,  # UTC timestamp в мс
                     'close_timestamp': current_timestamp_ms,
                     'is_closed': True,
                     'has_imbalance': has_imbalance,
@@ -470,7 +471,7 @@ class AlertManager:
                     'message': f"{consecutive_count} подряд идущих LONG свечей (закрытых)"
                 }
                 
-                logger.info(f"✅ Алерт по последовательности для {symbol}: {consecutive_count} LONG свечей (биржевое время: {self.time_sync.is_synced if self.time_sync else False})")
+                logger.info(f"✅ Алерт по последовательности для {symbol}: {consecutive_count} LONG свечей (UTC время)")
                 return alert_data
             
             return None
@@ -518,7 +519,7 @@ class AlertManager:
                         'alert_type': AlertType.PRIORITY.value,
                         'price': consecutive_alert['price'],
                         'consecutive_count': consecutive_alert['consecutive_count'],
-                        'timestamp': current_timestamp_ms,  # Timestamp в мс
+                        'timestamp': current_timestamp_ms,  # UTC timestamp в мс
                         'close_timestamp': current_timestamp_ms,
                         'is_closed': True,
                         'has_imbalance': has_imbalance,
@@ -534,7 +535,7 @@ class AlertManager:
                             'average_volume_usdt': volume_alert['average_volume_usdt']
                         })
                     
-                    logger.info(f"✅ Приоритетный алерт для {symbol} (биржевое время: {self.time_sync.is_synced if self.time_sync else False})")
+                    logger.info(f"✅ Приоритетный алерт для {symbol} (UTC время)")
                     return priority_data
             
             return None
@@ -563,8 +564,8 @@ class AlertManager:
         try:
             # Логируем временные метки алерта
             logger.info(f"📤 Отправка алерта {alert_data['alert_type']} для {alert_data['symbol']}")
-            logger.info(f"⏰ Время алерта (timestamp_ms): {alert_data.get('timestamp')}")
-            logger.info(f"🔄 Биржевое время: {self.time_sync.is_synced if self.time_sync else False}")
+            logger.info(f"⏰ Время алерта (UTC timestamp_ms): {alert_data.get('timestamp')}")
+            logger.info(f"🔄 Синхронизация времени: {self.time_sync.get_sync_status()['status'] if self.time_sync else 'отсутствует'}")
             
             # Сохраняем в базу данных
             alert_id = await self.db_manager.save_alert(alert_data)
@@ -577,7 +578,7 @@ class AlertManager:
                     'type': 'new_alert',
                     'alert': self._serialize_alert(alert_data),
                     'server_timestamp': self._get_current_timestamp_ms(),
-                    'exchange_synced': self.time_sync.is_synced if self.time_sync else False
+                    'utc_synced': self.time_sync.get_sync_status()['is_synced'] if self.time_sync else False
                 }
                 await self.connection_manager.broadcast_json(websocket_data)
 
@@ -599,7 +600,7 @@ class AlertManager:
         """Сериализация алерта для JSON"""
         serialized = alert_data.copy()
         
-        # Все timestamp уже в миллисекундах, дополнительных преобразований не нужно
+        # Все timestamp уже в миллисекундах UTC, дополнительных преобразований не нужно
         return serialized
 
     def update_settings(self, new_settings: Dict):
@@ -614,7 +615,7 @@ class AlertManager:
     async def cleanup_old_data(self):
         """Очистка старых данных"""
         try:
-            # Очищаем кулдауны (старше часа) - используем timestamp в мс
+            # Очищаем кулдауны (старше часа) - используем timestamp в мс UTC
             current_timestamp_ms = self._get_current_timestamp_ms()
             cooldown_cutoff_ms = current_timestamp_ms - (60 * 60 * 1000)  # 1 час в мс
             

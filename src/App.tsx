@@ -12,13 +12,16 @@ import {
   Clock,
   WifiOff,
   Activity,
-  Zap
+  Zap,
+  Globe
 } from 'lucide-react';
 import ChartModal from './components/ChartModal';
 import SmartMoneyChartModal from './components/SmartMoneyChartModal';
 import WatchlistModal from './components/WatchlistModal';
 import StreamDataModal from './components/StreamDataModal';
 import SettingsModal from './components/SettingsModal';
+import { TimeZoneProvider } from './contexts/TimeZoneContext';
+import { formatTime, getTimezoneInfo } from './utils/timeUtils';
 
 interface Alert {
   id: number;
@@ -34,7 +37,7 @@ interface Alert {
   has_imbalance?: boolean;
   imbalance_data?: any;
   message: string;
-  timestamp: string | number;  // Может быть ISO строка или timestamp в мс
+  timestamp: string | number;
   close_timestamp?: string | number;
   candle_data?: any;
   preliminary_alert?: Alert;
@@ -52,12 +55,11 @@ interface WatchlistItem {
   updated_at: string;
   data_info?: {
     total_candles: number;
-    first_candle: string | null;
-    last_candle: string | null;
     missing_candles: number;
-    data_range_hours: number;
-    expected_candles: number;
     completeness_percentage: number;
+    data_range_hours: number;
+    first_candle?: string;
+    last_candle?: string;
   };
 }
 
@@ -67,7 +69,7 @@ interface StreamData {
   volume: number;
   volume_usdt: number;
   is_long: boolean;
-  timestamp: string;
+  timestamp: string | number;
   is_closed?: boolean;
 }
 
@@ -78,7 +80,7 @@ interface SmartMoneyAlert {
   direction: 'bullish' | 'bearish';
   strength: number;
   price: number;
-  timestamp: string;
+  timestamp: string | number;
   top?: number;
   bottom?: number;
   related_alert_id?: number;
@@ -86,20 +88,21 @@ interface SmartMoneyAlert {
 
 interface TimeSync {
   is_synced: boolean;
-  last_sync?: string;
-  time_offset_ms: number;
-  exchange_time: string;
-  local_time: string;
-  sync_age_seconds?: number;
+  time_servers?: {
+    is_synced: boolean;
+    last_sync?: string;
+    time_offset_ms: number;
+  };
+  exchange_sync?: {
+    is_synced: boolean;
+    last_sync?: string;
+    time_offset_ms: number;
+  };
+  sync_method: string;
+  utc_time: number;
+  utc_time_iso: string;
   serverTime?: number;
-}
-
-interface SubscriptionStats {
-  total_pairs: number;
-  subscribed_pairs: number;
-  pending_pairs: number;
-  last_update?: string;
-  subscription_rate: number;
+  status: string;
 }
 
 interface Settings {
@@ -133,7 +136,12 @@ interface Settings {
     enabled: boolean;
   };
   time_sync?: TimeSync;
-  subscriptions?: SubscriptionStats;
+  subscriptions?: {
+    total_pairs: number;
+    subscribed_pairs: number;
+    pending_pairs: number;
+    subscription_rate: number;
+  };
 }
 
 const App: React.FC = () => {
@@ -154,7 +162,6 @@ const App: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [currentTime, setCurrentTime] = useState<Date>(new Date());
   const [timeSync, setTimeSync] = useState<TimeSync | null>(null);
-  const [subscriptionStats, setSubscriptionStats] = useState<SubscriptionStats | null>(null);
   const [lastDataUpdate, setLastDataUpdate] = useState<Date | null>(null);
   const [reconnectAttempts, setReconnectAttempts] = useState(0);
   const [dataActivity, setDataActivity] = useState<'active' | 'idle' | 'error'>('idle');
@@ -256,15 +263,35 @@ const App: React.FC = () => {
         const alertsData = await alertsResponse.json();
 
         // Обновляем алерты с сортировкой по timestamp
-        setVolumeAlerts((alertsData.volume_alerts || []).sort((a: Alert, b: Alert) =>
-          getTimestampMs(b.close_timestamp || b.timestamp) - getTimestampMs(a.close_timestamp || a.timestamp)
-        ));
-        setConsecutiveAlerts((alertsData.consecutive_alerts || []).sort((a: Alert, b: Alert) =>
-          getTimestampMs(b.close_timestamp || b.timestamp) - getTimestampMs(a.close_timestamp || a.timestamp)
-        ));
-        setPriorityAlerts((alertsData.priority_alerts || []).sort((a: Alert, b: Alert) =>
-          getTimestampMs(b.close_timestamp || b.timestamp) - getTimestampMs(a.close_timestamp || a.timestamp)
-        ));
+        setVolumeAlerts((alertsData.volume_alerts || []).sort((a: Alert, b: Alert) => {
+          const timeA = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
+                       typeof a.timestamp === 'number' ? a.timestamp : 
+                       new Date(a.close_timestamp || a.timestamp).getTime();
+          const timeB = typeof b.close_timestamp === 'number' ? b.close_timestamp : 
+                       typeof b.timestamp === 'number' ? b.timestamp : 
+                       new Date(b.close_timestamp || b.timestamp).getTime();
+          return timeB - timeA;
+        }));
+        
+        setConsecutiveAlerts((alertsData.consecutive_alerts || []).sort((a: Alert, b: Alert) => {
+          const timeA = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
+                       typeof a.timestamp === 'number' ? a.timestamp : 
+                       new Date(a.close_timestamp || a.timestamp).getTime();
+          const timeB = typeof b.close_timestamp === 'number' ? b.close_timestamp : 
+                       typeof b.timestamp === 'number' ? b.timestamp : 
+                       new Date(b.close_timestamp || b.timestamp).getTime();
+          return timeB - timeA;
+        }));
+        
+        setPriorityAlerts((alertsData.priority_alerts || []).sort((a: Alert, b: Alert) => {
+          const timeA = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
+                       typeof a.timestamp === 'number' ? a.timestamp : 
+                       new Date(a.close_timestamp || a.timestamp).getTime();
+          const timeB = typeof b.close_timestamp === 'number' ? b.close_timestamp : 
+                       typeof b.timestamp === 'number' ? b.timestamp : 
+                       new Date(b.close_timestamp || b.timestamp).getTime();
+          return timeB - timeA;
+        }));
 
         console.log('Данные обновлены:', {
           volume: alertsData.volume_alerts?.length || 0,
@@ -286,15 +313,6 @@ const App: React.FC = () => {
           return a.symbol.localeCompare(b.symbol);
         });
         setWatchlist(sortedWatchlist);
-      }
-
-      // Обновляем статистику подписок
-      const subscriptionResponse = await fetch('/api/subscription-stats');
-      if (subscriptionResponse.ok) {
-        const subscriptionData = await subscriptionResponse.json();
-        if (subscriptionData.status === 'success') {
-          setSubscriptionStats(subscriptionData.data);
-        }
       }
 
     } catch (error) {
@@ -339,16 +357,36 @@ const App: React.FC = () => {
       const alertsResponse = await fetch('/api/alerts/all');
       if (alertsResponse.ok) {
         const alertsData = await alertsResponse.json();
-        // Сортируем по времени закрытия (новые сверху)
-        setVolumeAlerts((alertsData.volume_alerts || []).sort((a: Alert, b: Alert) =>
-          getTimestampMs(b.close_timestamp || b.timestamp) - getTimestampMs(a.close_timestamp || a.timestamp)
-        ));
-        setConsecutiveAlerts((alertsData.consecutive_alerts || []).sort((a: Alert, b: Alert) =>
-          getTimestampMs(b.close_timestamp || b.timestamp) - getTimestampMs(a.close_timestamp || a.timestamp)
-        ));
-        setPriorityAlerts((alertsData.priority_alerts || []).sort((a: Alert, b: Alert) =>
-          getTimestampMs(b.close_timestamp || b.timestamp) - getTimestampMs(a.close_timestamp || a.timestamp)
-        ));
+        // Сортируем по timestamp (новые сверху)
+        setVolumeAlerts((alertsData.volume_alerts || []).sort((a: Alert, b: Alert) => {
+          const timeA = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
+                       typeof a.timestamp === 'number' ? a.timestamp : 
+                       new Date(a.close_timestamp || a.timestamp).getTime();
+          const timeB = typeof b.close_timestamp === 'number' ? b.close_timestamp : 
+                       typeof b.timestamp === 'number' ? b.timestamp : 
+                       new Date(b.close_timestamp || b.timestamp).getTime();
+          return timeB - timeA;
+        }));
+        
+        setConsecutiveAlerts((alertsData.consecutive_alerts || []).sort((a: Alert, b: Alert) => {
+          const timeA = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
+                       typeof a.timestamp === 'number' ? a.timestamp : 
+                       new Date(a.close_timestamp || a.timestamp).getTime();
+          const timeB = typeof b.close_timestamp === 'number' ? b.close_timestamp : 
+                       typeof b.timestamp === 'number' ? b.timestamp : 
+                       new Date(b.close_timestamp || b.timestamp).getTime();
+          return timeB - timeA;
+        }));
+        
+        setPriorityAlerts((alertsData.priority_alerts || []).sort((a: Alert, b: Alert) => {
+          const timeA = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
+                       typeof a.timestamp === 'number' ? a.timestamp : 
+                       new Date(a.close_timestamp || a.timestamp).getTime();
+          const timeB = typeof b.close_timestamp === 'number' ? b.close_timestamp : 
+                       typeof b.timestamp === 'number' ? b.timestamp : 
+                       new Date(b.close_timestamp || b.timestamp).getTime();
+          return timeB - timeA;
+        }));
 
         console.log('Алерты загружены:', {
           volume: alertsData.volume_alerts?.length || 0,
@@ -380,9 +418,6 @@ const App: React.FC = () => {
         setSettings(settingsData);
         if (settingsData.time_sync) {
           setTimeSync(settingsData.time_sync);
-        }
-        if (settingsData.subscriptions) {
-          setSubscriptionStats(settingsData.subscriptions);
         }
       }
 
@@ -461,22 +496,6 @@ const App: React.FC = () => {
     };
   };
 
-  // Функция для получения timestamp в миллисекундах из любого формата
-  const getTimestampMs = (timestamp: string | number): number => {
-    if (typeof timestamp === 'number') {
-      return timestamp;
-    }
-    if (typeof timestamp === 'string') {
-      try {
-        const date = new Date(timestamp);
-        return date.getTime();
-      } catch {
-        return 0;
-      }
-    }
-    return 0;
-  };
-
   const handleWebSocketMessage = (data: any) => {
     switch (data.type) {
       case 'pong':
@@ -499,43 +518,79 @@ const App: React.FC = () => {
             if (existing) {
               // Обновляем существующий алерт
               const updated = prev.map(a => a.id === alert.id ? alert : a);
-              return updated.sort((a, b) =>
-                getTimestampMs(b.close_timestamp || b.timestamp) - getTimestampMs(a.close_timestamp || a.timestamp)
-              );
+              return updated.sort((a, b) => {
+                const timeA = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
+                             typeof a.timestamp === 'number' ? a.timestamp : 
+                             new Date(a.close_timestamp || a.timestamp).getTime();
+                const timeB = typeof b.close_timestamp === 'number' ? b.close_timestamp : 
+                             typeof b.timestamp === 'number' ? b.timestamp : 
+                             new Date(b.close_timestamp || b.timestamp).getTime();
+                return timeB - timeA;
+              });
             }
             // Добавляем новый алерт
             const newList = [alert, ...prev].slice(0, 100);
-            return newList.sort((a, b) =>
-              getTimestampMs(b.close_timestamp || b.timestamp) - getTimestampMs(a.close_timestamp || a.timestamp)
-            );
+            return newList.sort((a, b) => {
+              const timeA = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
+                           typeof a.timestamp === 'number' ? a.timestamp : 
+                           new Date(a.close_timestamp || a.timestamp).getTime();
+              const timeB = typeof b.close_timestamp === 'number' ? b.close_timestamp : 
+                           typeof b.timestamp === 'number' ? b.timestamp : 
+                           new Date(b.close_timestamp || b.timestamp).getTime();
+              return timeB - timeA;
+            });
           });
         } else if (alert.alert_type === 'consecutive_long') {
           setConsecutiveAlerts(prev => {
             const existing = prev.find(a => a.id === alert.id);
             if (existing) {
               const updated = prev.map(a => a.id === alert.id ? alert : a);
-              return updated.sort((a, b) =>
-                getTimestampMs(b.close_timestamp || b.timestamp) - getTimestampMs(a.close_timestamp || a.timestamp)
-              );
+              return updated.sort((a, b) => {
+                const timeA = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
+                             typeof a.timestamp === 'number' ? a.timestamp : 
+                             new Date(a.close_timestamp || a.timestamp).getTime();
+                const timeB = typeof b.close_timestamp === 'number' ? b.close_timestamp : 
+                             typeof b.timestamp === 'number' ? b.timestamp : 
+                             new Date(b.close_timestamp || b.timestamp).getTime();
+                return timeB - timeA;
+              });
             }
             const newList = [alert, ...prev].slice(0, 100);
-            return newList.sort((a, b) =>
-              getTimestampMs(b.close_timestamp || b.timestamp) - getTimestampMs(a.close_timestamp || a.timestamp)
-            );
+            return newList.sort((a, b) => {
+              const timeA = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
+                           typeof a.timestamp === 'number' ? a.timestamp : 
+                           new Date(a.close_timestamp || a.timestamp).getTime();
+              const timeB = typeof b.close_timestamp === 'number' ? b.close_timestamp : 
+                           typeof b.timestamp === 'number' ? b.timestamp : 
+                           new Date(b.close_timestamp || b.timestamp).getTime();
+              return timeB - timeA;
+            });
           });
         } else if (alert.alert_type === 'priority') {
           setPriorityAlerts(prev => {
             const existing = prev.find(a => a.id === alert.id);
             if (existing) {
               const updated = prev.map(a => a.id === alert.id ? alert : a);
-              return updated.sort((a, b) =>
-                getTimestampMs(b.close_timestamp || b.timestamp) - getTimestampMs(a.close_timestamp || a.timestamp)
-              );
+              return updated.sort((a, b) => {
+                const timeA = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
+                             typeof a.timestamp === 'number' ? a.timestamp : 
+                             new Date(a.close_timestamp || a.timestamp).getTime();
+                const timeB = typeof b.close_timestamp === 'number' ? b.close_timestamp : 
+                             typeof b.timestamp === 'number' ? b.timestamp : 
+                             new Date(b.close_timestamp || b.timestamp).getTime();
+                return timeB - timeA;
+              });
             }
             const newList = [alert, ...prev].slice(0, 100);
-            return newList.sort((a, b) =>
-              getTimestampMs(b.close_timestamp || b.timestamp) - getTimestampMs(a.close_timestamp || a.timestamp)
-            );
+            return newList.sort((a, b) => {
+              const timeA = typeof a.close_timestamp === 'number' ? a.close_timestamp : 
+                           typeof a.timestamp === 'number' ? a.timestamp : 
+                           new Date(a.close_timestamp || a.timestamp).getTime();
+              const timeB = typeof b.close_timestamp === 'number' ? b.close_timestamp : 
+                           typeof b.timestamp === 'number' ? b.timestamp : 
+                           new Date(b.close_timestamp || b.timestamp).getTime();
+              return timeB - timeA;
+            });
           });
         }
 
@@ -599,20 +654,18 @@ const App: React.FC = () => {
 
       case 'subscription_updated':
         // Обновление подписок
-        setSubscriptionStats({
-          total_pairs: data.total_pairs || 0,
-          subscribed_pairs: data.subscribed_pairs || 0,
-          pending_pairs: data.pending_pairs || 0,
-          last_update: data.timestamp,
-          subscription_rate: data.total_pairs > 0 ? (data.subscribed_pairs / data.total_pairs) * 100 : 0
+        console.log('🔄 Подписки обновлены:', {
+          totalPairs: data.total_pairs,
+          subscribedPairs: data.subscribed_pairs,
+          newPairs: data.new_pairs,
+          removedPairs: data.removed_pairs
         });
-
-        console.log('📡 Обновление подписок:', {
-          total: data.total_pairs,
-          subscribed: data.subscribed_pairs,
-          new: data.new_pairs?.length || 0,
-          removed: data.removed_pairs?.length || 0
-        });
+        
+        // Обновляем информацию о подключении
+        setConnectionInfo(prev => ({
+          ...prev,
+          subscribedCount: data.subscribed_pairs || prev.subscribedCount
+        }));
         break;
 
       case 'watchlist_updated':
@@ -692,42 +745,6 @@ const App: React.FC = () => {
     setSettings(newSettings);
   };
 
-  // Функция для правильного форматирования времени из timestamp в мс или ISO строки
-  const formatTime = (timestamp: string | number) => {
-    try {
-      let date: Date;
-      
-      if (typeof timestamp === 'number') {
-        // Timestamp в миллисекундах
-        date = new Date(timestamp);
-      } else if (typeof timestamp === 'string') {
-        // ISO строка
-        date = new Date(timestamp);
-      } else {
-        return 'Некорректное время';
-      }
-
-      if (isNaN(date.getTime())) {
-        console.error('Некорректная временная метка:', timestamp);
-        return 'Некорректное время';
-      }
-
-      // Используем локальное время (Москва UTC+3)
-      return date.toLocaleString('ru-RU', {
-        day: '2-digit',
-        month: '2-digit',
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: false
-      });
-    } catch (error) {
-      console.error('Ошибка форматирования времени:', error, timestamp);
-      return 'Ошибка времени';
-    }
-  };
-
   const formatVolume = (volume: number) => {
     if (volume >= 1000000) {
       return `$${(volume / 1000000).toFixed(1)}M`;
@@ -756,6 +773,13 @@ const App: React.FC = () => {
 
     if (!timeSync.is_synced) {
       return { color: 'text-yellow-500', text: 'Не синхронизировано', icon: '🟡' };
+    }
+
+    // Проверяем тип синхронизации
+    if (timeSync.time_servers?.is_synced) {
+      return { color: 'text-green-500', text: 'UTC синхронизировано', icon: '🟢' };
+    } else if (timeSync.exchange_sync?.is_synced) {
+      return { color: 'text-blue-500', text: 'Биржа синхронизирована', icon: '🔵' };
     }
 
     return { color: 'text-green-500', text: 'Синхронизировано', icon: '🟢' };
@@ -805,12 +829,9 @@ const App: React.FC = () => {
   };
 
   const getConnectionStatusText = () => {
-    const subscribed = subscriptionStats?.subscribed_pairs || connectionInfo.subscribedCount;
-    const total = subscriptionStats?.total_pairs || watchlist.length;
-    
     switch (connectionStatus) {
       case 'connected':
-        return `Подключено (${subscribed}/${total})`;
+        return `Подключено (${connectionInfo.subscribedCount}/${watchlist.length})`;
       case 'connecting':
         return 'Подключение...';
       case 'disconnected':
@@ -903,9 +924,9 @@ const App: React.FC = () => {
 
       <div className="mt-3 pt-3 border-t border-gray-200">
         <div className="text-xs text-gray-500">
-          <div>Время закрытия: {formatTime(alert.close_timestamp || alert.timestamp)}</div>
+          <div>Время закрытия: {formatTime(alert.close_timestamp || alert.timestamp, 'local')}</div>
           {alert.preliminary_alert && (
-            <div>Предварительный: {formatTime(alert.preliminary_alert.timestamp)}</div>
+            <div>Предварительный: {formatTime(alert.preliminary_alert.timestamp, 'local')}</div>
           )}
         </div>
       </div>
@@ -962,7 +983,7 @@ const App: React.FC = () => {
 
         <div>
           <span className="text-gray-600">Время:</span>
-          <div className="text-gray-900">{formatTime(alert.timestamp)}</div>
+          <div className="text-gray-900">{formatTime(alert.timestamp, 'local')}</div>
         </div>
       </div>
 
@@ -1015,27 +1036,38 @@ const App: React.FC = () => {
         <div className="mt-3 p-3 bg-gray-50 rounded-lg">
           <div className="text-sm font-medium text-gray-700 mb-2">Данные в базе:</div>
           <div className="grid grid-cols-2 gap-2 text-xs text-gray-600">
-            <div>Свечей: {item.data_info.total_candles}</div>
-            <div>Пропущено: {item.data_info.missing_candles}</div>
-            <div>Диапазон: {item.data_info.data_range_hours}ч</div>
-            <div className={`font-semibold ${
-              item.data_info.completeness_percentage >= 90 ? 'text-green-600' : 
-              item.data_info.completeness_percentage >= 70 ? 'text-yellow-600' : 'text-red-600'
-            }`}>
-              Полнота: {item.data_info.completeness_percentage.toFixed(1)}%
+            <div>
+              <span>Свечей:</span>
+              <span className="ml-1 font-semibold">{item.data_info.total_candles}</span>
+            </div>
+            <div>
+              <span>Пропущено:</span>
+              <span className={`ml-1 font-semibold ${item.data_info.missing_candles > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                {item.data_info.missing_candles}
+              </span>
+            </div>
+            <div>
+              <span>Полнота:</span>
+              <span className={`ml-1 font-semibold ${item.data_info.completeness_percentage < 90 ? 'text-red-600' : 'text-green-600'}`}>
+                {item.data_info.completeness_percentage.toFixed(1)}%
+              </span>
+            </div>
+            <div>
+              <span>Диапазон:</span>
+              <span className="ml-1 font-semibold">{item.data_info.data_range_hours.toFixed(1)}ч</span>
             </div>
           </div>
           {item.data_info.first_candle && item.data_info.last_candle && (
             <div className="mt-2 text-xs text-gray-500">
-              <div>С: {formatTime(item.data_info.first_candle)}</div>
-              <div>По: {formatTime(item.data_info.last_candle)}</div>
+              <div>От: {formatTime(item.data_info.first_candle, 'local', { includeSeconds: false })}</div>
+              <div>До: {formatTime(item.data_info.last_candle, 'local', { includeSeconds: false })}</div>
             </div>
           )}
         </div>
       )}
 
       <div className="mt-3 pt-3 border-t border-gray-200 text-xs text-gray-500">
-        Обновлено: {formatTime(item.updated_at)}
+        Обновлено: {formatTime(item.updated_at, 'local')}
       </div>
     </div>
   );
@@ -1055,356 +1087,358 @@ const App: React.FC = () => {
   const timezoneInfo = getTimezoneInfo();
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <header className="bg-white shadow-sm border-b border-gray-200">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between h-16">
-            <div className="flex items-center space-x-4">
-              <h1 className="text-xl font-bold text-gray-900">Анализатор Объемов</h1>
-              <div className="flex items-center space-x-3">
-                {getConnectionStatusIcon()}
-                <span className="text-sm text-gray-600">
-                  {getConnectionStatusText()}
-                </span>
-                {/* Индикатор активности данных */}
-                <div className="flex items-center space-x-1">
-                  {getDataActivityIcon()}
-                  <span className="text-xs text-gray-500">
-                    {getDataActivityText()}
-                  </span>
-                </div>
-                {lastDataUpdate && (
-                  <span className="text-xs text-gray-400">
-                    • {formatLocalTime(lastDataUpdate)}
-                  </span>
-                )}
-                {subscriptionStats && (
-                  <span className="text-xs text-gray-400">
-                    • Подписано: {subscriptionStats.subscribed_pairs}/{subscriptionStats.total_pairs} ({subscriptionStats.subscription_rate.toFixed(1)}%)
-                  </span>
-                )}
-              </div>
-            </div>
-
-            <div className="flex items-center space-x-6">
-              {/* Динамические часы в локальном часовом поясе */}
-              <div className="flex items-center space-x-3 bg-gray-100 rounded-lg px-4 py-2">
-                <Clock className="w-5 h-5 text-gray-600" />
-                <div className="text-center">
-                  <div className="text-lg font-mono font-bold text-gray-900">
-                    {formatLocalTime(currentTime)}
-                  </div>
-                  <div className="text-xs text-gray-500">
-                    {formatLocalDate(currentTime)}
-                  </div>
-                </div>
-                <div className="text-xs text-gray-500 text-center">
-                  <div className={timeSyncStatus.color}>
-                    {timeSyncStatus.icon} {timezoneInfo.offsetString}
-                  </div>
-                  <div className="text-xs">
-                    {timezoneInfo.timezone.split('/').pop()}
-                  </div>
-                  <div className="text-xs">
-                    Синх: {timeSyncStatus.text}
-                  </div>
-                </div>
-              </div>
-
-              <button
-                onClick={() => setShowSettings(true)}
-                className="text-gray-600 hover:text-gray-900 p-2 rounded-lg hover:bg-gray-100 transition-colors"
-                title="Настройки"
-              >
-                <Settings className="w-5 h-5" />
-              </button>
-            </div>
-          </div>
-        </div>
-      </header>
-
-      {/* Navigation Tabs */}
-      <nav className="bg-white border-b border-gray-200">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex space-x-8">
-            {[
-              { id: 'volume', label: 'Алерты по объему', icon: TrendingUp, count: volumeAlerts.length },
-              { id: 'consecutive', label: 'LONG последовательности', icon: BarChart3, count: consecutiveAlerts.length },
-              { id: 'priority', label: 'Приоритетные', icon: Star, count: priorityAlerts.length },
-              { id: 'smart_money', label: 'Smart Money', icon: Brain, count: smartMoneyAlerts.length },
-              { id: 'watchlist', label: 'Торговые пары', icon: List, count: watchlist.length },
-              { id: 'stream', label: 'Потоковые данные', icon: Wifi, count: streamData.length }
-            ].map((tab) => (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id as any)}
-                className={`flex items-center space-x-2 py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
-                  activeTab === tab.id
-                    ? 'border-blue-500 text-blue-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                }`}
-              >
-                <tab.icon className="w-4 h-4" />
-                <span>{tab.label}</span>
-                {tab.count > 0 && (
-                  <span className="bg-gray-100 text-gray-900 py-0.5 px-2 rounded-full text-xs">
-                    {tab.count}
-                  </span>
-                )}
-              </button>
-            ))}
-          </div>
-        </div>
-      </nav>
-
-      {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Volume Alerts */}
-        {activeTab === 'volume' && (
-          <div>
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-2xl font-bold text-gray-900">Алерты по объему</h2>
-              <button
-                onClick={() => clearAlerts('volume_spike')}
-                className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg transition-colors"
-              >
-                Очистить
-              </button>
-            </div>
-
-            <div className="space-y-4">
-              {volumeAlerts.length === 0 ? (
-                <div className="text-center py-12 text-gray-500">
-                  <TrendingUp className="w-12 h-12 mx-auto mb-4 text-gray-300" />
-                  <p>Нет алертов по объему</p>
-                </div>
-              ) : (
-                volumeAlerts.map(renderAlertCard)
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Consecutive Alerts */}
-        {activeTab === 'consecutive' && (
-          <div>
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-2xl font-bold text-gray-900">LONG последовательности</h2>
-              <button
-                onClick={() => clearAlerts('consecutive_long')}
-                className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg transition-colors"
-              >
-                Очистить
-              </button>
-            </div>
-
-            <div className="space-y-4">
-              {consecutiveAlerts.length === 0 ? (
-                <div className="text-center py-12 text-gray-500">
-                  <BarChart3 className="w-12 h-12 mx-auto mb-4 text-gray-300" />
-                  <p>Нет алертов по последовательностям</p>
-                </div>
-              ) : (
-                consecutiveAlerts.map(renderAlertCard)
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Priority Alerts */}
-        {activeTab === 'priority' && (
-          <div>
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-2xl font-bold text-gray-900">Приоритетные алерты</h2>
-              <button
-                onClick={() => clearAlerts('priority')}
-                className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg transition-colors"
-              >
-                Очистить
-              </button>
-            </div>
-
-            <div className="space-y-4">
-              {priorityAlerts.length === 0 ? (
-                <div className="text-center py-12 text-gray-500">
-                  <Star className="w-12 h-12 mx-auto mb-4 text-gray-300" />
-                  <p>Нет приоритетных алертов</p>
-                </div>
-              ) : (
-                priorityAlerts.map(renderAlertCard)
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Smart Money Alerts */}
-        {activeTab === 'smart_money' && (
-          <div>
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-2xl font-bold text-gray-900">Smart Money Concepts</h2>
-              <button
-                onClick={() => setSmartMoneyAlerts([])}
-                className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg transition-colors"
-              >
-                Очистить
-              </button>
-            </div>
-
-            <div className="space-y-4">
-              {smartMoneyAlerts.length === 0 ? (
-                <div className="text-center py-12 text-gray-500">
-                  <Brain className="w-12 h-12 mx-auto mb-4 text-gray-300" />
-                  <p>Нет сигналов Smart Money</p>
-                </div>
-              ) : (
-                smartMoneyAlerts.map(renderSmartMoneyCard)
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Watchlist */}
-        {activeTab === 'watchlist' && (
-          <div>
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-2xl font-bold text-gray-900">Список торговых пар</h2>
-              <button
-                onClick={() => setShowWatchlistModal(true)}
-                className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors"
-              >
-                Управление
-              </button>
-            </div>
-
-            <div className="space-y-4">
-              {watchlist.length === 0 ? (
-                <div className="text-center py-12 text-gray-500">
-                  <List className="w-12 h-12 mx-auto mb-4 text-gray-300" />
-                  <p>Нет торговых пар в списке</p>
-                </div>
-              ) : (
-                watchlist.map(renderWatchlistCard)
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Stream Data */}
-        {activeTab === 'stream' && (
-          <div>
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-2xl font-bold text-gray-900">Потоковые данные</h2>
+    <TimeZoneProvider>
+      <div className="min-h-screen bg-gray-50">
+        {/* Header */}
+        <header className="bg-white shadow-sm border-b border-gray-200">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div className="flex items-center justify-between h-16">
               <div className="flex items-center space-x-4">
-                <span className="text-sm text-gray-600">
-                  Обновлений: {streamData.length} / Пар в watchlist: {watchlist.length} / Подписано: {subscriptionStats?.subscribed_pairs || connectionInfo.subscribedCount}
-                </span>
+                <h1 className="text-xl font-bold text-gray-900">Анализатор Объемов</h1>
+                <div className="flex items-center space-x-3">
+                  {getConnectionStatusIcon()}
+                  <span className="text-sm text-gray-600">
+                    {getConnectionStatusText()}
+                  </span>
+                  {/* Индикатор активности данных */}
+                  <div className="flex items-center space-x-1">
+                    {getDataActivityIcon()}
+                    <span className="text-xs text-gray-500">
+                      {getDataActivityText()}
+                    </span>
+                  </div>
+                  {lastDataUpdate && (
+                    <span className="text-xs text-gray-400">
+                      • {formatLocalTime(lastDataUpdate)}
+                    </span>
+                  )}
+                  {connectionInfo.subscribedCount > 0 && (
+                    <span className="text-xs text-gray-400">
+                      • Подписано: {connectionInfo.subscribedCount}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-center space-x-6">
+                {/* Динамические часы в локальном часовом поясе */}
+                <div className="flex items-center space-x-3 bg-gray-100 rounded-lg px-4 py-2">
+                  <Clock className="w-5 h-5 text-gray-600" />
+                  <div className="text-center">
+                    <div className="text-lg font-mono font-bold text-gray-900">
+                      {formatLocalTime(currentTime)}
+                    </div>
+                    <div className="text-xs text-gray-500">
+                      {formatLocalDate(currentTime)}
+                    </div>
+                  </div>
+                  <div className="text-xs text-gray-500 text-center">
+                    <div className={timeSyncStatus.color}>
+                      {timeSyncStatus.icon} {timezoneInfo.offsetString}
+                    </div>
+                    <div className="text-xs">
+                      {timezoneInfo.timezone.split('/').pop()}
+                    </div>
+                    <div className="text-xs">
+                      UTC: {timeSyncStatus.text}
+                    </div>
+                  </div>
+                </div>
+
                 <button
-                  onClick={() => connectWebSocket()}
-                  className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors"
-                  disabled={connectionStatus === 'connecting'}
+                  onClick={() => setShowSettings(true)}
+                  className="text-gray-600 hover:text-gray-900 p-2 rounded-lg hover:bg-gray-100 transition-colors"
+                  title="Настройки"
                 >
-                  {connectionStatus === 'connecting' ? 'Подключение...' : 'Переподключить'}
+                  <Settings className="w-5 h-5" />
                 </button>
               </div>
             </div>
+          </div>
+        </header>
 
-            <div className="space-y-4">
-              {streamData.slice(0, 200).map((item, index) => (
-                <div key={`${item.symbol}-${index}`} className="bg-white rounded-lg shadow-md border border-gray-200 p-4 w-full">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-4">
-                      <div className={`w-4 h-4 rounded-full ${
-                        item.is_long ? 'bg-green-500' : 'bg-red-500'
-                      }`}></div>
-
-                      <div>
-                        <span className="font-semibold text-gray-900 text-lg">{item.symbol}</span>
-                        <div className="flex items-center space-x-2 text-sm">
-                          <span className={`px-2 py-1 rounded text-xs font-medium ${
-                            item.is_long ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
-                          }`}>
-                            {item.is_long ? 'LONG' : 'SHORT'}
-                          </span>
-                          {item.is_closed && (
-                            <span className="px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded-full">Закрыта</span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="text-right">
-                      <div className="text-xl font-bold text-gray-900">
-                        ${item.price.toFixed(8)}
-                      </div>
-                      <div className="text-sm text-gray-600">
-                        Vol: {formatVolume(item.volume_usdt)}
-                      </div>
-                    </div>
-
-                    <div className="flex items-center space-x-2">
-                      <div className="text-right text-sm text-gray-500">
-                        <div>{formatTime(item.timestamp)}</div>
-                        <div className="text-xs">
-                          {formatVolume(item.volume)} {item.symbol.replace('USDT', '')}
-                        </div>
-                      </div>
-
-                      <button
-                        onClick={() => openTradingView(item.symbol)}
-                        className="text-blue-600 hover:text-blue-800 p-1"
-                        title="Открыть в TradingView"
-                      >
-                        <ExternalLink className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </div>
-                </div>
+        {/* Navigation Tabs */}
+        <nav className="bg-white border-b border-gray-200">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div className="flex space-x-8">
+              {[
+                { id: 'volume', label: 'Алерты по объему', icon: TrendingUp, count: volumeAlerts.length },
+                { id: 'consecutive', label: 'LONG последовательности', icon: BarChart3, count: consecutiveAlerts.length },
+                { id: 'priority', label: 'Приоритетные', icon: Star, count: priorityAlerts.length },
+                { id: 'smart_money', label: 'Smart Money', icon: Brain, count: smartMoneyAlerts.length },
+                { id: 'watchlist', label: 'Торговые пары', icon: List, count: watchlist.length },
+                { id: 'stream', label: 'Потоковые данные', icon: Wifi, count: streamData.length }
+              ].map((tab) => (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id as any)}
+                  className={`flex items-center space-x-2 py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
+                    activeTab === tab.id
+                      ? 'border-blue-500 text-blue-600'
+                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                  }`}
+                >
+                  <tab.icon className="w-4 h-4" />
+                  <span>{tab.label}</span>
+                  {tab.count > 0 && (
+                    <span className="bg-gray-100 text-gray-900 py-0.5 px-2 rounded-full text-xs">
+                      {tab.count}
+                    </span>
+                  )}
+                </button>
               ))}
             </div>
           </div>
+        </nav>
+
+        {/* Main Content */}
+        <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+          {/* Volume Alerts */}
+          {activeTab === 'volume' && (
+            <div>
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-2xl font-bold text-gray-900">Алерты по объему</h2>
+                <button
+                  onClick={() => clearAlerts('volume_spike')}
+                  className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg transition-colors"
+                >
+                  Очистить
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                {volumeAlerts.length === 0 ? (
+                  <div className="text-center py-12 text-gray-500">
+                    <TrendingUp className="w-12 h-12 mx-auto mb-4 text-gray-300" />
+                    <p>Нет алертов по объему</p>
+                  </div>
+                ) : (
+                  volumeAlerts.map(renderAlertCard)
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Consecutive Alerts */}
+          {activeTab === 'consecutive' && (
+            <div>
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-2xl font-bold text-gray-900">LONG последовательности</h2>
+                <button
+                  onClick={() => clearAlerts('consecutive_long')}
+                  className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg transition-colors"
+                >
+                  Очистить
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                {consecutiveAlerts.length === 0 ? (
+                  <div className="text-center py-12 text-gray-500">
+                    <BarChart3 className="w-12 h-12 mx-auto mb-4 text-gray-300" />
+                    <p>Нет алертов по последовательностям</p>
+                  </div>
+                ) : (
+                  consecutiveAlerts.map(renderAlertCard)
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Priority Alerts */}
+          {activeTab === 'priority' && (
+            <div>
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-2xl font-bold text-gray-900">Приоритетные алерты</h2>
+                <button
+                  onClick={() => clearAlerts('priority')}
+                  className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg transition-colors"
+                >
+                  Очистить
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                {priorityAlerts.length === 0 ? (
+                  <div className="text-center py-12 text-gray-500">
+                    <Star className="w-12 h-12 mx-auto mb-4 text-gray-300" />
+                    <p>Нет приоритетных алертов</p>
+                  </div>
+                ) : (
+                  priorityAlerts.map(renderAlertCard)
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Smart Money Alerts */}
+          {activeTab === 'smart_money' && (
+            <div>
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-2xl font-bold text-gray-900">Smart Money Concepts</h2>
+                <button
+                  onClick={() => setSmartMoneyAlerts([])}
+                  className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg transition-colors"
+                >
+                  Очистить
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                {smartMoneyAlerts.length === 0 ? (
+                  <div className="text-center py-12 text-gray-500">
+                    <Brain className="w-12 h-12 mx-auto mb-4 text-gray-300" />
+                    <p>Нет сигналов Smart Money</p>
+                  </div>
+                ) : (
+                  smartMoneyAlerts.map(renderSmartMoneyCard)
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Watchlist */}
+          {activeTab === 'watchlist' && (
+            <div>
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-2xl font-bold text-gray-900">Список торговых пар</h2>
+                <button
+                  onClick={() => setShowWatchlistModal(true)}
+                  className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors"
+                >
+                  Управление
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                {watchlist.length === 0 ? (
+                  <div className="text-center py-12 text-gray-500">
+                    <List className="w-12 h-12 mx-auto mb-4 text-gray-300" />
+                    <p>Нет торговых пар в списке</p>
+                  </div>
+                ) : (
+                  watchlist.map(renderWatchlistCard)
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Stream Data */}
+          {activeTab === 'stream' && (
+            <div>
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-2xl font-bold text-gray-900">Потоковые данные</h2>
+                <div className="flex items-center space-x-4">
+                  <span className="text-sm text-gray-600">
+                    Обновлений: {streamData.length} / Пар в watchlist: {watchlist.length} / Подписано: {connectionInfo.subscribedCount}
+                  </span>
+                  <button
+                    onClick={() => connectWebSocket()}
+                    className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors"
+                    disabled={connectionStatus === 'connecting'}
+                  >
+                    {connectionStatus === 'connecting' ? 'Подключение...' : 'Переподключить'}
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                {streamData.slice(0, 200).map((item, index) => (
+                  <div key={`${item.symbol}-${index}`} className="bg-white rounded-lg shadow-md border border-gray-200 p-4 w-full">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center space-x-4">
+                        <div className={`w-4 h-4 rounded-full ${
+                          item.is_long ? 'bg-green-500' : 'bg-red-500'
+                        }`}></div>
+
+                        <div>
+                          <span className="font-semibold text-gray-900 text-lg">{item.symbol}</span>
+                          <div className="flex items-center space-x-2 text-sm">
+                            <span className={`px-2 py-1 rounded text-xs font-medium ${
+                              item.is_long ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                            }`}>
+                              {item.is_long ? 'LONG' : 'SHORT'}
+                            </span>
+                            {item.is_closed && (
+                              <span className="px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded-full">Закрыта</span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="text-right">
+                        <div className="text-xl font-bold text-gray-900">
+                          ${item.price.toFixed(8)}
+                        </div>
+                        <div className="text-sm text-gray-600">
+                          Vol: {formatVolume(item.volume_usdt)}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center space-x-2">
+                        <div className="text-right text-sm text-gray-500">
+                          <div>{formatTime(item.timestamp, 'local', { includeDate: false, includeSeconds: true })}</div>
+                          <div className="text-xs">
+                            {formatVolume(item.volume)} {item.symbol.replace('USDT', '')}
+                          </div>
+                        </div>
+
+                        <button
+                          onClick={() => openTradingView(item.symbol)}
+                          className="text-blue-600 hover:text-blue-800 p-1"
+                          title="Открыть в TradingView"
+                        >
+                          <ExternalLink className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </main>
+
+        {/* Modals */}
+        {selectedAlert && (
+          <ChartModal
+            alert={selectedAlert}
+            onClose={() => setSelectedAlert(null)}
+          />
         )}
-      </main>
 
-      {/* Modals */}
-      {selectedAlert && (
-        <ChartModal
-          alert={selectedAlert}
-          onClose={() => setSelectedAlert(null)}
-        />
-      )}
+        {selectedSmartMoneyAlert && (
+          <SmartMoneyChartModal
+            alert={selectedSmartMoneyAlert}
+            onClose={() => setSelectedSmartMoneyAlert(null)}
+          />
+        )}
 
-      {selectedSmartMoneyAlert && (
-        <SmartMoneyChartModal
-          alert={selectedSmartMoneyAlert}
-          onClose={() => setSelectedSmartMoneyAlert(null)}
-        />
-      )}
+        {showWatchlistModal && (
+          <WatchlistModal
+            watchlist={watchlist}
+            onClose={() => setShowWatchlistModal(false)}
+            onUpdate={loadWatchlist}
+          />
+        )}
 
-      {showWatchlistModal && (
-        <WatchlistModal
-          watchlist={watchlist}
-          onClose={() => setShowWatchlistModal(false)}
-          onUpdate={loadWatchlist}
-        />
-      )}
+        {showStreamModal && (
+          <StreamDataModal
+            streamData={streamData}
+            connectionStatus={connectionStatus}
+            onClose={() => setShowStreamModal(false)}
+          />
+        )}
 
-      {showStreamModal && (
-        <StreamDataModal
-          streamData={streamData}
-          connectionStatus={connectionStatus}
-          onClose={() => setShowStreamModal(false)}
-        />
-      )}
-
-      {showSettings && (
-        <SettingsModal
-          settings={settings}
-          onClose={() => setShowSettings(false)}
-          onSave={handleSettingsSave}
-        />
-      )}
-    </div>
+        {showSettings && (
+          <SettingsModal
+            settings={settings}
+            onClose={() => setShowSettings(false)}
+            onSave={handleSettingsSave}
+          />
+        )}
+      </div>
+    </TimeZoneProvider>
   );
 };
 
