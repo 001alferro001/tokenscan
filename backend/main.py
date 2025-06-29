@@ -243,7 +243,7 @@ async def get_time_info():
                 f"API /api/time: Возвращаем синхронизированное UTC время. serverTime={sync_status['serverTime']}")
             return sync_status
         else:
-            # Fallback на локальное время
+            # Fallback на локальное UTC время
             current_time_ms = int(datetime.utcnow().timestamp() * 1000)
             fallback_response = {
                 "is_synced": False,

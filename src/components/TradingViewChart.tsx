@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { X, ExternalLink, Settings, Maximize2, Minimize2, Target, Zap } from 'lucide-react';
+import { X, ExternalLink, Settings, Maximize2, Minimize2, Target, Zap, AlertTriangle } from 'lucide-react';
 
 interface TradingViewChartProps {
   symbol: string;
@@ -53,6 +53,7 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
   const [showSignals, setShowSignals] = useState(true);
   const [signalShapes, setSignalShapes] = useState<any[]>([]);
   const [scriptLoaded, setScriptLoaded] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     loadTradingViewScript();
@@ -76,10 +77,12 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
 
   useEffect(() => {
     if (chartRef.current && showSignals && alerts.length > 0) {
-      // Добавляем небольшую задержку для стабильности
-      setTimeout(() => {
+      // Добавляем задержку для стабильности
+      const timer = setTimeout(() => {
         addSignalsToChart();
-      }, 1000);
+      }, 2000);
+      
+      return () => clearTimeout(timer);
     }
   }, [alerts, showSignals, chartRef.current]);
 
@@ -100,17 +103,22 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
     script.src = 'https://s3.tradingview.com/tv.js';
     script.async = true;
     script.onload = () => {
+      console.log('TradingView script loaded successfully');
       setScriptLoaded(true);
     };
     script.onerror = () => {
       console.error('Ошибка загрузки TradingView скрипта');
+      setError('Ошибка загрузки TradingView. Проверьте подключение к интернету.');
       setIsLoading(false);
     };
     document.head.appendChild(script);
   };
 
   const createWidget = () => {
-    if (!containerRef.current || !window.TradingView) return;
+    if (!containerRef.current || !window.TradingView) {
+      console.error('Container or TradingView not available');
+      return;
+    }
 
     // Очищаем предыдущий виджет
     if (widgetRef.current) {
@@ -128,6 +136,8 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
     containerRef.current.id = containerId;
 
     try {
+      console.log('Creating TradingView widget for:', tvSymbol);
+      
       widgetRef.current = new window.TradingView.widget({
         autosize: true,
         symbol: tvSymbol,
@@ -173,6 +183,7 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
 
       widgetRef.current.onChartReady(() => {
         try {
+          console.log('TradingView chart ready');
           chartRef.current = widgetRef.current.chart();
           
           // Добавляем основной алерт
@@ -184,18 +195,21 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
           if (showSignals && alerts.length > 0) {
             setTimeout(() => {
               addSignalsToChart();
-            }, 500);
+            }, 1000);
           }
 
           setIsLoading(false);
+          setError(null);
         } catch (error) {
           console.error('Ошибка инициализации графика:', error);
+          setError('Ошибка инициализации графика TradingView');
           setIsLoading(false);
         }
       });
 
     } catch (error) {
       console.error('Ошибка создания TradingView виджета:', error);
+      setError('Ошибка создания виджета TradingView');
       setIsLoading(false);
     }
   };
@@ -204,8 +218,10 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
     if (!chartRef.current || !alertPrice) return;
 
     try {
+      console.log('Adding main alert at price:', alertPrice);
+      
       // Горизонтальная линия уровня алерта
-      chartRef.current.createShape(
+      const alertLine = chartRef.current.createShape(
         { time: Date.now() / 1000, price: alertPrice },
         {
           shape: 'horizontal_line',
@@ -229,7 +245,7 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
       // Вертикальная линия времени алерта
       if (alertTime) {
         const alertTimestamp = typeof alertTime === 'number' ? alertTime : new Date(alertTime).getTime();
-        chartRef.current.createShape(
+        const alertTimeLine = chartRef.current.createShape(
           { time: alertTimestamp / 1000, price: alertPrice },
           {
             shape: 'vertical_line',
@@ -250,13 +266,20 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
           }
         );
       }
+      
+      console.log('Main alert added successfully');
     } catch (error) {
       console.error('Ошибка добавления основного алерта:', error);
     }
   };
 
   const addSignalsToChart = () => {
-    if (!chartRef.current || !alerts.length) return;
+    if (!chartRef.current || !alerts.length) {
+      console.log('Cannot add signals: chart or alerts not available');
+      return;
+    }
+
+    console.log('Adding signals to chart:', alerts.length, 'alerts');
 
     // Очищаем предыдущие сигналы
     clearSignals();
@@ -291,7 +314,20 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
             icon = '⭐';
             label = 'Priority Signal';
             break;
+          case 'smart_money':
+            color = '#9c27b0';
+            icon = '🧠';
+            label = 'Smart Money';
+            break;
         }
+
+        console.log(`Adding signal ${index + 1}:`, {
+          type: alert.alert_type,
+          time: timeInSeconds,
+          price: alert.price,
+          color,
+          label
+        });
 
         // Создаем стрелку вверх для сигнала
         const signalShape = chartRef.current.createShape(
@@ -315,12 +351,20 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
           }
         );
 
-        newShapes.push(signalShape);
+        if (signalShape) {
+          newShapes.push(signalShape);
+        }
 
         // Добавляем зоны имбаланса для Smart Money сигналов
-        if (alert.has_imbalance && alert.imbalance_data) {
+        if (alert.has_imbalance && alert.imbalance_data && alert.imbalance_data.top && alert.imbalance_data.bottom) {
           const imbalanceColor = alert.imbalance_data.direction === 'bullish' ? 
             'rgba(76, 175, 80, 0.2)' : 'rgba(244, 67, 54, 0.2)';
+
+          console.log('Adding imbalance zone:', {
+            top: alert.imbalance_data.top,
+            bottom: alert.imbalance_data.bottom,
+            direction: alert.imbalance_data.direction
+          });
 
           // Создаем прямоугольник для зоны имбаланса
           const imbalanceZone = chartRef.current.createShape(
@@ -345,7 +389,9 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
             }
           );
 
-          newShapes.push(imbalanceZone);
+          if (imbalanceZone) {
+            newShapes.push(imbalanceZone);
+          }
         }
 
         // Добавляем текстовую метку с деталями
@@ -367,7 +413,9 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
           }
         );
 
-        newShapes.push(textLabel);
+        if (textLabel) {
+          newShapes.push(textLabel);
+        }
 
       } catch (error) {
         console.error(`Ошибка добавления сигнала ${index}:`, error);
@@ -375,6 +423,7 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
     });
 
     setSignalShapes(newShapes);
+    console.log('Signals added successfully:', newShapes.length, 'shapes created');
   };
 
   const getAlertDetails = (alert: Alert): string => {
@@ -395,10 +444,16 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
       details += `\nLONG: ${alert.consecutive_count}`;
     }
 
+    if (alert.has_imbalance && alert.imbalance_data) {
+      details += `\n${alert.imbalance_data.type.toUpperCase()}`;
+      details += `\n${alert.imbalance_data.direction.toUpperCase()}`;
+    }
+
     return details;
   };
 
   const clearSignals = () => {
+    console.log('Clearing signals:', signalShapes.length, 'shapes');
     signalShapes.forEach(shape => {
       try {
         if (shape && shape.remove) {
@@ -467,13 +522,20 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
                 {alerts.length} сигналов
               </span>
             )}
+            {error && (
+              <span className="text-sm text-red-600 bg-red-100 px-2 py-1 rounded flex items-center">
+                <AlertTriangle className="w-3 h-3 mr-1" />
+                Ошибка загрузки
+              </span>
+            )}
           </div>
           
           <div className="flex items-center space-x-3">
             {/* Переключатель сигналов */}
             <button
               onClick={toggleSignals}
-              className={`flex items-center space-x-2 px-3 py-2 rounded-lg transition-colors ${
+              disabled={!chartRef.current || alerts.length === 0}
+              className={`flex items-center space-x-2 px-3 py-2 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
                 showSignals 
                   ? 'bg-green-100 text-green-700 hover:bg-green-200' 
                   : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
@@ -552,6 +614,28 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
               <div className="text-center">
                 <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-4"></div>
                 <p className="text-gray-600">Загрузка графика TradingView...</p>
+                {!scriptLoaded && (
+                  <p className="text-sm text-gray-500 mt-2">Загрузка скрипта TradingView...</p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {error && (
+            <div className="absolute inset-0 flex items-center justify-center bg-white z-10">
+              <div className="text-center">
+                <AlertTriangle className="w-12 h-12 text-red-500 mx-auto mb-4" />
+                <p className="text-red-600 mb-4">{error}</p>
+                <button
+                  onClick={() => {
+                    setError(null);
+                    setIsLoading(true);
+                    createWidget();
+                  }}
+                  className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors"
+                >
+                  Попробовать снова
+                </button>
               </div>
             </div>
           )}
@@ -571,6 +655,11 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({
                 <span className="flex items-center space-x-1">
                   <Zap className="w-3 h-3" />
                   <span>{alerts.length} сигналов программы на графике</span>
+                </span>
+              )}
+              {signalShapes.length > 0 && (
+                <span className="text-green-600">
+                  ✓ {signalShapes.length} объектов добавлено
                 </span>
               )}
             </div>

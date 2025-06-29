@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { X, ExternalLink, TrendingUp, TrendingDown, RefreshCw } from 'lucide-react';
+import { X, ExternalLink, TrendingUp, TrendingDown, RefreshCw, AlertTriangle } from 'lucide-react';
 
 interface CoinGeckoChartProps {
   symbol: string;
@@ -22,6 +22,7 @@ const CoinGeckoChart: React.FC<CoinGeckoChartProps> = ({ symbol, onClose }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [days, setDays] = useState('7');
+  const [chartError, setChartError] = useState(false);
 
   useEffect(() => {
     loadCoinData();
@@ -31,6 +32,7 @@ const CoinGeckoChart: React.FC<CoinGeckoChartProps> = ({ symbol, onClose }) => {
     try {
       setLoading(true);
       setError(null);
+      setChartError(false);
 
       // Преобразуем символ (например, BTCUSDT -> bitcoin)
       const coinId = getCoinId(symbol);
@@ -54,7 +56,7 @@ const CoinGeckoChart: React.FC<CoinGeckoChartProps> = ({ symbol, onClose }) => {
       );
 
       if (!response.ok) {
-        throw new Error('Ошибка загрузки данных CoinGecko');
+        throw new Error(`Ошибка загрузки данных CoinGecko: ${response.status}`);
       }
 
       const data = await response.json();
@@ -71,6 +73,7 @@ const CoinGeckoChart: React.FC<CoinGeckoChartProps> = ({ symbol, onClose }) => {
       });
 
     } catch (err) {
+      console.error('CoinGecko API error:', err);
       setError(err instanceof Error ? err.message : 'Неизвестная ошибка');
     } finally {
       setLoading(false);
@@ -189,105 +192,7 @@ const CoinGeckoChart: React.FC<CoinGeckoChartProps> = ({ symbol, onClose }) => {
       'ONTUSDT': 'ontology',
       'FETUSDT': 'fetch-ai',
       'CELRUSDT': 'celer-network',
-      'BANDUSDT': 'band-protocol',
-      'BELUSDT': 'bella-protocol',
-      'WINGUSDT': 'wing-finance',
-      'CREAMUSDT': 'cream-2',
-      'FLAMUSDT': 'flamingo-finance',
-      'BURGERUSDT': 'burger-swap',
-      'SPARUSDT': 'spartan-protocol',
-      'TKOUSDT': 'tokocrypto',
-      'FORUSDT': 'for-protocol',
-      'EASYUSDT': 'easyfi',
-      'AUTOUSDT': 'auto',
-      'VIDTUSDT': 'v-id-blockchain',
-      'COINUSDT': 'coin98',
-      'ERNUSDT': 'ethernity-chain',
-      'KLAYUSDT': 'klay-token',
-      'DYDXUSDT': 'dydx',
-      'GALAUSDT': 'gala',
-      'ILVUSDT': 'illuvium',
-      'YGGUSDT': 'yield-guild-games',
-      'FIDAUSDT': 'bonfida',
-      'FRONTUSDT': 'frontier-token',
-      'CVPUSDT': 'concentrated-voting-power',
-      'AGLDUSDT': 'adventure-gold',
-      'RADUSDT': 'radicle',
-      'BETAUSDT': 'beta-finance',
-      'RAREUSDT': 'superrare',
-      'LAZIOUSDT': 'lazio-fan-token',
-      'CHESSUSDT': 'tranchess',
-      'ADXUSDT': 'adex',
-      'AUCTIONUSDT': 'bounce-token',
-      'DARUSDT': 'mines-of-dalarnia',
-      'BNXUSDT': 'binaryx',
-      'RGTUSDT': 'rari-governance-token',
-      'MOVRUSDT': 'mover',
-      'CITYUSDT': 'manchester-city-fan-token',
-      'ENSUSDT': 'ethereum-name-service',
-      'KP3RUSDT': 'keep3rv1',
-      'QIUSDT': 'benqi',
-      'PORTOUSDT': 'porto',
-      'POWRUSDT': 'power-ledger',
-      'VGXUSDT': 'ethos',
-      'JASMYUSDT': 'jasmycoin',
-      'AMPUSDT': 'amp-token',
-      'PLAUSDT': 'playdapp',
-      'PYRUSDT': 'vulcan-forged',
-      'RNDRUSDT': 'render-token',
-      'ALCXUSDT': 'alchemix',
-      'SANTOSUSDT': 'santos-fc-fan-token',
-      'MCUSDT': 'merit-circle',
-      'ANYUSDT': 'anyswap',
-      'BICOUSDT': 'biconomy',
-      'FLUXUSDT': 'zelcash',
-      'FXSUSDT': 'frax-share',
-      'VOXELUSDT': 'voxies',
-      'HIGHUSDT': 'highstreet',
-      'CVXUSDT': 'convex-finance',
-      'PEOPLEUSDT': 'constitutiondao',
-      'OOKIUSDT': 'ooki',
-      'SPELLUSDT': 'spell-token',
-      'USTUSDT': 'terrausd',
-      'JOEUSDT': 'joe',
-      'ACHUSDT': 'achain',
-      'IMXUSDT': 'immutable-x',
-      'GLMRUSDT': 'glamorous',
-      'LOKAUSDT': 'loka',
-      'SCRTUSDT': 'secret',
-      'APIUSDT': 'api3',
-      'BTTCUSDT': 'bittorrent',
-      'ACMUSDT': 'ac-milan-fan-token',
-      'ANCUSDT': 'anchor-protocol',
-      'XNOUSDT': 'xeno-token',
-      'WOOUSDT': 'woo-network',
-      'ALPINEUSDT': 'alpine-f1-team-fan-token',
-      'TUSDT': 'threshold-network-token',
-      'ASTRUSDT': 'astrafer',
-      'NBTUSDT': 'nanobyte-token',
-      'GMTUSDT': 'stepn',
-      'KDAUSDT': 'kadena',
-      'APEUSDT': 'apecoin',
-      'BSWUSDT': 'biswap',
-      'BIFIUSDT': 'beefy-finance',
-      'MULTIUSDT': 'multichain',
-      'STEEMUSDT': 'steem',
-      'MOBUSDT': 'mobilecoin',
-      'NEXOUSDT': 'nexo',
-      'REIUSDT': 'rei-network',
-      'GALUSDT': 'galatasaray-fan-token',
-      'LDOUSDT': 'lido-dao',
-      'EPXUSDT': 'ellipsis',
-      'OPUSDT': 'optimism',
-      'LEVERUSDT': 'leverfi',
-      'STGUSDT': 'stargate-finance',
-      'LUNCUSDT': 'terra-luna',
-      'GMXUSDT': 'gmx',
-      'NEBULAUSDT': 'nebulas',
-      'POLYXUSDT': 'polymesh',
-      'APEUSDT': 'apecoin',
-      'BSWUSDT': 'biswap',
-      'BIFIUSDT': 'beefy-finance'
+      'BANDUSDT': 'band-protocol'
     };
 
     return symbolMap[symbol] || null;
@@ -402,6 +307,7 @@ const CoinGeckoChart: React.FC<CoinGeckoChartProps> = ({ symbol, onClose }) => {
           ) : error ? (
             <div className="flex items-center justify-center h-full">
               <div className="text-center">
+                <AlertTriangle className="w-12 h-12 text-red-500 mx-auto mb-4" />
                 <p className="text-red-600 mb-4">Ошибка: {error}</p>
                 <button
                   onClick={loadCoinData}
@@ -453,7 +359,7 @@ const CoinGeckoChart: React.FC<CoinGeckoChartProps> = ({ symbol, onClose }) => {
 
               {/* График */}
               <div className="flex-1 bg-gray-50 rounded-lg overflow-hidden">
-                {chartUrl ? (
+                {chartUrl && !chartError ? (
                   <iframe
                     src={chartUrl}
                     width="100%"
@@ -462,12 +368,25 @@ const CoinGeckoChart: React.FC<CoinGeckoChartProps> = ({ symbol, onClose }) => {
                     title={`${coinData.name} Chart`}
                     className="w-full h-full"
                     onError={() => {
-                      setError('Ошибка загрузки графика CoinGecko');
+                      console.error('Chart iframe failed to load');
+                      setChartError(true);
+                    }}
+                    onLoad={() => {
+                      console.log('Chart iframe loaded successfully');
                     }}
                   />
                 ) : (
                   <div className="flex items-center justify-center h-full">
-                    <p className="text-gray-600">График недоступен</p>
+                    <div className="text-center">
+                      <AlertTriangle className="w-8 h-8 text-yellow-500 mx-auto mb-2" />
+                      <p className="text-gray-600 mb-4">График временно недоступен</p>
+                      <button
+                        onClick={() => setChartError(false)}
+                        className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg transition-colors"
+                      >
+                        Попробовать снова
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
